@@ -1,0 +1,3 @@
+# Share live documents and autosave through the application server
+
+The file editor supports simultaneous connected clients with live edits and labelled cursors, server-owned autosave, and undo of each client's own edits without erasing peers' work. This replaces explicit Save as the normal workflow and requires a shared-document consistency contract beyond independent local buffers. Clean external changes merge automatically; overlapping changes, deletion, or replacement preserve versions and pause autosave for review. The collaboration algorithm remains an implementation decision; durable document state, disk-save status, and ephemeral presence are distinct. See [editor behavior](../design/editor.md) and [storage](../design/storage.md).

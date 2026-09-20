@@ -1,0 +1,50 @@
+     Terminal workspace  /  Build the workspace shell                                                                                        3              
+                        │                                                                                                                                       
+  PROJECTS              │              Build a calm workspace with focused navigation and useful inspectors.                                                    
+  All projects         │                                                                                                                                       
+   New thread          │                                                                                                                                       
+                        │  I’m working through the shell layout and keeping activity available while you compose.                                               
+   Build the work…    │                                                                                                                                       
+    running · Termina…  │                                                                                                                                       
+   Review keyboar…    │    Inspect layout contract  ·  completed                                                                                             
+    waiting · Termina…  │  Read 3 design documents                                                                                                              
+                        │                                                                                                                                       
+  CLOSED (0)            │                                                                                                                                       
+                        │    design / inspect_surface  ·  completed                                                                                            
+                        │  Inspect singleton surface behavior                                                                                                   
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                       Add project                                                                                                    
+                        │                       /tmp/tui-navigation-home-al1h73uo/Navigation project/keep.txt                                                   
+                        │                       invalid: project path must be an existing directory                                                             
+                        │                       Add folder as project                                                                                           
+                        │                       Cancel                                                                                                          
+                        │                                                                                                                                       
+                        │                       ↑ ↓  Enter  Esc  1/2                                                                                            
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  ● Thinking…   ● Plan 2/3   ● Agents                                                                                                  
+                        │ 1 queued                                                                                                                              
+                        │   Review the compact layout after the shell                                                                     Edit  Remove ↑   ↓    
+                        │ ┌─ Answer anytime · Demo                                                                                                           ─┐ 
+                        │ │ 1 Focus  2 Priorities  3 Notes                                                                                             Next   │ 
+                        │ │ Which area should receive the next review?                                                                                        │ 
+                        │ │  Keyboard flow                                                                                                                   │ 
+                        │ │  Compact layout                                                                                                                  │ 
+                        │ │  Inspector detail                                                                                                                │ 
+                        │ │  Other…                                                                                                                          │ 
+                        │ │                                                                                                                          Submit   │ 
+                        │ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+                        │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+  Commands  F4          │  Ask a follow-up…                                                                                                                     
+                        │ Demo  Reference  Medium  Simulated                                                                                                    
+    Theme  F8          │                                                                                                            [····] —  Cost —        
+                        │                                                                                                                                       
+ ● connected  ·  invalid: project path must be an existing directory                                                                                            

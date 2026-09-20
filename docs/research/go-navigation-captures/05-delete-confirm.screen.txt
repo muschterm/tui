@@ -1,0 +1,50 @@
+     tui-go                                                                                                                                  3              
+                        │                                                                                                                                       
+  PROJECTS              │                                                                                                                                       
+  Navigation proje…    │  No thread selected                                                                                                                   
+   New thread          │                                                                                                                                       
+                        │  New thread                                                                                                                           
+  No open threads       │                                                                                                                                       
+                        │  Reopen a closed thread                                                                                                               
+  CLOSED (1)            │                                                                                                                                       
+   New thread         │  Add project                                                                                                                          
+    idle                │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                       Delete thread: New thread                                                                                      
+                        │                       Cancel                                                                                                          
+                        │                       Delete permanently · history, drafts and owned work                                                             
+                        │                                                                                                                                       
+                        │                       ↑ ↓  Enter  Esc  1/2                                                                                            
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+  Commands  F4          │                                                                                                                                       
+                        │                                                                                                                                       
+    Theme  F8          │                                                                                                                                       
+                        │                                                                                                                                       
+ ● connected  ·  New thread · Navigation project                                                                                                                

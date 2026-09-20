@@ -1,0 +1,50 @@
+     Navigation project  /  New thread                                                                                                       3              
+                        │                                                                                                                                       
+  PROJECTS              │                                                                                                                                       
+  Navigation proje…    │                                                                                                                                       
+   New thread          │                                                                                                                                       
+                        │                                                                                                                                       
+   New thread         │                                                                                                                                       
+    idle                │                                                                                                                                       
+                        │                                                                                                                                       
+  CLOSED (0)            │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                       Projects                                                                                                       
+                        │                       Navigation                                                                                                      
+                        │                                                                                                                                       
+                        │                       Navigation project · /private/tmp/tui-navigation-home-al1h73uo…                                                 
+                        │                        Add project…                                                                                                  
+                        │                                                                                                                                       
+                        │                       ↑ ↓  Enter  Esc  1/2                                                                                            
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+  Commands  F4          │  Preserved navigation draft                                                                                                           
+                        │ Demo  Reference  Medium  Simulated                                                                                                    
+    Theme  F8          │                                                                                                               [····] —  Cost —      
+                        │                                                                                                                                       
+ ● connected  ·  Thread created · Demo                                                                                                                          

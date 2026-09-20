@@ -1,0 +1,24 @@
+     Terminal workspace …    3              
+                                                
+         Build a calm workspace with focused  █ 
+         navigation and useful inspectors.    │ 
+                                              │ 
+                                              │ 
+  I                                           │ 
+  k  Usage                                   │ 
+  c  Context used: unavailable                │ 
+  ●  Context capacity: unavailable              
+ ┌─  Context percentage: unavailable         ─┐ 
+ │   Billing mode: unknown                    │ 
+ │   Subscription limits: unavailable         │ 
+ │   API cost: unavailable                    │ 
+ │   Usage details                            │ 
+ │                                            │ 
+ │   ↑ ↓  Enter  Esc  1/7                     │ 
+ │                                   Submit   │ 
+ └────────────────────────────────────────────┘ 
+ ╭────────────────────────────────────────────╮ 
+ │ client A draft                             │ 
+ ╰────────────────────────────────────────────╯ 
+   Demo  Reference          [····] —        
+ ● connected  ·  Transcript · wheel / arrows t… 

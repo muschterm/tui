@@ -1,0 +1,16 @@
+{
+  "name": "tui",
+  "module": "index.ts",
+  "scripts": {
+    "update-skills": "skills update -p"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "skills": "^1.6.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "private": true,
+  "type": "module"
+}

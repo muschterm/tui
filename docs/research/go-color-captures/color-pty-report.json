@@ -1,0 +1,16 @@
+{
+  "harness": "OS PTY + native binary + synthetic terminal responses",
+  "cases": [
+    "silent-256",
+    "silent-16",
+    "ghostty",
+    "kitty",
+    "iterm2",
+    "negative",
+    "tmux-fallback",
+    "unknown",
+    "no-color",
+    "apple",
+    "env-truecolor"
+  ]
+}

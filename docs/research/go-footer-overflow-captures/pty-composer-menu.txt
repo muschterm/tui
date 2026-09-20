@@ -1,0 +1,24 @@
+     Terminal workspace …    3              
+                                                
+         Build a calm workspace with focused  █ 
+         navigation and useful inspectors.    │ 
+                                              │ 
+                                              │ 
+  I’m working through the shell layout and    │ 
+  keeping activity available while you        │ 
+  compose.                                    │ 
+  ●                                             
+ ┌─  Composer                               ─┐ 
+ │   Effort: Medium                           │ 
+ │   Permissions: Simulated                   │ 
+ │                                            │ 
+ │   ↑ ↓  Enter  Esc  1/2                     │ 
+ │  Inspector detail                         │ 
+ │  Other…                                   │ 
+ │                                   Submit   │ 
+ └────────────────────────────────────────────┘ 
+ ────────────────────────────────────────────── 
+   client A draft                               
+   Demo  Reference         [····] —          
+                                                
+ ● connected  ·  Transcript · wheel / arrows t… 

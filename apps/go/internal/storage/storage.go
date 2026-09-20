@@ -1,0 +1,360 @@
+// Package storage persists snapshots and deduplication receipts in one transaction.
+package storage
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/muschterm/tui/apps/go/internal/protocol"
+	_ "modernc.org/sqlite"
+)
+
+type Store struct{ db *sql.DB }
+
+func Open(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+
+	var version int
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if version > 1 {
+		db.Close()
+		return nil, &protocol.Error{Code: "schema_version", Message: "database schema is newer than supported version 1"}
+	}
+	if version < 1 {
+		var tables int
+		if err = db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if tables > 0 {
+			backup, createErr := os.CreateTemp(filepath.Dir(path), "recovery-before-v1-*.sqlite")
+			if createErr != nil {
+				db.Close()
+				return nil, createErr
+			}
+			backupPath := backup.Name()
+			backup.Close()
+			if _, err = db.Exec("VACUUM INTO ?", backupPath); err != nil {
+				db.Close()
+				return nil, err
+			}
+			backup, err = os.OpenFile(backupPath, os.O_RDWR, 0600)
+			if err != nil {
+				db.Close()
+				return nil, err
+			}
+			err = backup.Sync()
+			closeErr := backup.Close()
+			if err = errors.Join(err, closeErr); err != nil {
+				db.Close()
+				return nil, err
+			}
+			directory, openErr := os.Open(filepath.Dir(path))
+			if openErr != nil {
+				db.Close()
+				return nil, openErr
+			}
+			syncErr := directory.Sync()
+			directory.Close()
+			if syncErr != nil {
+				db.Close()
+				return nil, syncErr
+			}
+		}
+		tx, beginErr := db.Begin()
+		if beginErr != nil {
+			db.Close()
+			return nil, beginErr
+		}
+		_, err = tx.Exec(`CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, command BLOB NOT NULL, receipt BLOB NOT NULL); CREATE TABLE IF NOT EXISTS views (id TEXT PRIMARY KEY, data BLOB NOT NULL, revision INTEGER NOT NULL DEFAULT 1);`)
+		if err == nil {
+			var columns int
+			err = tx.QueryRow("SELECT count(*) FROM pragma_table_info('views') WHERE name='revision'").Scan(&columns)
+			if err == nil && columns == 0 {
+				_, err = tx.Exec("ALTER TABLE views ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+			}
+		}
+		if err == nil {
+			_, err = tx.Exec("PRAGMA user_version=1")
+		}
+		if err != nil {
+			tx.Rollback()
+			db.Close()
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;"); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &Store{db}, nil
+}
+func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Load() (protocol.Snapshot, bool, error) {
+	var b []byte
+	err := s.db.QueryRow("SELECT data FROM state WHERE id=1").Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.Snapshot{}, false, nil
+	}
+	if err != nil {
+		return protocol.Snapshot{}, false, err
+	}
+	var snap protocol.Snapshot
+	err = json.Unmarshal(b, &snap)
+	return snap, true, err
+}
+func (s *Store) Lookup(c protocol.Command) (*protocol.Receipt, error) {
+	var cmd, b []byte
+	err := s.db.QueryRow("SELECT command,receipt FROM commands WHERE id=?", c.ID).Scan(&cmd, &b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	want, _ := json.Marshal(c)
+	if !bytes.Equal(want, cmd) && !bytes.Equal(commandFingerprint(want), cmd) {
+		return nil, &protocol.Error{Code: "identity_conflict", Message: "command ID was already used with different content"}
+	}
+	var r protocol.Receipt
+	err = json.Unmarshal(b, &r)
+	return &r, err
+}
+func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Receipt) error {
+	b, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO state(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", b); err != nil {
+		return err
+	}
+	if c != nil {
+		cb, _ := json.Marshal(c)
+		storedReceipt := r
+		if c.Kind == "thread.delete" {
+			if err = purgeThread(tx, snap, c.ThreadID); err != nil {
+				return err
+			}
+			cb = commandFingerprint(cb)
+			minimal := *r
+			minimal.TargetID = ""
+			storedReceipt = &minimal
+		}
+		rb, _ := json.Marshal(storedReceipt)
+		if _, err = tx.Exec("INSERT INTO commands(id,command,receipt) VALUES(?,?,?)", c.ID, cb, rb); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+func (s *Store) LoadView(id string) (protocol.View, error) {
+	var v protocol.View
+	var data []byte
+	err := s.db.QueryRow("SELECT data,revision FROM views WHERE id=?", id).Scan(&data, &v.Revision)
+	v.Data = json.RawMessage(data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.View{Data: json.RawMessage(`{}`)}, nil
+	}
+	return v, err
+}
+func (s *Store) PutView(id string, b json.RawMessage, expected int64) (protocol.View, error) {
+	if !json.Valid(b) || len(b) > 128*1024 || id == "" || len(id) > 128 || expected < 0 {
+		return protocol.View{}, &protocol.Error{Code: "invalid_view", Message: "invalid view payload, client identity, or revision"}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return protocol.View{}, err
+	}
+	defer tx.Rollback()
+	var state []byte
+	err = tx.QueryRow("SELECT data FROM state WHERE id=1").Scan(&state)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return protocol.View{}, err
+	}
+	if err == nil {
+		var snap protocol.Snapshot
+		if err = json.Unmarshal(state, &snap); err != nil {
+			return protocol.View{}, err
+		}
+		deletedCommands, loadErr := tombstonedCommands(tx)
+		if loadErr != nil {
+			return protocol.View{}, loadErr
+		}
+		b, err = protocol.PruneThreadViewCommands(b, liveThreads(snap), deletedCommands)
+		if err != nil {
+			return protocol.View{}, &protocol.Error{Code: "invalid_view", Message: err.Error()}
+		}
+	}
+	var next int64
+	if expected == 0 {
+		err = tx.QueryRow("INSERT INTO views(id,data,revision) VALUES(?,?,1) ON CONFLICT(id) DO NOTHING RETURNING revision", id, []byte(b)).Scan(&next)
+	} else {
+		err = tx.QueryRow("UPDATE views SET data=?,revision=revision+1 WHERE id=? AND revision=? RETURNING revision", []byte(b), id, expected).Scan(&next)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.View{}, &protocol.Error{Code: "stale_view", Message: "client view changed; preserve the local draft and reconcile before saving"}
+	}
+	if err != nil {
+		return protocol.View{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return protocol.View{}, err
+	}
+	return protocol.View{Data: b, Revision: next}, nil
+}
+func (s *Store) View(id string) (json.RawMessage, error) {
+	v, err := s.LoadView(id)
+	return v.Data, err
+}
+func (s *Store) SaveView(id string, b json.RawMessage) error {
+	v, err := s.LoadView(id)
+	if err != nil {
+		return err
+	}
+	_, err = s.PutView(id, b, v.Revision)
+	return err
+}
+
+// Fingerprints retain retry identity without retaining deleted thread payloads.
+// This is logical deletion; SQLite journals/backups are not forensic erasure.
+func commandFingerprint(encoded []byte) []byte {
+	return fmt.Appendf(nil, "sha256:%x", sha256.Sum256(encoded))
+}
+
+func liveThreads(snap protocol.Snapshot) map[string]bool {
+	live := make(map[string]bool, len(snap.Threads))
+	for _, thread := range snap.Threads {
+		live[thread.ID] = true
+	}
+	return live
+}
+
+func purgeThread(tx *sql.Tx, snap protocol.Snapshot, threadID string) error {
+	live := liveThreads(snap)
+	if threadID == "" || live[threadID] {
+		return fmt.Errorf("deleted thread remains in snapshot")
+	}
+	for _, terminal := range snap.Terminals {
+		if terminal.ThreadID == threadID {
+			return fmt.Errorf("deleted thread terminal remains in snapshot")
+		}
+	}
+	// A lost acknowledgment of thread.create must not recreate a deleted
+	// thread. Retain its identity/fingerprint, but erase its title and target.
+	created, err := tx.Query("SELECT id,command,receipt FROM commands WHERE json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.Kind') = 'thread.create' AND json_extract(receipt, '$.TargetID') = ?", threadID)
+	if err != nil {
+		return err
+	}
+	type tombstone struct {
+		id               string
+		command, receipt []byte
+	}
+	var tombstones []tombstone
+	deletedCommands := map[string]bool{}
+	for created.Next() {
+		var id string
+		var command, receipt []byte
+		if err := created.Scan(&id, &command, &receipt); err != nil {
+			created.Close()
+			return err
+		}
+		var previous protocol.Receipt
+		if err := json.Unmarshal(receipt, &previous); err != nil {
+			created.Close()
+			return err
+		}
+		minimal, _ := json.Marshal(protocol.Receipt{ID: id, State: "deleted", Revision: previous.Revision})
+		tombstones = append(tombstones, tombstone{id, commandFingerprint(command), minimal})
+		deletedCommands[id] = true
+	}
+	err = created.Err()
+	closeErr := created.Close()
+	if err != nil || closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	for _, item := range tombstones {
+		if _, err := tx.Exec("UPDATE commands SET command=?,receipt=? WHERE id=?", item.command, item.receipt, item.id); err != nil {
+			return err
+		}
+	}
+	// Hash-only records are deliberately not JSON and have no scope data.
+	if _, err := tx.Exec("DELETE FROM commands WHERE json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.ThreadID') = ?", threadID); err != nil {
+		return err
+	}
+	rows, err := tx.Query("SELECT id,data FROM views")
+	if err != nil {
+		return err
+	}
+	type projection struct {
+		id   string
+		data json.RawMessage
+	}
+	var changes []projection
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err = rows.Scan(&id, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		projected, projectErr := protocol.PruneThreadViewCommands(data, live, deletedCommands)
+		if projectErr != nil {
+			rows.Close()
+			return projectErr
+		}
+		if !bytes.Equal(projected, data) {
+			changes = append(changes, projection{id, projected})
+		}
+	}
+	err = rows.Err()
+	closeErr = rows.Close()
+	if err != nil || closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	for _, change := range changes {
+		if _, err = tx.Exec("UPDATE views SET data=?,revision=revision+1 WHERE id=?", []byte(change.data), change.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tombstonedCommands(tx *sql.Tx) (map[string]bool, error) {
+	rows, err := tx.Query("SELECT id FROM commands WHERE json_extract(receipt, '$.State') = 'deleted'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}

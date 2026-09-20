@@ -1,0 +1,62 @@
+# Vercel Skills / Agent Directories
+.agents/*
+!.agents/skills
+.claude/*
+!.claude/skills
+.cursor/
+vercel-skills/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Secrets - extra paranoid
+*.env
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*-credentials.json
+
+# Reference material that might be sensitive
+reference/private/
+
+# Claude Code session memory (lives in ~/.claude, not in the repo)
+memory/
+
+# OS / misc
+Thumbs.db
+.directory
+
+# Node / Bun
+node_modules/
+*.tsbuildinfo
+
+# Build output
+dist/
+.output/
+.dev/
+
+# Cloudflare / Wrangler local state (local D1 lives here — recreated each dev run)
+.wrangler/
+
+# Local Worker dev vars (keep the committed example, ignore the real one)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Python developer-tool caches
+__pycache__/

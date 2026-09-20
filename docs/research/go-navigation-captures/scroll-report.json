@@ -1,0 +1,24 @@
+{
+  "binary": "/Users/muschterm/Developer/git/github.com/muschterm/tui/apps/go/bin/tui-go",
+  "events": 500,
+  "columns": 160,
+  "rows": 50,
+  "harness": "direct child OS PTY; synthetic fixture",
+  "cpu_scope": "complete TUI child lifetime, excluding server",
+  "result": "PASS",
+  "input_bytes": 5506,
+  "wheel_cell": [
+    80,
+    5
+  ],
+  "alternate_screen_exit_seconds": 0.0502995,
+  "sent_bytes": 5506,
+  "exit_code": 0,
+  "child_user_seconds": 0.10245499999999999,
+  "child_system_seconds": 0.013815,
+  "child_cpu_seconds": 0.11626999999999998,
+  "process_exit_seconds": 0.05220212499999999,
+  "light_persisted": true,
+  "server_survived_detach": true,
+  "raw_output_bytes": 4033
+}

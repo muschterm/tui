@@ -1,0 +1,24 @@
+{
+  "harness": "OS PTY; SGR pointer and keyboard; isolated server home",
+  "checks": [
+    "regular-file rejection retains folder input and visible error",
+    "adding folder selects project filter without changing active thread",
+    "adding project creates no thread or execution",
+    "project picker searches server paths",
+    "New thread creates empty idle Demo thread in selected server folder",
+    "bracketed paste persists unsent thread draft",
+    "second client project filter stays independent",
+    "second client observes same thread with local draft",
+    "project picker searches names",
+    "filtering leaves center thread selected",
+    "hover check closes idle thread without submitting its draft",
+    "Closed row reopens thread and restores unsent draft",
+    "default Enter cancels permanent deletion",
+    "confirmed delete removes authoritative thread",
+    "live SQLite snapshot and all saved client views remove deleted thread",
+    "other client remains usable and saves view after deletion",
+    "other client shows no view CAS/save failure",
+    "project addition and thread lifecycle preserve project files"
+  ],
+  "result": "PASS"
+}

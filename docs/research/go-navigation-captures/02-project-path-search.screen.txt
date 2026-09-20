@@ -1,0 +1,50 @@
+     Terminal workspace  /  Build the workspace shell                                                                                        3              
+                        │                                                                                                                                       
+  PROJECTS              │              Build a calm workspace with focused navigation and useful inspectors.                                                    
+  Navigation proje…    │                                                                                                                                       
+   New thread          │                                                                                                                                       
+                        │  I’m working through the shell layout and keeping activity available while you compose.                                               
+  No open threads       │                                                                                                                                       
+                        │                                                                                                                                       
+  CLOSED (0)            │    Inspect layout contract  ·  completed                                                                                             
+                        │  Read 3 design documents                                                                                                              
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │    design / inspect_surface  ·  completed                                                                                            
+                        │  Inspect singleton surface behavior                                                                                                   
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.                          
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │              Review the compact layout after the shell                                                                                
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                       Projects                                                                                                       
+                        │                       /tmp/tui-navigation-home-al1h73uo/Navigation project                                                            
+                        │                                                                                                                                       
+                        │                       Navigation project · /private/tmp/tui-navigation-home-al1h73uo…                                                 
+                        │                        Add project…                                                                                                  
+                        │                                                                                                                                       
+                        │                       ↑ ↓  Enter  Esc  1/2                                                                                            
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  ● Thinking…   ● Plan 0/2   ● Agents                                                                                                  
+                        │ ┌─ Answer anytime · Demo                                                                                                           ─┐ 
+                        │ │ 1 Focus  2 Priorities  3 Notes                                                                                             Next   │ 
+                        │ │ Which area should receive the next review?                                                                                        │ 
+                        │ │  Keyboard flow                                                                                                                   │ 
+                        │ │  Compact layout                                                                                                                  │ 
+                        │ │  Inspector detail                                                                                                                │ 
+                        │ │  Other…                                                                                                                          │ 
+                        │ │                                                                                                                          Submit   │ 
+                        │ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+                        │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 
+  Commands  F4          │  Ask a follow-up…                                                                                                                     
+                        │ Demo  Reference  Medium  Simulated                                                                                                    
+    Theme  F8          │                                                                                                            [····] —  Cost —        
+                        │                                                                                                                                       
+ ● connected  ·  Project added                                                                                                                                  

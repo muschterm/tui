@@ -1,0 +1,2 @@
+# Terminal screen captures preserve their column widths, including blank cells.
+docs/research/*-captures/*.txt whitespace=-blank-at-eol

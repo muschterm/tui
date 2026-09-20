@@ -1,0 +1,981 @@
+// Package tui binds the reusable shell to the fixture ADE and server commands.
+// All I/O happens in commands or Run, never in View.
+package tui
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/muschterm/tui/apps/go/internal/client"
+	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"github.com/muschterm/tui/apps/go/internal/shell"
+)
+
+type threadView struct {
+	Host                                                             shell.Host
+	RightVisible                                                     bool
+	Draft                                                            string
+	Settings                                                         protocol.Settings
+	Attachments                                                      []protocol.Attachment
+	Scroll, DetailScroll, RequestIndex, QuestionIndex, RequestScroll int
+	BottomScroll                                                     int
+	DetailID, BottomID                                               string
+	DismissedAgents, DismissedPlan                                   string
+	Answers                                                          map[string][]string
+	QuestionDrafts                                                   map[string][]answerDraft
+}
+type savedView struct {
+	Generation                             int64
+	Layout                                 shell.State
+	Active                                 string
+	ProjectFilter                          string
+	Light, RecentsHidden, RecentsCollapsed bool
+	Threads                                map[string]*threadView
+	Edit                                   *editState
+	Pending                                *protocol.Command
+	PendingAction                          action
+}
+type action struct {
+	Kind, ID, Value string
+	Index           int
+}
+type menuItem struct {
+	Label  string
+	Action action
+}
+type hit struct {
+	Rect       shell.Rect
+	Action     action
+	Label, Key string
+}
+type frame struct {
+	rows                                        []string
+	hits                                        []hit
+	geom                                        shell.Geometry
+	scrollbars                                  map[string]scrollTarget
+	transcriptMax, detailMax, requestMax        int
+	bottomMax, navMax                           int
+	prompt, answer, transcript, detail, request shell.Rect
+	bottomBody, navigation                      shell.Rect
+}
+type snapshotMsg protocol.Snapshot
+type connectionMsg struct {
+	client *client.Client
+	err    error
+}
+type commandMsg struct {
+	command protocol.Command
+	receipt protocol.Receipt
+	err     error
+	local   action
+}
+type saveMsg struct {
+	err        error
+	generation int
+}
+type saveTick struct{}
+type editState struct {
+	ID, ThreadID, OldDraft string
+	OldSettings            protocol.Settings
+	Revision               int64
+}
+
+type Model struct {
+	emptyView                            threadView
+	projectMode                          string
+	projectError                         string
+	requestFeedback                      map[string]requestFeedback
+	projectInput                         textarea.Model
+	pendingThreadSelection               string
+	pendingProjectSelection              string
+	state                                savedView
+	snapshot                             protocol.Snapshot
+	client                               *client.Client
+	ctx                                  context.Context
+	clientID                             string
+	width, height                        int
+	sizeKnown                            bool
+	plainIcons                           bool
+	colorProfile                         colorprofile.Profile
+	colorProbe                           terminalColorProbe
+	colorReply                           terminalReplyFragments
+	inputLight                           bool
+	prompt, answer                       textarea.Model
+	promptRows                           int
+	promptMetrics, answerMetrics         inputScroll
+	promptLayoutValue, answerLayoutValue string
+	promptLayoutWidth, answerLayoutWidth int
+	promptView, answerView               inputPresentation
+	scrollDrag                           string
+	scrollGrab                           int
+	menuOffset, navScroll                int
+	focus, hover                         string
+	menu                                 []menuItem
+	menuTitle                            string
+	menuIndex                            int
+	status                               string
+	connected                            bool
+	busy                                 *protocol.Command
+	busyAction                           action
+	inFlight                             bool
+	writer                               *viewWriter
+	dirty, saving                        bool
+	generation                           int
+	drag                                 shell.Divider
+	lastX, lastY                         int
+	selecting                            bool
+	selectionStart, selectionEnd         [2]int
+	selectedText                         string
+	selectionRegion                      shell.Rect
+	keyboard                             string
+	activityPhase                        int
+	activityTickPending                  bool
+}
+
+func newInput(placeholder string) textarea.Model {
+	a := textarea.New()
+	a.Placeholder = placeholder
+	a.Prompt = ""
+	a.ShowLineNumbers = false
+	a.CharLimit = 8000
+	a.MaxHeight = 0
+	a.MaxWidth = 0
+	a.KeyMap.Paste.SetEnabled(false)
+	a.SetHeight(2)
+	a.SetWidth(50)
+	a.SetVirtualCursor(true)
+	return a
+}
+func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *Model {
+	m := &Model{client: c, clientID: id, snapshot: snapshot, ctx: context.Background(), width: 120, height: 40, connected: true, colorProfile: colorprofile.TrueColor, focus: "prompt", keyboard: "legacy keyboard", prompt: newInput("Ask a follow-up…"), answer: newInput("Type an answer…")}
+	m.state = savedView{Layout: shell.NewState(), Threads: map[string]*threadView{}}
+	m.projectInput = newInput("Project name or path…")
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &m.state)
+	}
+	if m.state.Threads == nil {
+		m.state.Threads = map[string]*threadView{}
+	}
+	if !slices.ContainsFunc(snapshot.Threads, func(t protocol.Thread) bool { return t.ID == m.state.Active }) && len(snapshot.Threads) > 0 {
+		m.state.Active = m.nextOpenThread("")
+	}
+	for _, t := range snapshot.Threads {
+		if m.state.Threads[t.ID] == nil {
+			m.state.Threads[t.ID] = &threadView{Settings: t.Selected, Answers: map[string][]string{}}
+		}
+	}
+	m.migrateQuestionDrafts()
+	m.busy = m.state.Pending
+	m.busyAction = m.state.PendingAction
+	m.reconcileThreadMembership()
+	m.loadDraft()
+	m.configureInputs()
+	return m
+}
+func (m *Model) thread() protocol.Thread {
+	for _, t := range m.snapshot.Threads {
+		if t.ID == m.state.Active {
+			return t
+		}
+	}
+	return protocol.Thread{}
+}
+func (m *Model) viewState() *threadView {
+	if m.state.Active == "" {
+		return &m.emptyView
+	}
+	v := m.state.Threads[m.state.Active]
+	if v == nil {
+		v = &threadView{Settings: m.thread().Selected, Answers: map[string][]string{}}
+		m.state.Threads[m.state.Active] = v
+	}
+	if v.Answers == nil {
+		v.Answers = map[string][]string{}
+	}
+	return v
+}
+func (m *Model) loadDraft() { v := m.viewState(); m.prompt.SetValue(v.Draft); m.loadAnswer() }
+func (m *Model) markDirty() { m.dirty = true; m.generation++; m.state.Generation++ }
+func (m *Model) Init() tea.Cmd {
+	return tea.Batch(m.prompt.Focus(), m.nextActivityTick(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
+}
+func (m *Model) requests() []protocol.Request {
+	var r []protocol.Request
+	for _, q := range m.thread().Requests {
+		if q.State == "pending" {
+			r = append(r, q)
+		}
+	}
+	return r
+}
+func (m *Model) request() (protocol.Request, bool) {
+	r := m.requests()
+	if len(r) == 0 {
+		return protocol.Request{}, false
+	}
+	return r[max(0, m.viewState().RequestIndex)%len(r)], true
+}
+func (m *Model) configureInputs() {
+	p := m.colors()
+	s := textarea.Styles{}
+	s.Focused = textarea.StyleState{Base: style(p.text, p.input), Text: style(p.text, p.input), Placeholder: style(p.muted, p.input), CursorLine: style(p.text, p.input), Selection: style(p.text, p.selected)}
+	s.Blurred = s.Focused
+	s.Cursor.Color = lipColor(p.blue)
+	m.prompt.SetStyles(s)
+	m.answer.SetStyles(s)
+	m.projectInput.SetStyles(s)
+	m.projectInput.SetWidth(max(1, min(68, max(20, m.width-6))-4))
+	m.promptRows = 1
+	f := m.measure()
+	promptWidth, answerWidth := max(1, f.prompt.W), max(1, f.answer.W)
+	promptValue, answerValue := m.prompt.Value(), m.answer.Value()
+	promptChanged := promptValue != m.promptLayoutValue || promptWidth != m.promptLayoutWidth || m.promptMetrics.Total == 0
+	answerChanged := answerValue != m.answerLayoutValue || answerWidth != m.answerLayoutWidth || m.answerMetrics.Total == 0
+	if promptChanged {
+		m.promptMetrics.Total = inputRows(promptValue, promptWidth)
+		m.promptLayoutValue, m.promptLayoutWidth = promptValue, promptWidth
+	}
+	if answerChanged {
+		m.answerMetrics.Total = inputRows(answerValue, answerWidth)
+		m.answerLayoutValue, m.answerLayoutWidth = answerValue, answerWidth
+	}
+	// Reserve app chrome, the fixed footer and at least one transcript row.
+	limit := max(1, min(maxPromptRows, m.height-2-m.footerHeight()))
+	m.promptRows = min(limit, m.promptMetrics.Total)
+	f = m.measure()
+	if m.sizeKnown {
+		m.clampScroll(f)
+	}
+	if promptChanged || m.prompt.Height() != max(1, f.prompt.H) {
+		resizeInput(&m.prompt, promptWidth, max(1, f.prompt.H))
+		m.promptView.Reset()
+	}
+	if answerChanged || m.answer.Height() != max(1, f.answer.H) {
+		resizeInput(&m.answer, answerWidth, max(1, f.answer.H))
+		m.answerView.Reset()
+	}
+	m.promptMetrics = inputViewportMetrics(m.prompt, m.promptMetrics.Total)
+	m.answerMetrics = inputViewportMetrics(m.answer, m.answerMetrics.Total)
+	if m.inputLight != m.state.Light {
+		m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
+		m.answerView.Refresh(&m.answer, m.answerMetrics.Total)
+		m.inputLight = m.state.Light
+	}
+	if len(m.menu) == 0 && m.focus != "prompt" && m.focus != "answer" && !slices.ContainsFunc(f.hits, func(h hit) bool { return h.Key == m.focus }) {
+		next := "prompt"
+		_, hidden := m.composerLayout(max(1, f.geom.Center.W-2))
+		if slices.ContainsFunc(hidden, func(c composerControl) bool { return c.key == m.focus }) && slices.ContainsFunc(f.hits, func(h hit) bool { return h.Key == "composer-more" }) {
+			next = "composer-more"
+		}
+		m.setFocus(next)
+	}
+	if m.focus == "answer" && f.answer.W == 0 {
+		m.setFocus("request-body")
+	}
+	if m.focus == "prompt" && (m.state.Active == "" || m.thread().Closed) {
+		m.setFocus("prompt")
+	}
+}
+func (m *Model) setFocus(key string) tea.Cmd {
+	if key == "prompt" && (m.state.Active == "" || m.thread().Closed) {
+		key = "transcript"
+		if m.state.Active == "" {
+			key = "empty-new"
+		}
+	}
+	m.focus = key
+	m.prompt.Blur()
+	m.answer.Blur()
+	m.projectInput.Blur()
+	if key == "prompt" {
+		return m.prompt.Focus()
+	}
+	if key == "answer" {
+		return m.answer.Focus()
+	}
+	if key == "project-input" {
+		return m.projectInput.Focus()
+	}
+	return nil
+}
+func identity() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func (m *Model) command(c protocol.Command, a action) tea.Cmd {
+	capability := "fixture-agent"
+	if strings.HasPrefix(c.Kind, "terminal.") {
+		capability = "fixture-terminal"
+	}
+	if strings.HasPrefix(c.Kind, "queue.") || c.Kind == "prompt.send" {
+		capability = "prompt-queue"
+	}
+	if c.Kind == "thread.close" || c.Kind == "thread.reopen" || c.Kind == "thread.delete" {
+		capability = "thread-lifecycle"
+	}
+	if strings.HasPrefix(c.Kind, "project.") || c.Kind == "thread.create" {
+		capability = "project-management"
+	}
+	if !slices.Contains(m.snapshot.Capabilities, capability) {
+		m.status = "Server capability unavailable: " + capability
+		return nil
+	}
+
+	if m.busy != nil {
+		m.status = "A command is pending. Use Retry to reconcile it."
+		return nil
+	}
+	c.Version = protocol.Version
+	c.ID = identity()
+	if c.ThreadID == "" && capability != "project-management" {
+		c.ThreadID = m.state.Active
+	}
+	if c.ThreadID == "" && capability != "project-management" {
+		m.status = "Select or create a thread first"
+		return nil
+	}
+	c.ClientID = m.clientID
+	m.busy = &c
+	m.busyAction = a
+	m.state.Pending = &c
+	m.state.PendingAction = a
+	m.markDirty()
+	m.configureInputs()
+	return m.dispatch(c, a)
+}
+func (m *Model) dispatch(c protocol.Command, a action) tea.Cmd {
+	m.inFlight = true
+	connection := m.client
+	ctx := m.ctx
+	data, _ := json.Marshal(m.state)
+	writer := m.writer
+	return func() tea.Msg {
+		if writer != nil {
+			if err := writer.save(data); err != nil {
+				return commandMsg{command: c, err: err, local: a}
+			}
+		}
+		deadline, cancel := context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+		r, e := connection.Command(deadline, c)
+		return commandMsg{c, r, e, a}
+	}
+}
+func (m *Model) save() tea.Cmd {
+	if !m.dirty || m.saving || !m.connected {
+		return nil
+	}
+	m.viewState().Draft = m.prompt.Value()
+	data, err := json.Marshal(m.state)
+	if err != nil {
+		m.status = err.Error()
+		return nil
+	}
+	m.saving = true
+	gen := m.generation
+	writer := m.writer
+	return func() tea.Msg {
+		if writer == nil {
+			return saveMsg{generation: gen}
+		}
+		return saveMsg{writer.save(data), gen}
+	}
+}
+
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch msg := msg.(type) {
+	case terminalReplyStarted:
+		return m, tea.Tick(terminalReplyWindow, func(time.Time) tea.Msg { return terminalReplyExpired(msg) })
+	case terminalReplyReplay:
+		var commands []tea.Cmd
+		for _, original := range msg {
+			_, command := m.Update(original)
+			commands = append(commands, command)
+		}
+		return m, tea.Batch(commands...)
+	case tea.ColorProfileMsg:
+		return m, m.updateColorProfile(msg.Profile)
+	case tea.TerminalVersionMsg:
+		return m, m.probeTerminalColors(msg.Name)
+	case tea.CapabilityMsg:
+		if m.colorProbe.capabilitiesRequested && (msg.Content == "RGB" || msg.Content == "Tc") {
+			m.colorProbe.confirmed = true
+		}
+		return m, nil
+	case activityTick:
+		m.activityTickPending = false
+		if m.activityAnimating() {
+			m.activityPhase = (m.activityPhase + 1) % 12
+		}
+		return m, m.nextActivityTick()
+	case tea.WindowSizeMsg:
+		m.sizeKnown = true
+		m.width = max(1, msg.Width)
+		m.height = max(1, msg.Height)
+		m.configureInputs()
+	case tea.KeyboardEnhancementsMsg:
+		m.keyboard = "enhanced keyboard negotiated"
+	case connectionMsg:
+		m.connected = msg.err == nil
+		if msg.client != nil {
+			m.client = msg.client
+			if m.writer != nil {
+				m.writer.connection.Store(msg.client)
+			}
+		}
+		if msg.err != nil {
+			m.status = "Disconnected · reconnecting; commands and drafts retained"
+		} else {
+			m.status = "Connected"
+		}
+		m.configureInputs()
+	case snapshotMsg:
+		oldRequest, _ := m.request()
+		oldPage := m.viewState().QuestionIndex
+		s := protocol.Snapshot(msg)
+		if s.InstanceID != m.snapshot.InstanceID || s.Revision >= m.snapshot.Revision {
+			m.reconcileActivityDismissals(s)
+			m.snapshot = s
+			m.reconcileThreadMembership()
+		}
+		newRequest, _ := m.request()
+		if questionDraftKey(oldRequest) != questionDraftKey(newRequest) || oldPage >= len(newRequest.Questions) {
+			m.viewState().QuestionIndex = 0
+			m.viewState().RequestScroll = 0
+			m.loadAnswer()
+			if oldRequest.ID != "" && oldRequest.ID == newRequest.ID {
+				m.status = "Question updated · previous draft retained in client storage"
+			}
+		}
+		m.configureInputs()
+	case commandMsg:
+		if m.busy == nil || m.busy.ID != msg.command.ID {
+			return m, nil
+		}
+		m.inFlight = false
+		if msg.err != nil {
+			m.status = safe(msg.err.Error())
+			if msg.command.Kind == "request.answer" {
+				m.setRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, m.status, false)
+			}
+			if msg.command.Kind == "project.add" && m.projectMode == "add" {
+				m.projectError = m.status
+			}
+			if _, ok := msg.err.(*protocol.Error); ok {
+				m.busy = nil
+				m.state.Pending = nil
+				m.markDirty()
+			}
+			m.configureInputs()
+			return m, nil
+		}
+		m.busy = nil
+		m.state.Pending = nil
+		m.status = "Accepted · " + msg.receipt.State
+		if msg.command.Kind == "request.answer" {
+			m.clearRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, false)
+		}
+		if m.acceptThreadOperation(msg) {
+			return m, m.nextActivityTick()
+		}
+		v := m.state.Threads[msg.command.ThreadID]
+		if v == nil {
+			return m, nil
+		}
+		switch msg.local.Kind {
+		case "send":
+			if v.Draft == msg.command.Text {
+				v.Draft = ""
+				if sameAttachmentSources(v.Attachments, msg.command.Attachments) {
+					v.Attachments = nil
+				}
+				if m.state.Active == msg.command.ThreadID {
+					m.prompt.SetValue("")
+				}
+			}
+		case "save-edit":
+			if m.state.Edit != nil {
+				if v.Draft == msg.command.Text && msg.command.Settings != nil && v.Settings == *msg.command.Settings {
+					v.Draft = m.state.Edit.OldDraft
+					v.Settings = m.state.Edit.OldSettings
+					m.state.Edit = nil
+					if m.state.Active == msg.command.ThreadID {
+						m.prompt.SetValue(v.Draft)
+					}
+				} else {
+					m.state.Edit.Revision++
+					m.status = "Saved earlier edit; newer text remains in the editor"
+				}
+			}
+		case "terminal-open":
+			if msg.local.Value == "bottom" {
+				v.BottomID = msg.receipt.TargetID
+			} else {
+				tab := v.Host.Open("terminal", fmt.Sprintf("Terminal %d", len(v.Host.Tabs)+1))
+				for i := range v.Host.Tabs {
+					if v.Host.Tabs[i].ID == tab.ID {
+						v.Host.Tabs[i].ID = msg.receipt.TargetID
+						v.Host.ActiveID = msg.receipt.TargetID
+					}
+				}
+				v.RightVisible = true
+				if m.state.Active == msg.command.ThreadID {
+					m.state.Layout.Right = true
+				}
+			}
+		case "close":
+			if m.state.Active == msg.command.ThreadID {
+				m.state.Layout.Close(&v.Host, msg.command.TargetID)
+			} else {
+				v.Host.Close(msg.command.TargetID)
+			}
+			if len(v.Host.Tabs) == 0 {
+				v.RightVisible = false
+			}
+		case "bottom-close":
+			v.BottomID = ""
+		}
+		m.markDirty()
+		m.configureInputs()
+	case saveTick:
+		cmd = tea.Batch(m.save(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
+	case saveMsg:
+		m.saving = false
+		if msg.err != nil {
+			m.status = "Draft/layout save failed: " + safe(msg.err.Error())
+		} else if msg.generation == m.generation {
+			m.dirty = false
+		}
+	case tea.KeyPressMsg:
+		cmd = m.key(msg)
+	case tea.PasteMsg:
+		if m.projectMode != "" {
+			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: safe(msg.Content)})
+			m.menuIndex = 0
+			m.refreshProjectMenu()
+		} else if m.focus == "answer" {
+			m.answerView.Reset()
+			cmd = updateInput(&m.answer, tea.PasteMsg{Content: safe(msg.Content)})
+			m.storeAnswer(m.answer.Value())
+		} else if m.focus == "prompt" {
+			m.promptView.Reset()
+			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(msg.Content)})
+			m.viewState().Draft = m.prompt.Value()
+			m.markDirty()
+		}
+	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg, tea.MouseWheelMsg:
+		cmd = m.mouse(msg.(tea.MouseMsg))
+	default:
+		if m.projectMode != "" {
+			cmd = updateInput(&m.projectInput, msg)
+		} else if m.focus == "prompt" {
+			cmd = updateInput(&m.prompt, msg)
+		} else if m.focus == "answer" {
+			cmd = updateInput(&m.answer, msg)
+		}
+	}
+	if m.prompt.Value() != m.promptLayoutValue || m.answer.Value() != m.answerLayoutValue {
+		m.configureInputs()
+	}
+	m.promptMetrics = inputViewportMetrics(m.prompt, m.promptMetrics.Total)
+	m.answerMetrics = inputViewportMetrics(m.answer, m.answerMetrics.Total)
+	if len(m.menu) > 0 {
+		extra := 0
+		if m.projectMode != "" {
+			extra = 2
+		}
+		visible := min(len(m.menu)+4+extra, max(5+extra, m.height-4)) - 3 - extra
+		m.menuOffset = m.menuStart(visible)
+	}
+	return m, tea.Batch(cmd, m.nextActivityTick())
+}
+
+func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
+	s := k.String()
+	if s == "ctrl+v" {
+		m.status = "Use your terminal’s paste shortcut"
+		return nil
+	}
+	if s == "ctrl+q" || s == "ctrl+c" {
+		return tea.Quit
+	}
+	if s == "ctrl+z" {
+		return tea.Suspend
+	}
+	if s == "f4" {
+		m.openCommands()
+		return nil
+	}
+	if s == "ctrl+shift+c" {
+		if m.selectedText != "" {
+			return tea.SetClipboard(m.selectedText)
+		}
+		if m.focus == "prompt" {
+			normalizeInputSelection(&m.prompt)
+			return m.prompt.CopySelection()
+		}
+	}
+	if len(m.menu) > 0 {
+		if m.projectMode != "" {
+			return m.projectKey(k)
+		}
+		switch s {
+		case "esc":
+			m.menu = nil
+		case "up", "shift+tab":
+			m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
+		case "down", "tab":
+			m.menuIndex = (m.menuIndex + 1) % len(m.menu)
+		case "delete", "backspace":
+			if item := m.menu[m.menuIndex]; item.Action.Kind == "tab" {
+				m.menu = nil
+				return m.activate(action{Kind: "close", ID: item.Action.ID})
+			}
+		case "enter":
+			a := m.menu[m.menuIndex].Action
+			m.menu = nil
+			return m.activate(a)
+		}
+		return nil
+	}
+	switch s {
+	case "esc":
+		if m.state.Edit != nil {
+			return m.activate(action{Kind: "cancel-edit"})
+		}
+		return m.setFocus("prompt")
+	case "f2":
+		return m.activate(action{Kind: "left"})
+	case "f3":
+		return m.activate(action{Kind: "right"})
+	case "f5":
+		return m.activate(action{Kind: "bottom"})
+	case "f7":
+		return m.activate(action{Kind: "maximize"})
+	case "f8":
+		return m.activate(action{Kind: "theme"})
+	case "ctrl+s":
+		return m.activate(action{Kind: "send"})
+	case "f6":
+		f := m.measure()
+		var keys []string
+		if f.prompt.W > 0 {
+			keys = append(keys, "prompt")
+		}
+		if m.state.Active == "" {
+			keys = append(keys, "empty-new")
+		} else {
+			keys = append(keys, "transcript")
+		}
+		if f.detail.W > 0 {
+			keys = append(keys, "right-body")
+		}
+		if f.answer.W > 0 {
+			keys = append(keys, "answer")
+		} else if f.request.W > 0 {
+			keys = append(keys, "request-body")
+		}
+		if f.bottomBody.W > 0 {
+			keys = append(keys, "bottom-body")
+		}
+		if f.navigation.W > 0 {
+			keys = append(keys, "navigation")
+		}
+		i := slices.Index(keys, m.focus)
+		return m.setFocus(keys[(i+1)%len(keys)])
+	case "tab", "shift+tab":
+		f := m.measure()
+		var keys []string
+		for _, h := range f.hits {
+			if !slices.Contains(keys, h.Key) {
+				keys = append(keys, h.Key)
+			}
+		}
+		i := slices.Index(keys, m.focus)
+		step := 1
+		if s == "shift+tab" {
+			step = -1
+		}
+		if len(keys) > 0 {
+			i = (i + step + len(keys)) % len(keys)
+			return m.setFocus(keys[i])
+		}
+	case "alt+left":
+		m.state.Layout.Resize(shell.RightDivider, 2)
+		m.markDirty()
+		m.configureInputs()
+		return nil
+	case "alt+right":
+		m.state.Layout.Resize(shell.RightDivider, -2)
+		m.markDirty()
+		m.configureInputs()
+		return nil
+	case "alt+up":
+		m.state.Layout.Resize(shell.BottomDivider, 1)
+		m.markDirty()
+		m.configureInputs()
+		return nil
+	case "alt+down":
+		m.state.Layout.Resize(shell.BottomDivider, -1)
+		m.markDirty()
+		m.configureInputs()
+		return nil
+	}
+	if m.focus == "prompt" {
+		if s == "enter" {
+			return m.activate(action{Kind: "send"})
+		}
+		m.promptView.Reset()
+		if s == "shift+enter" || s == "ctrl+j" {
+			k = tea.KeyPressMsg{Code: tea.KeyEnter}
+		}
+		var c tea.Cmd
+		c = updateInput(&m.prompt, k)
+		m.viewState().Draft = m.prompt.Value()
+		m.markDirty()
+		return c
+	}
+	if m.focus == "answer" {
+		m.answerView.Reset()
+		if s == "shift+enter" || s == "ctrl+j" {
+			k = tea.KeyPressMsg{Code: tea.KeyEnter}
+		}
+		var c tea.Cmd
+		c = updateInput(&m.answer, k)
+		m.storeAnswer(m.answer.Value())
+		return c
+	}
+	if (strings.HasPrefix(m.focus, "option:") || m.focus == "answer-other") && (s == "up" || s == "down") {
+		index, _ := strconv.Atoi(strings.TrimPrefix(m.focus, "option:"))
+		if m.focus == "answer-other" {
+			if r, ok := m.request(); ok && len(r.Questions) > 0 {
+				index = len(r.Questions[m.viewState().QuestionIndex].Options)
+			}
+		}
+		if s == "up" {
+			index--
+		} else {
+			index++
+		}
+		m.focusQuestionOption(index)
+		return nil
+	}
+	if s == "enter" || s == " " || s == "space" {
+		for _, h := range m.measure().hits {
+			if h.Key == m.focus {
+				return m.activate(h.Action)
+			}
+		}
+	}
+	if s == "up" || s == "down" || s == "pgup" || s == "pgdown" || s == "home" || s == "end" {
+		delta := 1
+		if s == "up" || s == "pgup" {
+			delta = -1
+		}
+		if strings.HasPrefix(s, "pg") {
+			delta *= 8
+		}
+		f := m.measure()
+		target := m.scrollFocus()
+		if bar, ok := f.scrollbars[target]; ok {
+			offset := bar.Bar.Offset + delta
+			if s == "home" {
+				offset = 0
+			}
+			if s == "end" {
+				offset = bar.Bar.MaxOffset
+			}
+			m.scrollTo(target, offset, f)
+		}
+	}
+	return nil
+}
+
+func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
+	f := m.measure()
+	p := msg.Mouse()
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		d := 3
+		switch p.Button {
+		case tea.MouseWheelUp:
+			d = -3
+		case tea.MouseWheelDown:
+		default:
+			return nil
+		}
+		target := m.wheelTarget(f, p.X, p.Y)
+		if target == "menu" {
+			m.menuIndex = min(len(m.menu)-1, max(0, m.menuIndex+d))
+		} else if bar, ok := f.scrollbars[target]; ok {
+			m.scrollTo(target, bar.Bar.Offset+d, f)
+		} else if target != "" {
+			m.scrollTo(target, 0, f)
+		}
+	case tea.MouseClickMsg:
+		if p.Button != tea.MouseLeft {
+			return nil
+		}
+		if len(m.menu) == 0 {
+			m.drag = f.geom.DividerAt(p.X, p.Y)
+			m.lastX, m.lastY = p.X, p.Y
+			if m.drag != shell.NoDivider {
+				return nil
+			}
+		}
+		for i := len(f.hits) - 1; i >= 0; i-- {
+			h := f.hits[i]
+			if h.Rect.Contains(p.X, p.Y) {
+				if h.Action.Kind == "scrollbar" {
+					target := f.scrollbars[h.Action.ID]
+					if h.Action.Value == "thumb" {
+						m.scrollDrag = h.Action.ID
+						m.scrollGrab = h.Action.Index - target.Bar.ThumbStart
+					} else {
+						m.scrollTo(h.Action.ID, target.Bar.PageAt(h.Action.Index), f)
+					}
+					return nil
+				}
+				m.setFocus(h.Key)
+				if h.Key == "project-input" {
+					m.projectInput.BeginSelection(p.X-h.Rect.X, p.Y-h.Rect.Y)
+					return nil
+				}
+				if h.Key == "prompt" {
+					m.prompt.BeginSelection(p.X-f.prompt.X, m.promptView.RelativeY(&m.prompt, p.Y-f.prompt.Y))
+					m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
+					return nil
+				}
+				if h.Key == "answer" {
+					m.answer.BeginSelection(p.X-f.answer.X, m.answerView.RelativeY(&m.answer, p.Y-f.answer.Y))
+					m.answerView.Refresh(&m.answer, m.answerMetrics.Total)
+					return nil
+				}
+				if h.Key == "transcript" || h.Key == "right-body" {
+					m.selecting = true
+					m.selectedText = ""
+					m.selectionRegion = h.Rect
+					m.selectionStart = [2]int{p.X, p.Y}
+					m.selectionEnd = m.selectionStart
+					return nil
+				}
+				return m.activate(h.Action)
+			}
+		}
+	case tea.MouseMotionMsg:
+		m.hover = ""
+		for _, h := range f.hits {
+			if h.Rect.Contains(p.X, p.Y) {
+				m.hover = h.Key
+			}
+		}
+		if m.scrollDrag != "" {
+			if target, ok := f.scrollbars[m.scrollDrag]; ok {
+				m.scrollTo(m.scrollDrag, target.Bar.DragTo(p.Y-target.Rect.Y, m.scrollGrab), f)
+			} else {
+				m.scrollDrag = ""
+			}
+		} else if m.drag != shell.NoDivider {
+			d := p.X - m.lastX
+			if m.drag == shell.RightDivider {
+				d = -d
+			}
+			if m.drag == shell.BottomDivider {
+				d = m.lastY - p.Y
+			}
+			m.state.Layout.Resize(m.drag, d)
+			m.lastX, m.lastY = p.X, p.Y
+			m.markDirty()
+			m.configureInputs()
+		} else if m.selecting {
+			m.selectionEnd = [2]int{max(m.selectionRegion.X, min(p.X, m.selectionRegion.X+m.selectionRegion.W-1)), max(m.selectionRegion.Y, min(p.Y, m.selectionRegion.Y+m.selectionRegion.H-1))}
+		} else if p.Button == tea.MouseLeft {
+			if m.focus == "project-input" {
+				for _, h := range f.hits {
+					if h.Key == "project-input" {
+						m.projectInput.ExtendSelection(p.X-h.Rect.X, p.Y-h.Rect.Y)
+					}
+				}
+			} else if m.focus == "prompt" {
+				m.prompt.ExtendSelection(p.X-f.prompt.X, m.promptView.RelativeY(&m.prompt, p.Y-f.prompt.Y))
+				m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
+			} else if m.focus == "answer" {
+				m.answer.ExtendSelection(p.X-f.answer.X, m.answerView.RelativeY(&m.answer, p.Y-f.answer.Y))
+				m.answerView.Refresh(&m.answer, m.answerMetrics.Total)
+			}
+		}
+	case tea.MouseReleaseMsg:
+		m.scrollDrag = ""
+		m.drag = shell.NoDivider
+		m.projectInput.EndSelection()
+		normalizeInputSelection(&m.projectInput)
+		m.prompt.EndSelection()
+		m.answer.EndSelection()
+		normalizeInputSelection(&m.prompt)
+		normalizeInputSelection(&m.answer)
+		m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
+		m.answerView.Refresh(&m.answer, m.answerMetrics.Total)
+		if m.selecting {
+			m.selecting = false
+			painted := m.render()
+			m.selectedText = painted.selection(m.selectionStart, m.selectionEnd)
+			m.status = "Text selected · Ctrl+Shift+C copies via terminal clipboard"
+		}
+	}
+	return nil
+}
+
+func sameAttachmentSources(a, b []protocol.Attachment) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Kind != b[i].Kind || a[i].Name != b[i].Name || a[i].Source != b[i].Source {
+			return false
+		}
+	}
+	return true
+}
+
+// Clamp before applying the delta so saved offsets from an older viewport (or
+// older versions with unbounded overscroll) never create invisible scroll debt.
+func scrollBy(offset *int, delta, limit int) bool {
+	previous := *offset
+	*offset = min(limit, max(0, min(limit, max(0, previous))+delta))
+	return previous != *offset
+}
+
+func (m *Model) clampScroll(f frame) {
+	v := m.viewState()
+	changed := false
+	if f.transcript.H > 0 {
+		changed = scrollBy(&v.Scroll, 0, f.transcriptMax) || changed
+	}
+	if f.detail.H > 0 {
+		changed = scrollBy(&v.DetailScroll, 0, f.detailMax) || changed
+	}
+	if f.request.H > 0 {
+		changed = scrollBy(&v.RequestScroll, 0, f.requestMax) || changed
+	}
+	if f.bottomBody.H > 0 {
+		changed = scrollBy(&v.BottomScroll, 0, f.bottomMax) || changed
+	}
+	if changed {
+		m.markDirty()
+	}
+}
