@@ -53,3 +53,24 @@ func TestPruneThreadViewCaseAndDuplicateFields(t *testing.T) {
 		}
 	}
 }
+
+func TestPruneStartedDraftDeletesOnlyAcceptedCapture(t *testing.T) {
+	for _, draft := range []string{"accepted text", "new text"} {
+		input := json.RawMessage(`{"StartedDraft":{"ThreadID":"gone","Command":{"ProjectID":"project","Text":"accepted text"}},"DraftProjectID":"project","DraftThreads":{"project":{"Draft":"` + draft + `"},"other":{"Draft":"preserve"}}}`)
+		out, err := PruneThreadView(input, map[string]bool{"live": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(out, []byte("StartedDraft")) || bytes.Contains(out, []byte("accepted text")) || !bytes.Contains(out, []byte("preserve")) {
+			t.Fatalf("bad accepted draft purge: %s", out)
+		}
+		if draft == "new text" && !bytes.Contains(out, []byte(draft)) {
+			t.Fatalf("newly typed draft lost: %s", out)
+		}
+	}
+	live := json.RawMessage(`{"StartedDraft":{"ThreadID":"live","Command":{"ProjectID":"project","Text":"accepted"}},"DraftThreads":{"project":{"Draft":"accepted"}}}`)
+	out, err := PruneThreadView(live, map[string]bool{"live": true})
+	if err != nil || !bytes.Equal(out, live) {
+		t.Fatalf("live accepted draft changed: %s %v", out, err)
+	}
+}

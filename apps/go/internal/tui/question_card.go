@@ -81,6 +81,9 @@ func (m *Model) questionInputRows(r protocol.Request) int {
 }
 
 func (m *Model) requestHeight(width int) int {
+	if !m.conversationVisible() {
+		return 0
+	}
 	r, ok := m.request()
 	if !ok {
 		return 0
@@ -101,14 +104,9 @@ func (m *Model) requestHeight(width int) int {
 
 func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int {
 	p := m.colors()
-	f.fill(r, p, p.panel)
 	f.request = r
-	f.text(r.X, r.Y, r.W, "┌"+strings.Repeat("─", max(0, r.W-2))+"┐", p.line, p.panel)
-	for row := 1; row < r.H-1; row++ {
-		f.text(r.X, r.Y+row, 1, "│", p.line, p.panel)
-		f.text(r.X+r.W-1, r.Y+row, 1, "│", p.line, p.panel)
-	}
-	f.text(r.X, r.Y+r.H-1, r.W, "└"+strings.Repeat("─", max(0, r.W-2))+"┘", p.line, p.panel)
+	state := componentState{Hovered: requestControlKey(m.hover), Focused: requestControlKey(m.focus)}
+	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, state, p.text, p.panel), p.canvas)
 	x, y, w := r.X+2, r.Y, max(1, r.W-4)
 	mode := "Question"
 	if req.Mode == "async" {
@@ -124,20 +122,22 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 	}
 	selectorWidth := 0
 	if len(m.requests()) > 1 {
-		selectorWidth = min(w/2, ansi.StringWidth(fmt.Sprint("Requests ", len(m.requests())))+2)
+		selectorWidth = min(w/2, ansi.StringWidth(fmt.Sprint("Requests ", len(m.requests())))+4)
 	}
 	f.button(m, x, y, w-selectorWidth, " "+mode+" · "+agentDisplayName(req.Origin)+" ", "request-detail", action{Kind: "request-detail"}, p.gold, p.panel)
 	if selectorWidth > 0 {
-		f.button(m, x+w-selectorWidth, y, selectorWidth, fmt.Sprint("Requests ", len(m.requests())), "request-select", action{Kind: "request-select"}, p.blue, p.panel)
+		f.compactButton(m, x+w-selectorWidth, y, selectorWidth, fmt.Sprint("Requests ", len(m.requests())), "request-select", action{Kind: "request-select"}, false, normalControl)
 	}
 	y++
+	controlRows := 1
 	if req.Kind != "approval" && len(req.Questions) > 1 {
-		m.renderQuestionTabs(f, shell.Rect{X: x, Y: y, W: w, H: 1}, req)
-		y++
+		m.renderQuestionTabs(f, shell.Rect{X: x, Y: y, W: w, H: controlRows}, req)
+		y += controlRows
 	}
 	noticeRows := m.requestNoticeRows(req)
-	inputRows := min(m.questionInputRows(req), max(0, r.Y+r.H-3-y-noticeRows))
-	body := shell.Rect{X: x, Y: y, W: w, H: max(1, r.Y+r.H-2-y-inputRows-noticeRows)}
+	actionsY := r.Y + r.H - 1 - controlRows
+	inputRows := min(m.questionInputRows(req), max(0, actionsY-y-noticeRows-1))
+	body := shell.Rect{X: x, Y: y, W: w, H: max(1, actionsY-y-inputRows-noticeRows)}
 	lines := m.questionLines(req, body.W)
 	f.requestMax = max(0, len(lines)-body.H)
 	offset := min(max(0, m.viewState().RequestScroll), f.requestMax)
@@ -148,14 +148,10 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 			optionsHidden = optionsHidden || line.action.Kind != ""
 			continue
 		}
-		bg, fg := p.panel, p.text
-		if line.selected {
-			bg = p.selected
-		}
 		if line.action.Kind != "" {
-			f.button(m, body.X, body.Y+i-offset, body.W, line.text, line.key, line.action, fg, bg)
+			f.styledButton(body.X, body.Y+i-offset, body.W, line.text, line.key, line.action, m.componentStyle(squareFill, m.controlState(line.selected, line.key), p.text, p.panel))
 		} else {
-			f.text(body.X, body.Y+i-offset, body.W, line.text, fg, bg)
+			f.text(body.X, body.Y+i-offset, body.W, line.text, p.text, p.panel)
 		}
 	}
 	f.scrollbar(m, shell.Rect{X: r.X + r.W - 2, Y: body.Y, W: 1, H: body.H}, "request", len(lines), body.H, offset, p.panel)
@@ -169,7 +165,7 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 		scroll := m.answerView.Metrics(m.answerMetrics)
 		f.scrollbar(m, shell.Rect{X: x + w - 1, Y: y, W: 1, H: inputRows}, "answer", scroll.Total, inputRows, scroll.Offset, p.input)
 	}
-	y = r.Y + r.H - 2
+	y = actionsY
 	if noticeRows > 0 {
 		message, problem := m.requestNotice(req)
 		fg := p.blue
@@ -179,21 +175,25 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 		f.text(x, y-1, w, message, fg, p.panel)
 	}
 	if req.Kind == "approval" {
-		cx := x
-		for i, choice := range req.Choices {
-			size := ansi.StringWidth(choice) + 2
-			if cx+size > x+w {
-				f.button(m, x, y, w, "Approval choices…", "approval-options", action{Kind: "approval-options"}, p.blue, p.panel)
-				break
+		total := max(0, len(req.Choices)-1)
+		for _, choice := range req.Choices {
+			total += ansi.StringWidth(choice) + 4
+		}
+		if total > w {
+			f.compactButton(m, x, y, w, "Approval choices…", "approval-options", action{Kind: "approval-options"}, false, normalControl)
+		} else {
+			cx := x
+			for i, choice := range req.Choices {
+				size := ansi.StringWidth(choice) + 4
+				f.compactButton(m, cx, y, size, choice, fmt.Sprint("approve:", i), action{Kind: "approve", Value: choice}, false, normalControl)
+				cx += size + 1
 			}
-			f.button(m, cx, y, size, choice, fmt.Sprint("approve:", i), action{Kind: "approve", Value: choice}, p.blue, p.panel)
-			cx += size
 		}
 	} else {
 		if optionsHidden {
-			f.button(m, x, y, min(11, w-9), "Options…", "answer-options", action{Kind: "answer-options"}, p.blue, p.panel)
+			f.compactButton(m, x, y, min(12, w-11), "Options…", "answer-options", action{Kind: "answer-options"}, false, normalControl)
 		}
-		f.button(m, x+w-8, y, 8, "Submit", "answer-submit", action{Kind: "answer-submit"}, p.blue, p.selected)
+		f.compactButton(m, x+w-10, y, 10, "Submit", "answer-submit", action{Kind: "answer-submit"}, false, primaryControl)
 	}
 	return r.Y + r.H
 }
@@ -209,48 +209,6 @@ func questionTabLabel(q protocol.Question, index int, answered bool) string {
 		label += " ✓"
 	}
 	return label
-}
-
-func (m *Model) renderQuestionTabs(f *frame, r shell.Rect, req protocol.Request) {
-	p := m.colors()
-	index := m.viewState().QuestionIndex
-	x, end := r.X, r.X+r.W
-	if index > 0 {
-		f.button(m, x, r.Y, 6, "Back", "question-back", action{Kind: "question", Index: -1}, p.blue, p.panel)
-		x += 6
-	}
-	if index+1 < len(req.Questions) {
-		end -= 6
-		f.button(m, end, r.Y, 6, "Next", "question-next", action{Kind: "question", Index: 1}, p.blue, p.panel)
-	}
-	labels := make([]string, len(req.Questions))
-	total := 0
-	for i, q := range req.Questions {
-		d := m.questionDraft(req, i)
-		answer := draftAnswer(q, d)
-		labels[i] = questionTabLabel(q, i, (len(answer.Choices) > 0 || strings.TrimSpace(answer.Text) != "") && validateDraft(q, d) == nil)
-		total += min(18, ansi.StringWidth(labels[i])+2)
-	}
-	start := 0
-	if total > end-x {
-		end -= 4
-		// Keep the active tab visible; the overflow menu reaches every page.
-		start = index
-		f.button(m, end, r.Y, 4, " …", "question-tabs", action{Kind: "question-tabs"}, p.blue, p.panel)
-	}
-	for i := start; i < len(labels) && x < end; i++ {
-		size := min(18, ansi.StringWidth(labels[i])+2)
-		if x+size > end && i != index {
-			break
-		}
-		size = min(size, end-x)
-		bg := p.panel
-		if i == index {
-			bg = p.selected
-		}
-		f.button(m, x, r.Y, size, labels[i], fmt.Sprint("question-page:", i), action{Kind: "question-index", Index: i}, p.text, bg)
-		x += size
-	}
 }
 
 // Arrow focus traverses the complete choice list, including choices offscreen.
@@ -295,4 +253,14 @@ func (m *Model) focusQuestionOption(index int) {
 		break
 	}
 	m.setFocus(key)
+}
+
+// A request owns its navigation, answer field and actions, not the prompt below.
+func requestControlKey(key string) bool {
+	for _, prefix := range []string{"request-", "question-", "answer", "option:", "approve:", "approval-"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return key == "scrollbar-request" || key == "scrollbar-answer"
 }

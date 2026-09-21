@@ -19,9 +19,9 @@ func visibleTabs(tabs []shell.Surface, active string, width int) ([]tabSlot, boo
 		return nil, false
 	}
 	slots := make([]tabSlot, len(tabs))
-	total := 0
+	total := max(0, len(tabs)-1)
 	for i, tab := range tabs {
-		w := min(24, ansi.StringWidth(tab.Title)+5)
+		w := min(26, ansi.StringWidth(tab.Title)+7)
 		slots[i] = tabSlot{tab, w}
 		total += w
 	}
@@ -36,12 +36,12 @@ func visibleTabs(tabs []shell.Surface, active string, width int) ([]tabSlot, boo
 	i := max(0, slices.IndexFunc(tabs, func(t shell.Surface) bool { return t.ID == active }))
 	slots[i].width = min(slots[i].width, available)
 	used, first, last := slots[i].width, i, i+1
-	for first > 0 && used+slots[first-1].width <= available {
+	for first > 0 && used+1+slots[first-1].width <= available {
 		first--
-		used += slots[first].width
+		used += 1 + slots[first].width
 	}
-	for last < len(slots) && used+slots[last].width <= available {
-		used += slots[last].width
+	for last < len(slots) && used+1+slots[last].width <= available {
+		used += 1 + slots[last].width
 		last++
 	}
 	return slots[first:last], true
@@ -53,20 +53,32 @@ func tabEntry(tab shell.Surface) menuItem {
 
 // The icon and name occupy disjoint hit areas. Only the icon slot closes;
 // focusing it by keyboard exposes the same close affordance as hover.
-func (f *frame) tab(m *Model, x, y, width int, title, kind, selectKey, closeKey string, selectAction, closeAction action, active bool, bg string) {
+func (f *frame) tab(m *Model, x, y, width int, title, kind, selectKey, closeKey string, selectAction, closeAction action, active bool) {
 	p := m.colors()
-	hovered := m.hover == selectKey || m.hover == closeKey
-	closeVisible := hovered || m.focus == closeKey
-	fg := p.muted
-	if active || hovered || m.focus == selectKey || m.focus == closeKey {
-		fg, bg = p.text, p.selected
-	}
+	state := m.controlState(active, selectKey, closeKey)
+	v := m.componentStyle(squareFill, state, p.text, p.input)
+	closeVisible := state.Hovered || m.focus == closeKey
 	icon := m.icon(kind)
 	if closeVisible {
 		icon = m.icon("close")
 	}
+	// Preserve the independent three-cell close slot and at least one title
+	// cell. Tiny hosts can omit borders without losing either action.
+	if width >= 6 {
+		f.compactControl(m, x, y, width, centered(icon, 3)+fit(safe(title), width-5), v)
+		middle := y
+		f.hits = append(f.hits,
+			hit{shell.Rect{X: x + 1, Y: middle, W: 3, H: 1}, closeAction, "Close " + title, closeKey},
+			hit{shell.Rect{X: x + 4, Y: middle, W: width - 5, H: 1}, selectAction, title, selectKey},
+		)
+		for _, capX := range []int{x, x + width - 1} {
+			f.hits = append(f.hits, hit{shell.Rect{X: capX, Y: middle, W: 1, H: 1}, selectAction, title, selectKey})
+		}
+
+		return
+	}
 	iconWidth := min(3, width)
-	f.button(m, x, y, iconWidth, centered(icon, iconWidth), closeKey, closeAction, fg, bg)
+	f.styledButton(x, y, iconWidth, centered(icon, iconWidth), closeKey, closeAction, v)
 	f.hits[len(f.hits)-1].Label = "Close " + title
-	f.button(m, x+iconWidth, y, max(0, width-iconWidth), title, selectKey, selectAction, fg, bg)
+	f.styledButton(x+iconWidth, y, max(0, width-iconWidth), title, selectKey, selectAction, v)
 }

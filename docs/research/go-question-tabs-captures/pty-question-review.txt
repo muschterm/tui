@@ -1,0 +1,50 @@
+     Terminal workspace  /  Build the workspace shell                                                                                        3              
+                        │                                                                                                                                       
+  PROJECTS              │              Build a calm workspace with focused navigation and useful inspectors.                                                    
+  All projects         │                                                                                                                                       
+   New thread          │                                                                                                                                       
+                        │  I’m working through the shell layout and keeping activity available while you compose.                                               
+  ● Build the wor…     │                                                                                                                                       
+    idle · Terminal w…  │                                                                                                                                       
+  ● Review keyboa…     │    Inspect layout contract  ·  completed                                                                                             
+    waiting · Termina…  │  Read 3 design documents                                                                                                              
+                        │                                                                                                                                       
+  CLOSED (0)            │                                                                                                                                       
+                        │    design / inspect_surface  ·  completed                                                                                            
+                        │  Inspect singleton surface behavior                                                                                                   
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.                          
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │              Review the compact layout after the shell                                                                                
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.                          
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │              first                                                                                                                    
+                        │              second                                                                                                                   
+                        │              third                                                                                                                    
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.                          
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │                                                                                                                                       
+                        │  ● Plan 2/2   ● Agents                                                                                                                
+                        │ ┌─ Answer anytime · Demo                                                                                                           ─┐ 
+                        │ │     [ 1 Focus ✓ ] [ 2 Priorities ✓ ] [ 3 Notes ✓ ]                                                                             ▶  │ 
+                        │ │ Which area should receive the next review?                                                                                        │ 
+                        │ │  Keyboard flow                                                                                                                   │ 
+                        │ │  Compact layout                                                                                                                  │ 
+                        │ │  Inspector detail                                                                                                                │ 
+                        │ │  Other…                                                                                                                          │ 
+                        │ │                                                                                                                        [ Submit ] │ 
+                        │ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+  Commands  F4          │ ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+                        │ │ question-safe prompt draft                                                                                                        │ 
+    Theme  F8          │ ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+                        │   Demo  Reference  Medium  Simulated                                                                        [····] —  Cost —        
+ ● connected  ·   Keyboard flow                                                                                                                                

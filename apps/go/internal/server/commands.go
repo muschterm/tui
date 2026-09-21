@@ -12,6 +12,12 @@ func validSettings(s protocol.Settings) bool {
 	return s.Model == "fixture-model" && (s.Effort == "low" || s.Effort == "medium" || s.Effort == "high") && s.Permissions == "fixture-only" && s.Context == "unavailable" && s.Speed == "standard"
 }
 func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
+	if c.Kind == "thread.start" {
+		return startThread(s, c)
+	}
+	if c.Kind == "settings.update" || c.Kind == "project.update" || c.Kind == "project.remove" {
+		return applySettings(s, c)
+	}
 	if c.Kind == "project.add" || c.Kind == "thread.create" {
 		return applyProject(s, c)
 	}
@@ -34,6 +40,11 @@ func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
 			return "", failure("stale_thread", "thread organization changed; refresh before trying again")
 		}
 		if c.Kind == "thread.delete" {
+			for i := range s.Projects {
+				if s.Projects[i].ID == t.ProjectID {
+					s.Projects[i].Revision++
+				}
+			}
 			for i := range s.Threads {
 				if s.Threads[i].ID == c.ThreadID {
 					s.Threads = append(s.Threads[:i], s.Threads[i+1:]...)
@@ -60,8 +71,16 @@ func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
 			t.LifecycleRevision++
 		}
 		return t.ID, nil
-	case "prompt.send":
-		if t.Closed {
+	case "prompt.send", "prompt.reopen-send":
+		if c.Kind == "prompt.reopen-send" {
+			if c.Revision != t.LifecycleRevision {
+				return "", failure("stale_thread", "thread organization changed; refresh before trying again")
+			}
+			if c.Settings == nil {
+				return "", failure("invalid", "sending requires captured settings")
+			}
+		}
+		if t.Closed && c.Kind != "prompt.reopen-send" {
 			return "", failure("thread_closed", "reopen the thread before sending a prompt")
 		}
 		if strings.TrimSpace(c.Text) == "" || len(c.Text) > 16384 {
@@ -78,6 +97,10 @@ func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
 				return "", failure("capacity", "attachment exceeds 64 KiB")
 			}
 		}
+		if c.Kind == "prompt.reopen-send" && t.Closed {
+			t.Closed = false
+			t.LifecycleRevision++
+		}
 		set := t.Selected
 		if c.Settings != nil {
 			set = *c.Settings
@@ -89,6 +112,30 @@ func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
 			startFixturePrompt(t)
 		}
 		return id, nil
+	case "queue.steer":
+		if c.Revision != t.QueueRevision {
+			return "", failure("stale_revision", "queue changed; retain your draft and refresh")
+		}
+		if c.ExpectedTurnID == "" || c.ExpectedTurnID != t.TurnID {
+			return "", failure("stale_turn", "active turn changed; refresh before steering")
+		}
+		for i, p := range t.Queue {
+			if p.ID != c.TargetID {
+				continue
+			}
+			if reason := protocol.QueueSteerBlocked(s.Capabilities, *t, p); reason != "" {
+				return "", failure("steer_unavailable", reason)
+			}
+			if fixtureTurnCompleted(t) {
+				return "", failure("stale_turn", "active turn has already completed")
+			}
+			appendFixturePrompt(t, p)
+			t.Queue = append(t.Queue[:i], t.Queue[i+1:]...)
+			t.QueueRevision++
+			trimFixtureActivity(t)
+			return p.ID, nil
+		}
+		return "", failure("not_queued", "prompt is no longer queued")
 	case "queue.edit", "queue.remove", "queue.reorder":
 		if c.Revision != t.QueueRevision {
 			return "", failure("stale_revision", "queue changed; retain your draft and refresh")
@@ -206,6 +253,7 @@ func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
 		}
 		return t.ID, nil
 	case "thread.interrupt":
+		t.RestartEligible = false
 		t.State = "interrupted"
 		t.NeedsResume = true
 		for i := range t.Children {

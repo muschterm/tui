@@ -1,0 +1,24 @@
+{
+  "harness": "OS PTY; isolated server home; fixture execution",
+  "checks": [
+    "thread search filters list",
+    "thread search preserves prompt draft",
+    "restart continuation defaults off",
+    "restart toggle persists through server command",
+    "app workspace preference persists",
+    "unsupported worktree creation fails without creating thread",
+    "project workspace override persists",
+    "project rename persists",
+    "project icon persists",
+    "47x22 navigation column restores project settings",
+    "47x22 settings keeps workspace return control visible",
+    "47x22 F2 exposes categories and Back",
+    "small-screen Back restores previous workspace column",
+    "removal confirmation identifies thread count and file preservation",
+    "default Enter cancels project removal",
+    "confirmed removal deletes project and its thread",
+    "removal clears stale client filter and thread view",
+    "project removal preserves checkout files"
+  ],
+  "result": "PASS"
+}

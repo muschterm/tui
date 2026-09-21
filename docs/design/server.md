@@ -53,13 +53,24 @@ The handoff between catch-up and live updates must have no gaps. If a tool compl
 
 Lost acknowledgments require equivalent care. A prompt, approval, interrupt or Git action accepted just before disconnection must be reconciled without blind resubmission. Optimistic client display is not proof of server acceptance. Cross-process effects may have uncertain outcomes; surface and reconcile uncertainty rather than promise universal exactly-once execution. Durable state and artifact readiness are addressed in [storage](storage.md).
 
-Attaching to a live server simply catches up with continuing work. After a server restart, restore history and queues, mark unfinished runs interrupted, and require explicit **Resume** before saved execution continues. Restoration must not automatically dispatch queued work or replay side effects.
+Attaching to a live server simply catches up with continuing work. After a server restart, restore history and queues, mark unfinished runs interrupted, and require explicit **Resume** by default. The user may opt this server environment into [Continue threads after restart](settings.md#continue-threads-after-restart); only verified eligible execution can continue. Manual Stop and pending questions/approvals remain gated. Restoring a client view never dispatches work, and unknown or uncertain provider side effects must not be replayed.
 
 ## Scheduling and unattended requests
 
 One active root writing thread or job holds the checkout writer lease; competing writers queue. Its delegated subagents share that lease rather than queueing behind their parent. Existing checkouts remain the default, with optional worktrees for independent work. Client disconnection cannot release writer ownership. External writers remain outside this scheduler, so stale-change detection is necessary.
 
 Prompts submitted during active work enter a visible per-thread queue; interruption is explicit. Catch-up preserves queue order and distinguishes accepted waiting prompts from drafts and failed submissions. Checkout waiting, active execution and requests for user input must remain distinguishable. Users can edit, remove and reorder queued prompts until execution starts, through controls in that visible queue. Scheduling fairness and advancement after interruption remain open.
+
+The explicit [Steer action](activity.md#steering-a-queued-message) consumes a chosen
+queued prompt as additional input to its identified active turn, when supported.
+It keeps that turn's checkout ownership and pending questions/approvals intact.
+Bind delivery to both queue revision and turn identity; a stale action cannot
+inject into a replacement turn. Accepted steering and queue removal must have
+one coherent outcome. Provider delivery uncertainty requires a retained delivery
+record reserved against normal dispatch, then reconciliation rather than blind
+retry or fallback to a new turn. The Go fixture can confirm this outcome inside
+its existing state/receipt transaction; an external provider cannot inherit that
+guarantee merely by using the same command envelope.
 
 Queue changes are server commands addressed to a prompt identity and current revision. Coordinate them with dispatch: an edit or removal accepted before dispatch must take effect, while an action that loses the race to execution must report that the prompt has started and preserve any unsent edit. Reconcile competing clients and lost acknowledgments without duplicate queue entries. Removing a queued prompt does not interrupt the active turn, and reordering affects that thread's prompt queue without bypassing checkout writer eligibility. Editing or reordering text preserves unchanged attachment captures. Restored queues can be managed while awaiting Resume; changing them must not automatically resume execution.
 
@@ -73,6 +84,6 @@ Pending [question requests](questions.md) belong to the server, including their 
 
 ## Remaining decisions and acceptance
 
-Open implementation choices include the collaboration algorithm, retention and storage budgets, detailed shutdown failure handling, and request-conflict reconciliation mechanics between clients. Multiple attached clients, one terminal input/resize controller, live collaboration, external-change review and explicit Resume after restart are accepted.
+Open implementation choices include the collaboration algorithm, retention and storage budgets, detailed shutdown failure handling, and request-conflict reconciliation mechanics between clients. Multiple attached clients, one terminal input/resize controller, live collaboration, external-change review and explicit Resume after restart by default are accepted. The later environment setting permits verified opt-in continuation.
 
 The [Go backend tests](../../apps/go/internal/server/server_test.go) exercise same-home lock contention, authentication, detached fixture progress, initial WebSocket catch-up, restart awaiting Resume, competing fixture answers and confirmed graceful stop. These checks do not establish real agent/process lifecycle behavior. Remaining scenarios include subprocess startup races, configured-home isolation, unattended provider approvals, real child-agent activity and stop-for-review conflicts. Exercise lost-acknowledgment reconciliation, shutdown with modified files, interrupted runs awaiting Resume, simultaneous editing, per-client undo, external-change review and recovered-buffer revalidation. Verify isolated focus and rejection of stale terminal-controller input/resize.

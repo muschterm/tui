@@ -70,6 +70,13 @@ func TestTabNameSelectsAndOnlyIconCloses(t *testing.T) {
 	if len(m.viewState().Host.Tabs) != 2 || active.ID != files.ID {
 		t.Fatal("clicking tab name must select without closing")
 	}
+	for _, point := range [][2]int{{icon.Rect.X - 1, name.Rect.Y}, {name.Rect.X + name.Rect.W, name.Rect.Y}} {
+		m.Update(tea.MouseClickMsg{X: point[0], Y: point[1], Button: tea.MouseLeft})
+		active, _ = m.viewState().Host.Active()
+		if len(m.viewState().Host.Tabs) != 2 || active.ID != files.ID {
+			t.Fatal("rounded tab edge closed a surface instead of selecting")
+		}
+	}
 	clickControl(m, controlHit(t, m.measure(), icon.Key))
 	if len(m.viewState().Host.Tabs) != 1 || m.viewState().Host.Tabs[0].ID == files.ID {
 		t.Fatal("icon did not close its tab")

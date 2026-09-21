@@ -6,13 +6,14 @@ import "encoding/json"
 const Version = 1
 
 type Snapshot struct {
-	Projects     []Project  `json:"projects,omitempty"`
-	Capabilities []string   `json:"capabilities"`
-	Version      int        `json:"version"`
-	Revision     int64      `json:"revision"`
-	InstanceID   string     `json:"instance_id"`
-	Threads      []Thread   `json:"threads"`
-	Terminals    []Terminal `json:"terminals"`
+	AppSettings  AppSettings `json:"app_settings"`
+	Projects     []Project   `json:"projects,omitempty"`
+	Capabilities []string    `json:"capabilities"`
+	Version      int         `json:"version"`
+	Revision     int64       `json:"revision"`
+	InstanceID   string      `json:"instance_id"`
+	Threads      []Thread    `json:"threads"`
+	Terminals    []Terminal  `json:"terminals"`
 }
 type Settings struct{ Model, Effort, Permissions, Context, Speed string }
 type Thread struct {
@@ -20,7 +21,9 @@ type Thread struct {
 	Closed                                     bool   `json:"Closed,omitempty"`
 	LifecycleRevision                          int64  `json:"LifecycleRevision,omitempty"`
 	ID, Project, Title, Checkout, Agent, State string
+	TurnID                                     string `json:"TurnID,omitempty"`
 	NeedsResume                                bool
+	RestartEligible                            bool `json:"RestartEligible,omitempty"`
 	Selected, Effective                        Settings
 	Activity                                   []Activity
 	Plan                                       []PlanStep
@@ -30,7 +33,11 @@ type Thread struct {
 	QueueRevision                              int64
 	Tick                                       int
 }
-type Activity struct{ ID, Role, Title, Text, State, Detail string }
+type Activity struct {
+	ID, Role, Title, Text, State, Detail string
+	TurnID                               string  `json:"TurnID,omitempty"`
+	Prompt                               *Prompt `json:"Prompt,omitempty"`
+}
 type PlanStep struct{ Title, State string }
 type Child struct {
 	ID, ParentID, Name, State string
@@ -58,6 +65,11 @@ type Request struct {
 	QuestionAnswers                              []Answer `json:"QuestionAnswers,omitempty"`
 	Delivery                                     string
 }
+
+// Attachment kind workspace-file is a Send-time capture request: Source is a
+// checkout-relative file path and Content must be empty. The server replaces it
+// with a captured file attachment only in accepted state. Other kinds already
+// carry snapshots (including fixture attachments) and are retained unchanged.
 type Attachment struct{ Kind, Name, Source, Content string }
 type Prompt struct {
 	ID, Text    string
@@ -70,8 +82,12 @@ type Terminal struct {
 	Revision                                int64
 }
 type Command struct {
-	ProjectID                                    string `json:"ProjectID,omitempty"`
-	Path                                         string `json:"Path,omitempty"`
+	Agent                                        string           `json:"Agent,omitempty"`
+	AppSettings                                  *AppSettings     `json:"AppSettings,omitempty"`
+	ProjectSettings                              *ProjectSettings `json:"ProjectSettings,omitempty"`
+	ExpectedTurnID                               string           `json:"ExpectedTurnID,omitempty"`
+	ProjectID                                    string           `json:"ProjectID,omitempty"`
+	Path                                         string           `json:"Path,omitempty"`
 	Version                                      int
 	ID, Kind, ThreadID, TargetID, ClientID, Text string
 	Revision                                     int64

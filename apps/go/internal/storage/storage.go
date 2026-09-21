@@ -148,6 +148,11 @@ func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Re
 		return err
 	}
 	defer tx.Rollback()
+	if c != nil && c.Kind == "project.remove" {
+		if err = purgeProject(tx, snap, c.ProjectID); err != nil {
+			return err
+		}
+	}
 	if _, err = tx.Exec("INSERT INTO state(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", b); err != nil {
 		return err
 	}
@@ -162,6 +167,9 @@ func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Re
 			minimal := *r
 			minimal.TargetID = ""
 			storedReceipt = &minimal
+		}
+		if c.Kind == "project.remove" {
+			cb = commandFingerprint(cb)
 		}
 		rb, _ := json.Marshal(storedReceipt)
 		if _, err = tx.Exec("INSERT INTO commands(id,command,receipt) VALUES(?,?,?)", c.ID, cb, rb); err != nil {
@@ -262,9 +270,9 @@ func purgeThread(tx *sql.Tx, snap protocol.Snapshot, threadID string) error {
 			return fmt.Errorf("deleted thread terminal remains in snapshot")
 		}
 	}
-	// A lost acknowledgment of thread.create must not recreate a deleted
+	// A lost acknowledgment of thread.create or thread.start must not recreate a deleted
 	// thread. Retain its identity/fingerprint, but erase its title and target.
-	created, err := tx.Query("SELECT id,command,receipt FROM commands WHERE json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.Kind') = 'thread.create' AND json_extract(receipt, '$.TargetID') = ?", threadID)
+	created, err := tx.Query("SELECT id,command,receipt FROM commands WHERE json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.Kind') IN ('thread.create','thread.start') AND json_extract(receipt, '$.TargetID') = ?", threadID)
 	if err != nil {
 		return err
 	}
@@ -304,6 +312,10 @@ func purgeThread(tx *sql.Tx, snap protocol.Snapshot, threadID string) error {
 	if _, err := tx.Exec("DELETE FROM commands WHERE json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.ThreadID') = ?", threadID); err != nil {
 		return err
 	}
+	return pruneViews(tx, live, deletedCommands)
+}
+
+func pruneViews(tx *sql.Tx, live, deletedCommands map[string]bool) error {
 	rows, err := tx.Query("SELECT id,data FROM views")
 	if err != nil {
 		return err
@@ -330,7 +342,7 @@ func purgeThread(tx *sql.Tx, snap protocol.Snapshot, threadID string) error {
 		}
 	}
 	err = rows.Err()
-	closeErr = rows.Close()
+	closeErr := rows.Close()
 	if err != nil || closeErr != nil {
 		return errors.Join(err, closeErr)
 	}
@@ -357,4 +369,66 @@ func tombstonedCommands(tx *sql.Tx) (map[string]bool, error) {
 		ids[id] = true
 	}
 	return ids, rows.Err()
+}
+
+// Project removal and all owned records are committed together with its receipt.
+// Files at project.Path are deliberately outside this storage operation.
+func purgeProject(tx *sql.Tx, snap protocol.Snapshot, projectID string) error {
+	for _, p := range snap.Projects {
+		if p.ID == projectID {
+			return fmt.Errorf("removed project remains in snapshot")
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRow("SELECT data FROM state WHERE id=1").Scan(&raw); err != nil {
+		return err
+	}
+	var previous protocol.Snapshot
+	if err := json.Unmarshal(raw, &previous); err != nil {
+		return err
+	}
+	for _, t := range previous.Threads {
+		if t.ProjectID == projectID {
+			if err := purgeThread(tx, snap, t.ID); err != nil {
+				return err
+			}
+		}
+	}
+	rows, err := tx.Query("SELECT id,command,receipt FROM commands WHERE json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.ProjectID') = ? OR (json_extract(CASE WHEN json_valid(command) THEN command ELSE '{}' END, '$.Kind') = 'project.add' AND json_extract(receipt, '$.TargetID') = ?)", projectID, projectID)
+	if err != nil {
+		return err
+	}
+	type record struct {
+		id               string
+		command, receipt []byte
+	}
+	var records []record
+	for rows.Next() {
+		var item record
+		if err := rows.Scan(&item.id, &item.command, &item.receipt); err != nil {
+			rows.Close()
+			return err
+		}
+		records = append(records, item)
+	}
+	err = rows.Err()
+	if closeErr := rows.Close(); err != nil || closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	for _, item := range records {
+		var receipt protocol.Receipt
+		if err := json.Unmarshal(item.receipt, &receipt); err != nil {
+			return err
+		}
+		receipt.State, receipt.TargetID = "deleted", ""
+		encoded, _ := json.Marshal(receipt)
+		if _, err := tx.Exec("UPDATE commands SET command=?,receipt=? WHERE id=?", commandFingerprint(item.command), encoded, item.id); err != nil {
+			return err
+		}
+	}
+	deleted, err := tombstonedCommands(tx)
+	if err != nil {
+		return err
+	}
+	return pruneViews(tx, liveThreads(snap), deleted)
 }

@@ -158,7 +158,9 @@ func TestFallbackPalettesKeepLargeSurfacesNeutral(t *testing.T) {
 				}
 			}
 			view := m.View()
-			if ansi.Strip(view.Content) != fullColorText {
+			// Low-color compact controls use their reserved end cells for brackets.
+			normalize := strings.NewReplacer("[", " ", "]", " ")
+			if normalize.Replace(ansi.Strip(view.Content)) != normalize.Replace(fullColorText) {
 				t.Fatal("palette changed transcript alignment, wrapping or visible content")
 			}
 			if strings.Contains(view.Content, ";2;") || view.BackgroundColor != nil || view.ForegroundColor != nil {

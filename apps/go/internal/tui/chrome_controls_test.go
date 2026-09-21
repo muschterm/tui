@@ -47,7 +47,7 @@ func TestChromeAttentionBadgeAndColors(t *testing.T) {
 }
 
 func TestChromeVisibleControlsPackRightAndMatchMeasurement(t *testing.T) {
-	for _, width := range []int{48, 60, 80, 120} {
+	for _, width := range []int{40, 47, 48, 60, 80, 120} {
 		for _, right := range []bool{false, true} {
 			m := testModel()
 			m.width = width
@@ -56,17 +56,23 @@ func TestChromeVisibleControlsPackRightAndMatchMeasurement(t *testing.T) {
 			if !reflect.DeepEqual(f.hits, chromeFrame(m, false).hits) {
 				t.Fatal("measure and paint disagree")
 			}
-			first := controlHit(t, f, "bottom")
-			if hasControl(f, "maximize") {
-				first = controlHit(t, f, "maximize")
-			}
 			att := controlHit(t, f, "attention")
-			if att.Rect.X+att.Rect.W+1 != first.Rect.X {
-				t.Fatal("unused maximize slot left a gap")
-			}
-			end := controlHit(t, f, "right")
-			if end.Rect.X+end.Rect.W != width {
-				t.Fatal("pane controls not right aligned")
+			if m.singleColumn() {
+				if !hasControl(f, "columns") || hasControl(f, "maximize") || att.Rect.X+att.Rect.W != width-1 {
+					t.Fatal("compact chrome lost its picker or right-aligned attention")
+				}
+			} else {
+				first := controlHit(t, f, "bottom")
+				if hasControl(f, "maximize") {
+					first = controlHit(t, f, "maximize")
+				}
+				if att.Rect.X+att.Rect.W+1 != first.Rect.X {
+					t.Fatal("unused maximize slot left a gap")
+				}
+				end := controlHit(t, f, "right")
+				if end.Rect.X+end.Rect.W != width {
+					t.Fatal("pane controls not right aligned")
+				}
 			}
 			for _, h := range f.hits {
 				if h.Rect.X < 0 || h.Rect.X+h.Rect.W > width {

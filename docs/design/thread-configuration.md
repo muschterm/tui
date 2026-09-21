@@ -2,11 +2,11 @@
 
 Implementation evidence (2026-09-19): the [first Go slice](go-slice.md) now exercises a fixture-driven subset of this contract. See the [validation report](../research/go-slice-validation-2026-09-19.md) for executed checks and limitations; provider/editor/real-terminal behavior below is not implied by fixture results.
 
-Status: required by the user on 2026-09-19. This is intended behavior; agent integrations and configuration controls are **NOT RUN**.
+Status: required by the user on 2026-09-19, refined on 2026-09-20. The Go Demo implements local configuration and first-Send behavior. Real agent integration and configuration enforcement remain **NOT RUN**.
 
 ## Creation flow
 
-Starting an ADE thread first selects an agent connection, then its supported model, reasoning effort, permissions, selectable context capacity, and speed/service tier. Show these choices before the first prompt can start. The agent remains assigned to the thread; a model is a setting of that agent, not a replacement agent.
+**New thread** opens or restores a client-local draft for the chosen project. Persist its prompt, attachments and configuration with that client's view; it is not an authoritative thread yet. Choose the agent connection, then explicitly choose a supported model and review its supported effort, permissions, context capacity and speed/service tier. Send stays unavailable until required choices are valid. The first valid Send creates the thread and accepts its captured initial prompt atomically; failed validation leaves only the draft. The agent remains assigned to the thread; a model is a setting of that agent, not a replacement agent.
 
 Controls depend on the selected connection and, where relevant, model or account capabilities. `1m` versus `200k` context and `2x` speed are user examples, not universal options or default values. Preserve meaningful upstream labels and units. A speed tier is not a guarantee of measured throughput, and selected context capacity is distinct from current context occupancy in the [usage display](usage.md).
 
@@ -19,13 +19,13 @@ Controls depend on the selected connection and, where relevant, model or account
 | Context capacity | Selectable capacity when exposed; otherwise identify fixed/reported capacity or unavailable selection |
 | Speed/service tier | Selectable provider tier when exposed, including any supplied tradeoff information; no inferred pricing or speed guarantees |
 
-Changing the agent refreshes all dependent options; changing the model revalidates effort, context, and speed choices. Never carry an unsupported value silently to another connection. Loading, unavailable, unsupported, stale, rejected, and accepted configurations need distinct states. Defaults may be preselected and shown for review, but must not conceal the effective choices.
+Changing the agent refreshes all dependent options; changing the model revalidates effort, context, and speed choices. Never carry an unsupported value silently to another connection. Loading, unavailable, unsupported, stale, rejected, and accepted configurations need distinct states. Supported dependent defaults may be filled after explicit model selection and shown for review, but must not conceal the effective choices. In the Go fixture, Demo Agent is preset and Reference model is the only selectable model; its supported defaults complete the selection. Codex and Claude models must not be invented as selectable fixture options.
 
 ## Persistent prompt configuration strip
 
 The user requires these settings to remain available at the bottom of the prompt box, throughout a thread: agent, model, effort, permissions, and applicable context and speed selections. They must not exist only in the creation dialog or inspector. Put the strip inside the center workflow's composer; the optional bottom terminal remains a separate pane below that workflow.
 
-Show the selected configuration and what the active turn is actually running. When they match, show the values once with no explanatory heading. The user explicitly rejected “Running with selected settings” as redundant. When requested, pending, or future configuration differs from the active turn, distinguish **Selected** and **Running** values explicitly. Do not relabel an active run before the agent confirms a change, or imply that a queued prompt has started. While idle, show the selection for the next submission; while disconnected, label the last confirmed state as stale.
+While idle, show the editable selection for the next submission. During active work, including waiting, the settings row and its overflow controls are read-only and show the confirmed effective running configuration. Ordinary Send during work captures that effective configuration. Preserve the client's idle preference and restore it when work becomes idle; the active display must not overwrite that preference. Show matching values once, without “Running with selected settings.” Distinguish meaningful selected/running mismatches in details, and label disconnected last-confirmed values as stale. Never relabel a run before confirmation or imply that a queued item has started.
 
 Each setting has mouse and keyboard access to supported controls or details. Abbreviated labels must retain enough meaning to distinguish model, effort, permissions, context, and speed tier. The 2026-09-20 review supersedes wrapping: progressively move fields into a vertical ellipsis menu directly after the remaining left-aligned fields as width decreases, retaining the model longest and restoring fields as space returns. Usage has a separate menu in the right-aligned group. The typing area has a complete outline above the configuration strip. Overflow items show their values and route to the same supported controls/details; differing selected/running values remain distinguishable. Preserve a compact prompt/configuration footer during ADE surface expansion. Unsupported optional selectors can show fixed, unavailable, or not-applicable values without inventing choices. This strip is distinct from the usage meter, which reports measurements rather than configuration.
 
@@ -33,9 +33,15 @@ Use flat clickable values and one coherent settings action instead of placing a 
 
 ## Settings captured per prompt
 
-When the user presses Send, capture that prompt's selected model, effort, permissions, and applicable context capacity and speed tier. A queued prompt retains those values until the user explicitly changes that queued item's settings. The thread's assigned agent remains fixed. Changing the composer's selection affects future submissions; it does not rewrite queued items or relabel the active run.
+When the user presses Send, capture that prompt's selected model, effort, permissions, and applicable context capacity and speed tier. A queued prompt retains those values until the user explicitly changes that queued item's settings. The thread's assigned agent remains fixed. When idle, changing the composer's selection affects future submissions; it does not rewrite queued items or relabel the active run.
 
-Expose each queued item's recorded settings through its edit controls. Explicit changes revalidate dependent options and use the same server revision/dispatch checks as other queue edits. Editing prompt text or reordering the queue leaves its settings and unchanged attachment captures intact. Preserve the accepted settings through reconnect and restart/Resume.
+Expose each queued item's recorded settings through its edit controls. While active work locks setting changes, an explicit queued text edit shows and preserves that queued item's recorded settings, instead of copying the running turn's settings. Explicit changes revalidate dependent options and use the same server revision/dispatch checks as other queue edits. Editing prompt text or reordering the queue leaves its settings and unchanged attachment captures intact. Preserve the accepted settings through reconnect and restart/Resume.
+
+[Steer](activity.md#steering-a-queued-message) retains these recorded settings
+while targeting the current turn. They must match its effective configuration,
+or be explicitly validated and applied through a verified adapter capability.
+Otherwise leave the message queued and explain the mismatch. Steering must not
+silently use different settings, change the active model or start a new turn.
 
 Before dispatch, apply and validate that item's recorded selection through the chosen agent's supported interface. Keep requested settings separate from acknowledged effective values. If a captured option is no longer available or cannot take effect, stop for resolution rather than silently substituting the composer's latest selection or an upstream default. Save the confirmed execution configuration with the resulting turn. Exact adapter mechanisms remain implementation work; a recorded selection is not proof of enforcement.
 
@@ -63,12 +69,14 @@ Use distinct [approval cards](activity.md#approval-cards) in the same area for p
 
 ## Prototype and integration work
 
-Thread creation, future composer selections and explicit editing of queued-item settings are accepted scope. Mutating an already executing run, defaults persistence and preset management remain later design details; do not silently switch the thread's agent or change an active run. Applying each queued item's recorded settings before execution needs adapter validation. Exact bindings are explicitly deferred to the interactive prototype.
+Local draft configuration, atomic first-send creation, idle composer selections and explicit editing of queued-item settings are accepted scope. Mutating an already executing run, defaults persistence and preset management remain later design details; do not silently switch the thread's agent or change an active run. Applying each queued item's recorded settings before execution needs adapter validation. Exact bindings are explicitly deferred to the interactive prototype.
 
-Conformance cases must cover dependent-option invalidation, default visibility, unsupported controls, rejection after selection, effective-value persistence, detached approval requests, two clients answering one request, resume with removed options, and provider-specific permission limitations. Source research and live adapter evidence must stay separate. No runtime validation has been performed.
+Conformance cases must cover dependent-option invalidation, default visibility, unsupported controls, rejection after selection, effective-value persistence, detached approval requests, two clients answering one request, resume with removed options, and provider-specific permission limitations. Source research and live adapter evidence must stay separate. Real provider conformance has not been run; Demo and renderer checks do not establish it.
 
 ## Composer display refinement (2026-09-19)
 
 Use clean connection and model names, without inventing capabilities from their spelling. Claude, Codex, Copilot and Grok are the user's display examples, and GPT-6-Astra illustrates model presentation; these are not a supported-provider inventory. Show optional Fast only when supplied and applicable. Effort display names such as Extra High, Max, Ultra or Ultracode must map to supplied options; Claude-style reasoning and context controls likewise require verified connection capabilities. Preserve upstream option identities behind display labels. Actual provider menus and integrations remain deferred.
 
 The fixture footer uses Demo, Reference, Medium and Simulated as display labels for its synthetic selection; other selected fixture efforts retain their corresponding labels. These labels do not establish provider enforcement. Unknown context stays unknown. See [composer action placement](layout.md#controls-and-composer-refinement-2026-09-19).
+
+The Go wire uses `thread.start` with project identity, explicit agent, captured settings, text and attachments. Its receipt names the created thread. `thread.create` remains a legacy API, unused by the new-thread UI. Real Codex/Claude support remains [implementation step 4](implementation.md#vertical-slices).

@@ -27,6 +27,10 @@ func (m *Model) scrollTo(target string, offset int, f frame) {
 		current, limit = &v.BottomScroll, f.bottomMax
 	case "navigation":
 		m.navScroll = min(f.navMax, max(0, offset))
+	case "closed-navigation":
+		m.closedScroll = min(f.closedMax, max(0, offset))
+	case "sidebar-settings":
+		m.settingsScroll = min(f.settingsMax, max(0, offset))
 	case "menu":
 		if bar, ok := f.scrollbars[target]; ok {
 			m.menuOffset = min(bar.Bar.MaxOffset, max(0, offset))
@@ -57,6 +61,11 @@ func (m *Model) scrollFocus() string {
 		return "bottom"
 	case "navigation":
 		return "navigation"
+	case "closed-navigation", "sidebar-settings":
+		return m.focus
+	}
+	if strings.HasPrefix(m.focus, "sidebar-setting:") {
+		return "sidebar-settings"
 	}
 	if strings.HasPrefix(m.focus, "scrollbar-") {
 		return strings.TrimPrefix(m.focus, "scrollbar-")
@@ -88,6 +97,10 @@ func (m *Model) wheelTarget(f frame, x, y int) string {
 		return "bottom"
 	case f.navigation.Contains(x, y):
 		return "navigation"
+	case f.closedNavigation.Contains(x, y):
+		return "closed-navigation"
+	case f.settingsBody.Contains(x, y):
+		return "sidebar-settings"
 	}
 	return ""
 }

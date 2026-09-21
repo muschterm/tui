@@ -12,6 +12,7 @@ import (
 
 func (m *Model) showMenu(title string, items []menuItem) {
 	m.projectMode = ""
+	m.projectGear = false
 	m.projectInput.Blur()
 	m.menuTitle = title
 	m.menu = items
@@ -23,13 +24,19 @@ func (m *Model) openCommands() {
 	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
 		items = append(items, menuItem{"Open " + title(kind), action{Kind: "open", Value: kind}})
 	}
+	if m.singleColumn() {
+		items[0] = menuItem{"Choose column (F2)", action{Kind: "columns"}}
+		items[1] = menuItem{"Surfaces (F3)", action{Kind: "column", Index: int(shell.RightRegion)}}
+		items[2] = menuItem{"Terminal (F5)", action{Kind: "column", Index: int(shell.BottomRegion)}}
+		items[3] = menuItem{"Conversation", action{Kind: "column", Index: int(shell.CenterRegion)}}
+	}
 	for _, t := range m.snapshot.Threads {
 		items = append(items, menuItem{"Thread · " + t.Title, action{Kind: "thread", ID: t.ID}})
 	}
 	for _, tab := range m.viewState().Host.Tabs {
 		items = append(items, tabEntry(tab))
 	}
-	items = append(items, menuItem{"Select / filter projects", action{Kind: "projects"}}, menuItem{"Add project", action{Kind: "project-add"}}, menuItem{"New thread", action{Kind: "thread-create"}}, menuItem{"Closed threads", action{Kind: "closed-threads"}}, menuItem{"Selected thread options", action{Kind: "thread-menu", ID: m.state.Active}})
+	items = append(items, menuItem{"App settings", action{Kind: "app-settings"}}, menuItem{"Select / filter projects", action{Kind: "projects"}}, menuItem{"Add project", action{Kind: "project-add"}}, menuItem{"New thread", action{Kind: "thread-create"}}, menuItem{"Closed threads", action{Kind: "closed-threads"}}, menuItem{"Selected thread options", action{Kind: "thread-menu", ID: m.state.Active}})
 	m.showMenu("Commands", items)
 }
 func title(s string) string {
@@ -40,16 +47,28 @@ func title(s string) string {
 }
 func (m *Model) openSurface(kind, id string) {
 	v := m.viewState()
-	m.state.Layout.Open(&v.Host, kind, title(kind))
+	if m.singleColumn() {
+		v.Host.Open(kind, title(kind))
+		m.selectColumn(shell.RightRegion)
+	} else {
+		m.state.Layout.Open(&v.Host, kind, title(kind))
+	}
 	v.DetailID = id
 	v.DetailScroll = 0
-	if m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Right.W == 0 {
+	if !m.singleColumn() && m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Right.W == 0 {
 		m.state.Layout.Maximized = true
 	}
 	m.setFocus("right-body")
 }
 
 func (m *Model) activate(a action) tea.Cmd {
+	if handled, cmd := m.activateSidebarSettings(a); handled {
+		m.configureInputs()
+		return cmd
+	}
+	if m.singleColumn() && strings.HasPrefix(a.Kind, "resize-") {
+		return m.showNotice("Pane resizing is available in the wider layout")
+	}
 	v := m.viewState()
 	t := m.thread()
 	var cmd tea.Cmd
@@ -70,7 +89,7 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "menu-select":
 		if a.Index >= 0 && a.Index < len(m.menu) {
 			item := m.menu[a.Index]
-			if item.Action.Kind == "project-submit" || item.Action.Kind == "project-no-match" {
+			if item.Action.Kind == "project-submit" || item.Action.Kind == "project-rename-submit" || item.Action.Kind == "project-no-match" || strings.HasPrefix(item.Action.Kind, "path-") {
 				return m.activate(item.Action)
 			}
 			m.menu = nil
@@ -81,16 +100,35 @@ func (m *Model) activate(a action) tea.Cmd {
 		return nil
 	case "quit":
 		return tea.Quit
+	case "columns":
+		m.openColumns()
+	case "column":
+		m.selectColumn(shell.Region(a.Index))
 	case "left":
-		m.state.Layout.ToggleLeft()
+		if m.singleColumn() {
+			m.openColumns()
+		} else {
+			m.state.Layout.ToggleLeft()
+		}
 	case "right":
+		if m.singleColumn() {
+			m.selectColumn(shell.RightRegion)
+			break
+		}
 		m.state.Layout.ToggleRight(&v.Host)
 		if m.state.Layout.Right && m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Right.W == 0 {
 			m.showChooser()
 		}
 	case "bottom":
-		m.state.Layout.ToggleBottom()
+		if m.singleColumn() {
+			m.selectColumn(shell.BottomRegion)
+		} else {
+			m.state.Layout.ToggleBottom()
+		}
 	case "maximize":
+		if m.singleColumn() {
+			return nil
+		}
 		if g := m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()); g.Right.W == 0 || g.Right.H == 0 {
 			return nil
 		}
@@ -114,19 +152,32 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "recents-hide":
 		m.state.RecentsHidden = !m.state.RecentsHidden
 	case "recents-collapse":
+		m.state.RecentsHidden = false
 		m.state.RecentsCollapsed = !m.state.RecentsCollapsed
 	case "commands":
-		m.openCommands()
+		if m.settingsPage != "" {
+			m.openSettingsCommands()
+		} else {
+			m.openCommands()
+		}
 	case "chooser":
 		m.showChooser()
 	case "open":
 		if a.Value == "terminal" {
-			return m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open"})
+			cmd = m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open"})
+			if cmd != nil {
+				m.selectColumn(shell.RightRegion)
+			}
+			break
 		}
 		m.openSurface(a.Value, a.ID)
 	case "tab":
 		v.Host.Select(a.ID)
-		m.state.Layout.Right = true
+		if m.singleColumn() {
+			m.selectColumn(shell.RightRegion)
+		} else {
+			m.state.Layout.Right = true
+		}
 		v.DetailScroll = 0
 	case "tabs":
 		var items []menuItem
@@ -141,6 +192,9 @@ func (m *Model) activate(a action) tea.Cmd {
 			}
 		}
 		m.state.Layout.Close(&v.Host, a.ID)
+		if m.singleColumn() && len(v.Host.Tabs) == 0 {
+			m.selectColumn(shell.CenterRegion)
+		}
 	case "bottom-new":
 		return m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open", Value: "bottom"})
 	case "bottom-close":
@@ -148,48 +202,75 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "projects":
 		m.openProjectDialog("filter")
 	case "project-add":
+		m.projectAddThread = false
 		m.openProjectDialog("add")
+	case "project-add-thread":
+		m.projectAddThread = true
+		m.openProjectDialog("add")
+	case "path-directory":
+		m.projectInput.SetValue(a.Value)
+		m.projectError = ""
+		m.menuIndex = 0
+		m.refreshProjectMenu()
+		return tea.Batch(m.setFocus("project-input"), m.nextPathQuery())
+	case "path-project-root-save":
+		return m.saveProjectDirectory(a.Value)
+	case "path-project-root-home":
+		m.projectInput.SetValue("~/")
+		m.menuIndex = 0
+		m.refreshProjectMenu()
+		return tea.Batch(m.setFocus("project-input"), m.nextPathQuery())
+	case "path-noop":
+		return nil
+	case "mention-select":
+		return m.selectMention(a.Index)
+	case "mention-background":
+		return nil
+	case "context-error":
+		m.showContextError()
+	case "mention-dismiss":
+		m.dismissMention()
+		return m.setFocus("prompt")
 	case "project-filter":
 		m.state.ProjectFilter = a.ID
 		m.navScroll = 0
+		m.closedScroll = 0
 		m.menu = nil
 		m.projectMode = ""
 	case "project-cancel":
 		m.menu = nil
 		m.projectMode = ""
+		return m.setFocus("prompt")
 	case "project-no-match":
 		return nil
 	case "project-submit":
 		path := strings.TrimSpace(m.projectInput.Value())
+		if a.Value != "" {
+			path = a.Value
+		}
 		if path == "" {
 			m.status = "Enter an existing folder path"
 			m.projectError = m.status
 			return nil
 		}
 		m.projectError = ""
+		if m.projectAddThread {
+			a.Value = "new-thread"
+		} else {
+			a.Value = ""
+		}
 		return m.command(protocol.Command{Kind: "project.add", Path: path}, a)
 	case "thread-create":
 		if m.state.Edit != nil {
 			m.status = "Save or cancel the queued edit first"
 			return nil
 		}
-		project := a.Value
-		if project == "" {
-			project = m.state.ProjectFilter
-		}
-		if project == "" && len(m.snapshot.Projects) == 1 {
-			project = m.snapshot.Projects[0].ID
-		}
-		if project == "" {
-			var items []menuItem
-			for _, p := range m.snapshot.Projects {
-				items = append(items, menuItem{p.Name + " · " + p.Path, action{Kind: "thread-create", Value: p.ID}})
-			}
-			items = append(items, menuItem{"Add project…", action{Kind: "project-add"}})
-			m.showMenu("New thread in project", items)
+		if a.Value == "" {
+			m.openProjectDialog("new-thread")
 			break
 		}
-		return m.command(protocol.Command{Kind: "thread.create", ProjectID: project}, a)
+		m.projectMode, m.menu = "", nil
+		m.beginThreadDraft(a.Value)
 	case "thread-menu":
 		m.threadMenu(a.ID)
 	case "thread-delete":
@@ -219,24 +300,25 @@ func (m *Model) activate(a action) tea.Cmd {
 		var items []menuItem
 		for _, t := range m.snapshot.Threads {
 			if t.Closed && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
-				items = append(items, menuItem{t.Title, action{Kind: "thread-reopen", ID: t.ID}})
+				items = append(items, menuItem{t.Title, action{Kind: "thread", ID: t.ID}})
 			}
 		}
 		if len(items) == 0 {
 			m.status = "No closed threads in this project filter"
 		} else {
-			m.showMenu("Reopen closed thread", items)
+			m.showMenu("Closed threads", items)
 		}
 	case "thread":
 		if m.state.Edit != nil {
 			m.status = "Save or cancel this queued edit before switching threads"
 			return nil
 		}
-		if target, ok := m.threadByID(a.ID); ok && target.Closed {
-			return m.activate(action{Kind: "thread-reopen", ID: a.ID})
-		}
 		m.selectThread(a.ID)
+		m.selectColumn(shell.CenterRegion)
 	case "attention":
+		if m.settingsPage != "" {
+			m.closeSettings()
+		}
 		var items []menuItem
 		for _, thread := range m.snapshot.Threads {
 			for _, r := range thread.Requests {
@@ -281,25 +363,28 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		m.status = "No uncertain command to retry"
 	case "send":
-		if m.state.Active == "" || t.Closed {
-			m.status = "Open a thread before sending a prompt"
-			return nil
+		if reason := m.sendBlocked(); reason != "" {
+			return m.showNotice(reason)
 		}
 		text := strings.TrimSpace(m.prompt.Value())
-		if text == "" {
-			m.status = "Write a prompt first"
-			return nil
-		}
 		v.Draft = m.prompt.Value()
-		settings := v.Settings
+		settings := m.composerSelection()
 		if m.state.Edit != nil {
 			return m.command(protocol.Command{Kind: "queue.edit", Text: text, TargetID: m.state.Edit.ID, Revision: m.state.Edit.Revision, Settings: &settings}, action{Kind: "save-edit"})
 		}
 		captures := slices.Clone(v.Attachments)
 		for i := range captures {
-			captures[i].Content = fmt.Sprintf("Synthetic %s content captured at Send, fixture tick %d", captures[i].Kind, t.Tick)
+			if captures[i].Kind != "workspace-file" {
+				captures[i].Content = fmt.Sprintf("Synthetic %s content captured at Send, fixture tick %d", captures[i].Kind, t.Tick)
+			}
 		}
-		return m.command(protocol.Command{Kind: "prompt.send", Text: v.Draft, Settings: &settings, Attachments: captures}, a)
+		c := protocol.Command{Kind: "prompt.send", Text: v.Draft, Settings: &settings, Attachments: captures}
+		if m.creatingThread() {
+			c.Kind, c.ProjectID, c.Agent = "thread.start", m.state.DraftProjectID, t.Agent
+		} else if t.Closed {
+			c.Kind, c.Revision = "prompt.reopen-send", t.LifecycleRevision
+		}
+		return m.command(c, a)
 	case "edit":
 		if m.state.Edit != nil {
 			m.status = "Finish the current queued edit first"
@@ -332,6 +417,8 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "remove":
 		return m.command(protocol.Command{Kind: "queue.remove", TargetID: a.ID, Revision: t.QueueRevision}, a)
+	case "steer":
+		return m.steerQueued(a)
 	case "move":
 		order := make([]string, len(t.Queue))
 		i := -1
@@ -348,6 +435,7 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "queue":
 		var items []menuItem
 		for _, q := range t.Queue {
+			items = append(items, menuItem{"Steer · " + safe(q.Text), m.steerAction(q.ID)})
 			for _, op := range []string{"edit", "remove", "up", "down"} {
 				act := action{Kind: op, ID: q.ID}
 				if op == "up" {
@@ -365,28 +453,30 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "usage-summary":
 		m.openUsageSummary()
 		return nil
+	case "checkout-info":
+		m.openCheckoutInfo()
+		return nil
+	case "checkout-refresh":
+		m.checkoutKey = ""
+		return m.nextCheckoutInspection()
 	case "composer-more":
 		m.openComposerOverflow()
 		return nil
 	case "settings":
-		field := a.Value
-		if field == "" {
-			field = "effort"
+		return m.openPromptSettings(a.Value)
+	case "setting-model":
+		if m.configurationLocked() {
+			return m.showNotice("Settings are read-only during active work")
 		}
-		var items []menuItem
-		if field == "effort" {
-			for _, value := range []string{"low", "medium", "high"} {
-				items = append(items, menuItem{effortDisplayName(value), action{Kind: "setting", Value: value}})
-			}
-		} else {
-			selected := v.Settings
-			if field == "effective" {
-				selected = t.Effective
-			}
-			items = append(items, menuItem{agentDisplayName(t.Agent) + " · " + modelDisplayName(selected.Model), action{Kind: "noop"}}, menuItem{"Reasoning: " + effortDisplayName(selected.Effort), action{Kind: "noop"}}, menuItem{"Permissions: " + permissionDisplayName(selected.Permissions), action{Kind: "noop"}}, menuItem{"Context: " + selected.Context + " · Speed: " + selected.Speed, action{Kind: "noop"}}, menuItem{"Demo connection · no provider is connected", action{Kind: "noop"}}, menuItem{"Change effort", action{Kind: "settings", Value: "effort"}})
+		if v.Settings.Model != "fixture-model" {
+			v.Settings = protocol.Settings{Model: "fixture-model", Effort: "medium", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}
 		}
-		m.showMenu("Settings · "+field, items)
+	case "provider-unavailable":
+		return m.showNotice(a.Value + " integration is planned; only Demo is connected in this build")
 	case "setting":
+		if m.configurationLocked() {
+			return m.showNotice("Settings are read-only during active work")
+		}
 		v.Settings.Effort = a.Value
 	case "attach":
 		if m.state.Edit != nil {
@@ -407,6 +497,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "attachment-remove":
 		if a.Index < len(v.Attachments) {
 			v.Attachments = slices.Delete(v.Attachments, a.Index, a.Index+1)
+			if len(v.Attachments) == 0 {
+				v.ContextError = ""
+			}
 		}
 	case "attachments":
 		if m.state.Edit != nil {

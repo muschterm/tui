@@ -22,9 +22,12 @@ import (
 )
 
 type threadView struct {
+	Agent                                                            string
+	CompactColumn                                                    shell.Region
 	Host                                                             shell.Host
 	RightVisible                                                     bool
 	Draft                                                            string
+	ContextError                                                     string
 	Settings                                                         protocol.Settings
 	Attachments                                                      []protocol.Attachment
 	Scroll, DetailScroll, RequestIndex, QuestionIndex, RequestScroll int
@@ -35,10 +38,14 @@ type threadView struct {
 	QuestionDrafts                                                   map[string][]answerDraft
 }
 type savedView struct {
+	DraftProjectID                         string
+	DraftThreads                           map[string]*threadView
+	StartedDraft                           *startedDraft
 	Generation                             int64
 	Layout                                 shell.State
 	Active                                 string
 	ProjectFilter                          string
+	ThreadFilter                           string
 	Light, RecentsHidden, RecentsCollapsed bool
 	Threads                                map[string]*threadView
 	Edit                                   *editState
@@ -48,6 +55,7 @@ type savedView struct {
 type action struct {
 	Kind, ID, Value string
 	Index           int
+	Revision        int64
 }
 type menuItem struct {
 	Label  string
@@ -65,8 +73,10 @@ type frame struct {
 	scrollbars                                  map[string]scrollTarget
 	transcriptMax, detailMax, requestMax        int
 	bottomMax, navMax                           int
+	closedMax, settingsMax                      int
 	prompt, answer, transcript, detail, request shell.Rect
 	bottomBody, navigation                      shell.Rect
+	closedNavigation, settingsBody              shell.Rect
 }
 type snapshotMsg protocol.Snapshot
 type connectionMsg struct {
@@ -91,11 +101,29 @@ type editState struct {
 }
 
 type Model struct {
+	paths                                pathCompletion
+	mentionDismissed                     string
+	mentionIndex                         int
+	projectAddThread                     bool
+	pendingProjectDraft                  bool
+	projectDirectoryRevision             int64
+	projectDirectoryConflicted           bool
+	checkoutKey                          string
+	checkoutInfo                         protocol.WorkspaceInfo
+	checkoutLoading                      bool
 	emptyView                            threadView
 	projectMode                          string
 	projectError                         string
 	requestFeedback                      map[string]requestFeedback
 	projectInput                         textarea.Model
+	threadSearch                         textarea.Model
+	projectGear                          bool
+	projectEditRevision                  int64
+	projectRenameConflicted              bool
+	settingsPage, settingsProjectID      string
+	settingsNavigation                   bool
+	settingsReturnFocus                  string
+	closedScroll, settingsScroll         int
 	pendingThreadSelection               string
 	pendingProjectSelection              string
 	state                                savedView
@@ -124,6 +152,7 @@ type Model struct {
 	menuTitle                            string
 	menuIndex                            int
 	status                               string
+	notice                               transientNotice
 	connected                            bool
 	busy                                 *protocol.Command
 	busyAction                           action
@@ -158,15 +187,22 @@ func newInput(placeholder string) textarea.Model {
 }
 func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *Model {
 	m := &Model{client: c, clientID: id, snapshot: snapshot, ctx: context.Background(), width: 120, height: 40, connected: true, colorProfile: colorprofile.TrueColor, focus: "prompt", keyboard: "legacy keyboard", prompt: newInput("Ask a follow-up…"), answer: newInput("Type an answer…")}
-	m.state = savedView{Layout: shell.NewState(), Threads: map[string]*threadView{}}
+	m.state = savedView{Layout: shell.NewState(), Threads: map[string]*threadView{}, RecentsCollapsed: true}
 	m.projectInput = newInput("Project name or path…")
+	m.threadSearch = newInput("Search")
+	m.threadSearch.SetHeight(1)
+	m.threadSearch.CharLimit = 256
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, &m.state)
 	}
 	if m.state.Threads == nil {
 		m.state.Threads = map[string]*threadView{}
 	}
-	if !slices.ContainsFunc(snapshot.Threads, func(t protocol.Thread) bool { return t.ID == m.state.Active }) && len(snapshot.Threads) > 0 {
+	if m.state.DraftThreads == nil {
+		m.state.DraftThreads = map[string]*threadView{}
+	}
+	m.threadSearch.SetValue(m.state.ThreadFilter)
+	if !m.creatingThread() && !slices.ContainsFunc(snapshot.Threads, func(t protocol.Thread) bool { return t.ID == m.state.Active }) && len(snapshot.Threads) > 0 {
 		m.state.Active = m.nextOpenThread("")
 	}
 	for _, t := range snapshot.Threads {
@@ -177,12 +213,18 @@ func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *
 	m.migrateQuestionDrafts()
 	m.busy = m.state.Pending
 	m.busyAction = m.state.PendingAction
+	m.reconcileProjects()
 	m.reconcileThreadMembership()
 	m.loadDraft()
 	m.configureInputs()
 	return m
 }
 func (m *Model) thread() protocol.Thread {
+	if m.creatingThread() {
+		p, _ := m.projectByID(m.state.DraftProjectID)
+		v := m.viewState()
+		return protocol.Thread{ProjectID: m.state.DraftProjectID, Project: p.Name, Checkout: p.Path, Title: "New thread", Agent: v.Agent, State: "idle", Selected: v.Settings, Effective: v.Settings}
+	}
 	for _, t := range m.snapshot.Threads {
 		if t.ID == m.state.Active {
 			return t
@@ -191,6 +233,12 @@ func (m *Model) thread() protocol.Thread {
 	return protocol.Thread{}
 }
 func (m *Model) viewState() *threadView {
+	if m.creatingThread() {
+		if m.state.DraftThreads[m.state.DraftProjectID] == nil {
+			m.state.DraftThreads[m.state.DraftProjectID] = &threadView{Agent: "Fixture agent"}
+		}
+		return m.state.DraftThreads[m.state.DraftProjectID]
+	}
 	if m.state.Active == "" {
 		return &m.emptyView
 	}
@@ -207,7 +255,7 @@ func (m *Model) viewState() *threadView {
 func (m *Model) loadDraft() { v := m.viewState(); m.prompt.SetValue(v.Draft); m.loadAnswer() }
 func (m *Model) markDirty() { m.dirty = true; m.generation++; m.state.Generation++ }
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.prompt.Focus(), m.nextActivityTick(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
+	return tea.Batch(m.prompt.Focus(), m.nextActivityTick(), m.nextCheckoutInspection(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
 }
 func (m *Model) requests() []protocol.Request {
 	var r []protocol.Request
@@ -226,6 +274,10 @@ func (m *Model) request() (protocol.Request, bool) {
 	return r[max(0, m.viewState().RequestIndex)%len(r)], true
 }
 func (m *Model) configureInputs() {
+	m.prompt.Placeholder = "Ask a follow-up…"
+	if m.creatingThread() {
+		m.prompt.Placeholder = "Describe a task…"
+	}
 	p := m.colors()
 	s := textarea.Styles{}
 	s.Focused = textarea.StyleState{Base: style(p.text, p.input), Text: style(p.text, p.input), Placeholder: style(p.muted, p.input), CursorLine: style(p.text, p.input), Selection: style(p.text, p.selected)}
@@ -234,10 +286,21 @@ func (m *Model) configureInputs() {
 	m.prompt.SetStyles(s)
 	m.answer.SetStyles(s)
 	m.projectInput.SetStyles(s)
+	m.threadSearch.SetStyles(s)
+	m.threadSearch.SetWidth(max(1, threadSearchRect(m.workspaceGeometry(m.footerHeight()).Left).W))
 	m.projectInput.SetWidth(max(1, min(68, max(20, m.width-6))-4))
-	m.promptRows = 1
+	if m.settingsPage != "" {
+		m.configureSettingsFocus(m.measure())
+		return
+	}
+	m.promptRows = minPromptRows
 	f := m.measure()
 	promptWidth, answerWidth := max(1, f.prompt.W), max(1, f.answer.W)
+	// Bubbles' empty-placeholder rows style only the end-of-buffer glyph.
+	// Fill that row before its viewport adds unstyled horizontal padding.
+	s.Focused.EndOfBuffer = style(p.text, p.input).Width(promptWidth)
+	s.Blurred.EndOfBuffer = s.Focused.EndOfBuffer
+	m.prompt.SetStyles(s)
 	promptValue, answerValue := m.prompt.Value(), m.answer.Value()
 	promptChanged := promptValue != m.promptLayoutValue || promptWidth != m.promptLayoutWidth || m.promptMetrics.Total == 0
 	answerChanged := answerValue != m.answerLayoutValue || answerWidth != m.answerLayoutWidth || m.answerMetrics.Total == 0
@@ -250,8 +313,11 @@ func (m *Model) configureInputs() {
 		m.answerLayoutValue, m.answerLayoutWidth = answerValue, answerWidth
 	}
 	// Reserve app chrome, the fixed footer and at least one transcript row.
-	limit := max(1, min(maxPromptRows, m.height-2-m.footerHeight()))
-	m.promptRows = min(limit, m.promptMetrics.Total)
+	limit := max(1, min(maxPromptRows, m.height-3-(m.footerHeight()-m.promptRows)))
+	if !m.conversationVisible() {
+		limit = min(3, limit)
+	}
+	m.promptRows = min(limit, max(minPromptRows, m.promptMetrics.Total))
 	f = m.measure()
 	if m.sizeKnown {
 		m.clampScroll(f)
@@ -282,12 +348,15 @@ func (m *Model) configureInputs() {
 	if m.focus == "answer" && f.answer.W == 0 {
 		m.setFocus("request-body")
 	}
-	if m.focus == "prompt" && (m.state.Active == "" || m.thread().Closed) {
+	if m.focus == "prompt" && !m.hasComposer() {
 		m.setFocus("prompt")
 	}
 }
 func (m *Model) setFocus(key string) tea.Cmd {
-	if key == "prompt" && (m.state.Active == "" || m.thread().Closed) {
+	if m.settingsPage != "" && (key == "prompt" || key == "answer" || key == "thread-search") {
+		key = "sidebar-settings"
+	}
+	if key == "prompt" && !m.hasComposer() {
 		key = "transcript"
 		if m.state.Active == "" {
 			key = "empty-new"
@@ -297,6 +366,7 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	m.prompt.Blur()
 	m.answer.Blur()
 	m.projectInput.Blur()
+	m.threadSearch.Blur()
 	if key == "prompt" {
 		return m.prompt.Focus()
 	}
@@ -305,6 +375,9 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	}
 	if key == "project-input" {
 		return m.projectInput.Focus()
+	}
+	if key == "thread-search" {
+		return m.threadSearch.Focus()
 	}
 	return nil
 }
@@ -324,11 +397,26 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	if strings.HasPrefix(c.Kind, "queue.") || c.Kind == "prompt.send" {
 		capability = "prompt-queue"
 	}
+	if c.Kind == "queue.steer" {
+		capability = "fixture-steering"
+	}
 	if c.Kind == "thread.close" || c.Kind == "thread.reopen" || c.Kind == "thread.delete" {
 		capability = "thread-lifecycle"
 	}
 	if strings.HasPrefix(c.Kind, "project.") || c.Kind == "thread.create" {
 		capability = "project-management"
+	}
+	if c.Kind == "project.update" || c.Kind == "project.remove" {
+		capability = "project-settings"
+	}
+	if c.Kind == "settings.update" {
+		capability = "app-settings"
+	}
+	if c.Kind == "thread.start" {
+		capability = "thread-start"
+	}
+	if c.Kind == "prompt.reopen-send" {
+		capability = "closed-thread-send"
 	}
 	if !slices.Contains(m.snapshot.Capabilities, capability) {
 		m.status = "Server capability unavailable: " + capability
@@ -341,10 +429,11 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	}
 	c.Version = protocol.Version
 	c.ID = identity()
-	if c.ThreadID == "" && capability != "project-management" {
+	global := capability == "project-management" || capability == "project-settings" || capability == "app-settings" || capability == "thread-start"
+	if c.ThreadID == "" && !global {
 		c.ThreadID = m.state.Active
 	}
-	if c.ThreadID == "" && capability != "project-management" {
+	if c.ThreadID == "" && !global {
 		m.status = "Select or create a thread first"
 		return nil
 	}
@@ -399,6 +488,24 @@ func (m *Model) save() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case pathQueryReady:
+		cmd = m.runPathQuery(msg)
+	case pathQueryResult:
+		m.acceptPathQuery(msg)
+	case checkoutMsg:
+		key, _, _ := m.checkoutTarget()
+		if msg.key == m.checkoutKey && msg.key == key {
+			m.checkoutLoading = false
+			m.checkoutInfo = msg.info
+			if msg.err != nil {
+				m.checkoutInfo = protocol.WorkspaceInfo{Path: m.thread().Checkout, Kind: "unavailable", State: "unavailable", Error: safe(msg.err.Error())}
+			}
+		}
+	case noticeExpired:
+		if m.notice.generation == uint64(msg) {
+			m.notice.text = ""
+		}
+		return m, nil
 	case terminalReplyStarted:
 		return m, tea.Tick(terminalReplyWindow, func(time.Time) tea.Msg { return terminalReplyExpired(msg) })
 	case terminalReplyReplay:
@@ -431,6 +538,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyboardEnhancementsMsg:
 		m.keyboard = "enhanced keyboard negotiated"
 	case connectionMsg:
+		m.paths.key = ""
 		m.connected = msg.err == nil
 		if msg.client != nil {
 			m.client = msg.client
@@ -449,8 +557,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		oldPage := m.viewState().QuestionIndex
 		s := protocol.Snapshot(msg)
 		if s.InstanceID != m.snapshot.InstanceID || s.Revision >= m.snapshot.Revision {
+			if s.InstanceID != m.snapshot.InstanceID || !slices.Equal(s.Capabilities, m.snapshot.Capabilities) {
+				m.paths.key = ""
+			}
 			m.reconcileActivityDismissals(s)
 			m.snapshot = s
+			m.reconcileProjects()
 			m.reconcileThreadMembership()
 		}
 		newRequest, _ := m.request()
@@ -470,11 +582,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inFlight = false
 		if msg.err != nil {
 			m.status = safe(msg.err.Error())
+			for _, attachment := range msg.command.Attachments {
+				if attachment.Kind == "workspace-file" {
+					v := m.state.Threads[msg.command.ThreadID]
+					if msg.command.Kind == "thread.start" {
+						v = m.state.DraftThreads[msg.command.ProjectID]
+					}
+					if v != nil {
+						v.ContextError = m.status
+						m.markDirty()
+					}
+					break
+				}
+			}
 			if msg.command.Kind == "request.answer" {
 				m.setRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, m.status, false)
 			}
-			if msg.command.Kind == "project.add" && m.projectMode == "add" {
+			if msg.command.Kind == "project.add" && m.projectMode == "add" || msg.command.Kind == "project.update" && m.projectMode == "rename" || msg.command.Kind == "settings.update" && m.projectMode == "project-root" {
 				m.projectError = m.status
+			}
+			if err, ok := msg.err.(*protocol.Error); ok && err.Code == "stale_settings" && m.projectMode == "project-root" {
+				m.projectDirectoryConflicted = true
+				m.projectError = "Settings changed. Review the folder, then Save again."
+			}
+			if err, ok := msg.err.(*protocol.Error); ok && err.Code == "stale_project" && m.projectMode == "rename" {
+				m.projectRenameConflicted = true
+				m.projectError = "Project changed. Review the name, then Save again."
 			}
 			if _, ok := msg.err.(*protocol.Error); ok {
 				m.busy = nil
@@ -482,11 +615,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.markDirty()
 			}
 			m.configureInputs()
+			if msg.command.Kind == "queue.steer" {
+				message := m.status
+				m.status = ""
+				return m, m.showNotice("Steer: " + message)
+			}
+			if msg.command.Kind == "settings.update" || msg.command.Kind == "project.update" || msg.command.Kind == "project.remove" || msg.command.Kind == "thread.create" || msg.command.Kind == "thread.start" || msg.command.Kind == "prompt.reopen-send" {
+				return m, m.showNotice(m.status)
+			}
 			return m, nil
 		}
 		m.busy = nil
 		m.state.Pending = nil
 		m.status = "Accepted · " + msg.receipt.State
+		if msg.command.Kind == "thread.start" {
+			if v := m.state.DraftThreads[msg.command.ProjectID]; v != nil {
+				v.ContextError = ""
+			}
+		} else if msg.command.Kind == "prompt.send" || msg.command.Kind == "prompt.reopen-send" {
+			if v := m.state.Threads[msg.command.ThreadID]; v != nil {
+				v.ContextError = ""
+			}
+		}
+		if msg.command.Kind == "queue.steer" {
+			cmd = m.showNotice("Message steered into the active turn")
+		}
 		if msg.command.Kind == "request.answer" {
 			m.clearRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, false)
 		}
@@ -495,7 +648,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		v := m.state.Threads[msg.command.ThreadID]
 		if v == nil {
-			return m, nil
+			return m, cmd
 		}
 		switch msg.local.Kind {
 		case "send":
@@ -533,9 +686,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						v.Host.ActiveID = msg.receipt.TargetID
 					}
 				}
-				v.RightVisible = true
-				if m.state.Active == msg.command.ThreadID {
-					m.state.Layout.Right = true
+				if !m.singleColumn() {
+					v.RightVisible = true
+					if m.state.Active == msg.command.ThreadID {
+						m.state.Layout.Right = true
+					}
 				}
 			}
 		case "close":
@@ -546,6 +701,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(v.Host.Tabs) == 0 {
 				v.RightVisible = false
+				if m.state.Active == msg.command.ThreadID && m.singleColumn() && v.CompactColumn == shell.RightRegion {
+					m.selectColumn(shell.CenterRegion)
+				}
 			}
 		case "bottom-close":
 			v.BottomID = ""
@@ -565,9 +723,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.key(msg)
 	case tea.PasteMsg:
 		if m.projectMode != "" {
-			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: safe(msg.Content)})
+			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: singleLine(msg.Content)})
 			m.menuIndex = 0
 			m.refreshProjectMenu()
+		} else if m.focus == "thread-search" && len(m.menu) == 0 {
+			cmd = m.updateThreadSearch(tea.PasteMsg{Content: singleLine(msg.Content)})
 		} else if m.focus == "answer" {
 			m.answerView.Reset()
 			cmd = updateInput(&m.answer, tea.PasteMsg{Content: safe(msg.Content)})
@@ -583,6 +743,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		if m.projectMode != "" {
 			cmd = updateInput(&m.projectInput, msg)
+		} else if m.focus == "thread-search" {
+			cmd = updateInput(&m.threadSearch, msg)
 		} else if m.focus == "prompt" {
 			cmd = updateInput(&m.prompt, msg)
 		} else if m.focus == "answer" {
@@ -599,10 +761,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.projectMode != "" {
 			extra = 2
 		}
-		visible := min(len(m.menu)+4+extra, max(5+extra, m.height-4)) - 3 - extra
+		visible := min(len(m.menu)+4+extra, max(5+extra, m.height-4)) - 4 - extra
 		m.menuOffset = m.menuStart(visible)
 	}
-	return m, tea.Batch(cmd, m.nextActivityTick())
+	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery())
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
@@ -618,7 +780,11 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return tea.Suspend
 	}
 	if s == "f4" {
-		m.openCommands()
+		if m.settingsPage != "" {
+			m.openSettingsCommands()
+		} else {
+			m.openCommands()
+		}
 		return nil
 	}
 	if s == "ctrl+shift+c" {
@@ -653,6 +819,40 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		}
 		return nil
 	}
+	if m.terminalTooSmall() {
+		// The resize notice has no visible editor. Keep its Commands control
+		// reachable without sending or changing an invisible draft.
+		if s == "enter" && m.focus == "commands" {
+			return m.activate(action{Kind: "commands"})
+		}
+		if s == "tab" || s == "shift+tab" {
+			return m.setFocus("commands")
+		}
+		return nil
+	}
+	if handled, cmd := m.mentionKey(k); handled {
+		return cmd
+	}
+	if m.settingsPage != "" {
+		if s == "f6" {
+			if m.singleColumn() && m.settingsNavigation {
+				return m.setFocus("settings-category:" + m.settingsPage)
+			}
+			return m.setFocus("sidebar-settings")
+		}
+		if s == "esc" {
+			return m.activate(action{Kind: "settings-back"})
+		}
+		if s == "f2" {
+			if m.singleColumn() {
+				return m.activate(action{Kind: "settings-nav"})
+			}
+			return nil
+		}
+		if settingsPaneKey(s) {
+			return nil
+		}
+	}
 	switch s {
 	case "esc":
 		if m.state.Edit != nil {
@@ -677,9 +877,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if f.prompt.W > 0 {
 			keys = append(keys, "prompt")
 		}
-		if m.state.Active == "" {
+		if !m.hasComposer() {
 			keys = append(keys, "empty-new")
-		} else {
+		} else if f.transcript.H > 0 {
 			keys = append(keys, "transcript")
 		}
 		if f.detail.W > 0 {
@@ -695,6 +895,12 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		}
 		if f.navigation.W > 0 {
 			keys = append(keys, "navigation")
+		}
+		if f.closedNavigation.H > 0 {
+			keys = append(keys, "closed-navigation")
+		}
+		if f.settingsBody.H > 0 {
+			keys = append(keys, "sidebar-settings")
 		}
 		i := slices.Index(keys, m.focus)
 		return m.setFocus(keys[(i+1)%len(keys)])
@@ -716,25 +922,22 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			return m.setFocus(keys[i])
 		}
 	case "alt+left":
-		m.state.Layout.Resize(shell.RightDivider, 2)
-		m.markDirty()
-		m.configureInputs()
-		return nil
+		return m.activate(action{Kind: "resize-right", Index: 2})
 	case "alt+right":
-		m.state.Layout.Resize(shell.RightDivider, -2)
-		m.markDirty()
-		m.configureInputs()
-		return nil
+		return m.activate(action{Kind: "resize-right", Index: -2})
 	case "alt+up":
-		m.state.Layout.Resize(shell.BottomDivider, 1)
-		m.markDirty()
-		m.configureInputs()
-		return nil
+		return m.activate(action{Kind: "resize-bottom", Index: 1})
 	case "alt+down":
-		m.state.Layout.Resize(shell.BottomDivider, -1)
-		m.markDirty()
-		m.configureInputs()
-		return nil
+		return m.activate(action{Kind: "resize-bottom", Index: -1})
+	}
+	if m.focus == "thread-search" {
+		if s == "enter" || s == "down" {
+			return m.setFocus("navigation")
+		}
+		if s == "shift+enter" || s == "ctrl+j" {
+			return nil
+		}
+		return m.updateThreadSearch(k)
 	}
 	if m.focus == "prompt" {
 		if s == "enter" {
@@ -819,6 +1022,10 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		default:
 			return nil
 		}
+		if r := m.mentionRect(f); r.Contains(p.X, p.Y) {
+			m.mentionIndex = max(0, min(len(m.mentionEntries())-1, m.mentionIndex+d))
+			return nil
+		}
 		target := m.wheelTarget(f, p.X, p.Y)
 		if target == "menu" {
 			m.menuIndex = min(len(m.menu)-1, max(0, m.menuIndex+d))
@@ -831,6 +1038,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		if p.Button != tea.MouseLeft {
 			return nil
 		}
+		if handled, cmd := m.dismissMenuOutside(p.X, p.Y); handled {
+			return cmd
+		}
 		if len(m.menu) == 0 {
 			m.drag = f.geom.DividerAt(p.X, p.Y)
 			m.lastX, m.lastY = p.X, p.Y
@@ -841,6 +1051,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		for i := len(f.hits) - 1; i >= 0; i-- {
 			h := f.hits[i]
 			if h.Rect.Contains(p.X, p.Y) {
+				if strings.HasPrefix(h.Action.Kind, "mention-") {
+					return m.activate(h.Action)
+				}
 				if h.Action.Kind == "scrollbar" {
 					target := f.scrollbars[h.Action.ID]
 					if h.Action.Value == "thumb" {
@@ -854,6 +1067,10 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 				m.setFocus(h.Key)
 				if h.Key == "project-input" {
 					m.projectInput.BeginSelection(p.X-h.Rect.X, p.Y-h.Rect.Y)
+					return nil
+				}
+				if h.Key == "thread-search" {
+					m.threadSearch.BeginSelection(p.X-h.Rect.X, 0)
 					return nil
 				}
 				if h.Key == "prompt" {
@@ -911,6 +1128,8 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 						m.projectInput.ExtendSelection(p.X-h.Rect.X, p.Y-h.Rect.Y)
 					}
 				}
+			} else if m.focus == "thread-search" {
+				m.threadSearch.ExtendSelection(p.X-threadSearchRect(f.geom.Left).X, 0)
 			} else if m.focus == "prompt" {
 				m.prompt.ExtendSelection(p.X-f.prompt.X, m.promptView.RelativeY(&m.prompt, p.Y-f.prompt.Y))
 				m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
@@ -923,6 +1142,8 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		m.scrollDrag = ""
 		m.drag = shell.NoDivider
 		m.projectInput.EndSelection()
+		m.threadSearch.EndSelection()
+		normalizeInputSelection(&m.threadSearch)
 		normalizeInputSelection(&m.projectInput)
 		m.prompt.EndSelection()
 		m.answer.EndSelection()

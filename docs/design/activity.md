@@ -20,7 +20,35 @@ Capture the attached content when the user presses Send. An accepted queued prom
 
 If capture, transfer or supported-input validation fails, preserve the draft and identify the affected attachment rather than silently dropping it or dispatching an incomplete prompt. Durable acceptance includes recoverable attachment content under the application home, through SQLite or retained artifacts. Reconnect and explicit restart/Resume reuse the accepted capture instead of rereading its source. Exact pickers, limits, formats and transport remain implementation details. Queued-prompt editing is accepted below; [settings are captured per prompt at Send](thread-configuration.md#settings-captured-per-prompt) and change only through explicit editing of that queued item's settings.
 
-### Clipboard intake and read-only previews
+### Inline file mentions
+
+Typing `@` in the composer opens inline directory/file completion rooted in the
+draft project's directory or the existing thread's actual checkout. Match name
+prefixes within the current directory; reveal hidden entries only for an explicit
+dot prefix. Up/Down navigates results. Enter/Tab browses a directory or selects a
+file; Escape dismisses. These completion keys never send a prompt. Preserve
+surrounding text, Unicode editing and the draft through browsing and dismissal.
+
+Selecting a file inserts `@relative-path` (quoted when it contains spaces) and
+adds a removable source-backed file attachment. Typing path-like prose alone does
+not attach it. The Go slice supports regular UTF-8 files up to 64 KiB each and at
+most eight attachments. It does not recursively attach directories. Completion
+queries are bounded asynchronous reads; cancel superseded work and reject stale
+results after edits, dismissal, project/thread changes or restored drafts.
+
+The server validates the source against the selected project/thread checkout and
+captures content at Send. Reject traversal or symlink escape outside that root,
+unreadable/missing files, unsupported content and size/count overflow without
+creating a thread, dispatching partial context or discarding the draft. Capture
+errors remain visible beside the composer with details and attachment
+removal; they clear on successful Send or removal of the last attachment. Accepted
+retries, queue edits, steering and recovery retain the accepted bytes; they never
+reread a changed source. Completion is gated by `path-completion`, and real file
+capture by `workspace-file-context`. Unsupported servers show upgrade guidance.
+These capabilities do not establish provider delivery, clipboard support or an
+editable Files integration.
+
+## Clipboard intake and read-only previews
 
 User-requested refinement, 2026-09-19: support pasting images and copied files into the composer as removable context, with thumbnails where possible. A thumbnail or file chip opens a centered floating viewer. Its expand/restore control switches between the default centered size and the available application area, keeping close and restore reachable. This expands the viewer; it does not guarantee one image pixel per screen pixel. Keep image aspect ratio. Use the same viewer for supported attachment previews from history.
 
@@ -34,7 +62,59 @@ The user confirmed that ordinary text pastes into the prompt, while images and c
 
 ## Prompt queue controls
 
+Group the queue count, message previews and Steer/Edit/Remove/reorder controls in one
+rounded container with a stable interior background, following the
+[component rule](components.md). Align each preview and its actions on one row
+with a gutter between them and an inset from the border. Keep the queue visually
+separate from activity summaries, requests and the prompt. Bound visible items
+in short layouts and show the hidden count in the queue header; activating that
+header opens all queued items and their controls. First/last reorder arrows keep
+their slots but are disabled when no move exists. Truncating a preview never
+changes its saved text or attachments.
+
 Show edit, remove and reorder controls directly in the visible per-thread prompt queue, with pointer and keyboard access. These actions remain available until a prompt starts running. Editing queued text or changing order must not silently reread unchanged attachments. Removing a waiting prompt does not interrupt current work; reordering does not bypass checkout scheduling. Once execution begins, report that state instead of applying a stale queue edit to the running turn. Preserve unsent edits if dispatch or another client wins a race. See [server scheduling](server.md#scheduling-and-unattended-requests).
+
+### Steering a queued message
+
+**Accepted, 2026-09-20:** expose **Steer** on each visible queued message and in
+the full queue controls, with the same mouse and keyboard command. Ordinary
+Send during active work still queues. Explicit Steer delivers that selected
+message into the **same active turn**, where it becomes conversation input and
+no longer waits for a later turn. It does not interrupt/restart the agent,
+start a competing turn, merely move the message to the front, or bypass the
+checkout writer lease. Keep Steer labelled in compact layouts; other queue
+actions may use familiar icons with descriptive focus/hover help.
+
+Steering requires a live active turn and a verified capability on its agent
+connection/adapter. A waiting turn may accept steering only when its integration
+supports it; steering never answers a pending question or grants approval.
+No active turn, disconnection, unsupported delivery, restart awaiting Resume or
+an incompatible configuration produces an explanation and preserves the queued
+message. Do not implement a silent Stop-and-Send fallback.
+
+Bind the action to the queued prompt identity/revision and the active turn the
+user targeted. Reject a race with editing, removal, dispatch, turn completion or
+replacement. Use the queued message's saved text and attachment captures, never
+the current composer draft or reread sources. Its captured settings remain part
+of the record. They must be compatible with the running turn: unless an adapter
+can explicitly validate/apply an allowed change within that turn, explain a
+mismatch and leave the message queued for editing or later execution. Never
+silently discard a requested model/effort/permission/context/speed choice.
+
+Preserve unsaved queued edits; require Save or Cancel before steering that item.
+Show delivery pending/unconfirmed separately from confirmed acceptance. Remove
+the item from the waiting queue only when delivery is confirmed; an uncertain
+outcome must be reserved against ordinary queue dispatch while reconciled.
+Retain accepted input with its target turn and full captured content. A lost
+receipt, reconnect, retry or restart must not inject it twice or move it to a
+new turn. Definite rejection leaves it queued. Resume remains explicit after a
+server restart, and retained delivery outcomes must be reconciled first.
+
+This behavior is shared by all three reference apps. The initial Go implementation
+demonstrates fixture delivery only; ACP framing alone does not prove steering.
+Each real adapter must verify active-turn targeting, content support, settings,
+acknowledgment and recovery semantics. Steering also does not establish the
+separate asynchronous-question contract. See [ADR 0009](../adr/0009-turn-bound-steering.md).
 
 ## Thread activity and right-sidebar details
 
@@ -46,15 +126,21 @@ Pending questions, approvals and failures in other threads must remain discovera
 
 ## Fixed area above the prompt
 
-Keep a fixed area immediately above the prompt, outside transcript scrolling, with one Agents summary, a compact Plan summary and pending requests. Show “Agents” with a pulsing blue circle for established active work. Only when every child has successfully completed, use a solid green circle; retain the summary until explicitly dismissed. On hover or keyboard focus, the completed circle becomes an X in the same leading icon slot. Only that slot dismisses; the label still opens history. Keep the working count and full state in hover/focus help and the inspector. Never offer dismissal while work is unfinished. Activating the summary opens the singleton Agents surface, where individual children and full available history remain accessible. Plan uses completed/total progress (n/N), the same blue working and solid green all-completed states, and the same completed-only dismissal. Failed, interrupted, waiting, stale and unknown states stay distinct and never imply success. Dismissal belongs to the frontend thread view; new work or a changed group/plan reopens its summary, while unrelated stream updates do not.
+Keep a fixed area immediately above the prompt, outside transcript scrolling, with one Agents summary, a compact Plan summary and pending requests. Show “Agents N”, where N is the total number of children in the represented group, including completed children, with a pulsing blue circle for established active work. The count stays visible as children finish and after all have completed; it is not the remaining working count. Only when every child has successfully completed, use a solid green circle; retain the summary until explicitly dismissed. On hover or keyboard focus, the completed circle becomes an X in the same leading icon slot. Only that slot dismisses; the label still opens history. Keep the working count and full state in hover/focus help and the inspector. Never offer dismissal while work is unfinished. Activating the summary opens the singleton Agents surface, where individual children and full available history remain accessible. Plan uses completed/total progress (n/N), the same blue working and solid green all-completed states, and the same completed-only dismissal. Failed, interrupted, waiting, stale and unknown states stay distinct and never imply success. Dismissal belongs to the frontend thread view; new work or a changed group/plan reopens its summary, while unrelated stream updates do not.
 
-The grouped summary supersedes the former running-only individual chips and More menu. Completed summaries remain until explicitly dismissed; dismissal never deletes history, cancels work or resolves pending requests. Child questions remain accessible independently of summary visibility. Use one shared tinted band with consistent text colors; circles convey working, success and exceptional states; hover/focus help retains full state and working counts. The Agents label stays simply Agents. Animation stops on disconnection or a terminal turn state.
+The grouped summary supersedes the former running-only individual chips and More menu. Completed summaries remain until explicitly dismissed; dismissal never deletes history, cancels work or resolves pending requests. Child questions remain accessible independently of summary visibility. Use one shared tinted band with consistent text colors; circles convey working, success and exceptional states; hover/focus help retains full state and working counts. The label remains “Agents N” in every state, including while the completed circle becomes X; do not append “working” or “finished”. For 13 children with 12 completed and one running, show a pulsing blue circle and “Agents 13”; when the last completes, show a solid green circle and the same “Agents 13”. Animation stops on disconnection or a terminal turn state.
 
-In constrained space, retain compact Agents and Plan summaries and one independently scrollable question or approval card. Preserve the prompt, settings and usage. Individual child selection lives in Agents; no separate running-child More menu is required. See [compact-layout rules](layout.md#fixed-area-above-the-prompt).
+In the [single-column phone layout](layout.md#single-column-layouts-on-small-screens), the fixed activity area belongs to Conversation; explicitly selecting another column hides it while preserving its state and attention access. In constrained space, retain compact Agents and Plan summaries and one independently scrollable question or approval card. Preserve the prompt, settings and usage. Individual child selection lives in Agents; no separate running-child More menu is required. See [compact-layout rules](layout.md#fixed-area-above-the-prompt).
 
 Pending question sets show one question at a time with top tabs and conditional Back/Next navigation. Preserve typed answers and selections across navigation; explicit Submit is separate. Keep the composer usable and route answers to the request identity, never as new prompts. Show concise “Waiting for answer” for a blocking request or “Answer anytime” for an asynchronous one only when that distinction matters. The requesting run waits for a blocking answer; asynchronous work continues and receives the submitted answer later through a supported provider path.
 
 Requests are durable and server-owned. Reconcile answers across clients, invalidate resolved controls, and never answer through navigation, defaults, elapsed time, or disconnect. Provider capability is conditional: base ACP v1 does not universally establish asynchronous questions. Unsupported modes need an honest state rather than simulated delivery. See [questions](questions.md) for the request contract.
+
+Confirmed question responses remain visible in the conversation as compact,
+read-only [Answered Q&A cards](questions.md#answered-questions-in-conversation-history).
+Pair the original questions with accepted answers, expand long content in place,
+and preserve response chronology without duplicating history on reconnect. These
+cards scroll with the transcript; the fixed area remains for pending requests.
 
 The compact view can show a summary or bounded output tail. The inspector must expose the retained source detail; it must not simply repeat the summary under a “full output” label. If the provider truncated or omitted content, state that limitation and distinguish it from an empty result. Do not recreate missing content from summaries or counters.
 

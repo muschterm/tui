@@ -5,6 +5,10 @@ package tui
 // A Nerd Font is the requested default; TUI_GO_ICONS=ascii is an explicit
 // fallback because terminal protocols cannot identify the user's font reliably.
 var icons = map[string]struct{ glyph, plain string }{
+	"settings": {"\ueaf8", "*"}, "code": {"\ueac4", "<>"},
+	"star": {"\ueb59", "*"}, "rocket": {"\uead3", "^"},
+	"caret-up": {"▴", "^"}, "caret-down": {"▾", "v"},
+	"menu": {"☰", "="},
 	"left": {"\uebf3", "L+"}, "left-off": {"\uec02", "L-"},
 	"right": {"\uebf4", "R+"}, "right-off": {"\uec00", "R-"},
 	"bottom": {"\uebf2", "B+"}, "bottom-off": {"\uec01", "B-"},
@@ -13,8 +17,11 @@ var icons = map[string]struct{ glyph, plain string }{
 	"terminal": {"\uea85", ">_"}, "agents": {"\uea7e", "A"},
 	"plan": {"\ueb67", "P"}, "activity": {"\ueb31", "~"},
 	"close": {"\uea76", "x"}, "add": {"\uea60", "+"},
-	"more": {"\uea7c", "..."}, "theme": {"\ueac6", "*"},
+	"compose": {"\uf044", "+"}, // fa-pen_to_square, matching T3's SquarePen action
+	"more":    {"\uea7c", "..."}, "theme": {"\ueac6", "*"},
 	"more-vertical": {"\ueb10", ":"}, // cod-kebab_vertical
+	// Unicode filled triangles remain legible without a private-use font glyph.
+	"previous": {"◀", "<"}, "next": {"▶", ">"},
 	// fa-circle_arrow_up, fa-stop_circle and fa-paperclip.
 	"send": {"\uf0aa", "^"}, "stop": {"\uf28d", "o"}, "attach": {"\uf0c6", "+"},
 	// fa-circle_o, fa-dot_circle_o, fa-square_o, fa-square_check.

@@ -57,24 +57,62 @@ func (e *engine) publish() {
 	}
 }
 func (e *engine) command(c protocol.Command) (protocol.Receipt, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	return e.commandContext(context.Background(), c)
+}
+func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protocol.Receipt, error) {
 	if c.Version != protocol.Version {
 		return protocol.Receipt{}, failure("version_mismatch", "protocol version 1 required")
 	}
 	if c.ID == "" || len(c.ID) > 128 {
 		return protocol.Receipt{}, failure("invalid", "bounded command identity required")
 	}
+	e.mu.Lock()
 	if r, err := e.store.Lookup(c); err != nil {
+		e.mu.Unlock()
 		return protocol.Receipt{}, err
 	} else if r != nil {
+		e.mu.Unlock()
 		return *r, nil
 	}
 	if e.stopping {
+		e.mu.Unlock()
 		return protocol.Receipt{}, failure("stopping", "server is shutting down")
 	}
+	captured := c
+	if usesWorkspaceFiles(c) {
+		captureState := clone(e.snap)
+		e.mu.Unlock()
+		// Reading user files cannot stall unrelated commands, snapshots or ticks.
+		// A competing retry may commit while this request reads; reconcile its
+		// receipt before using these captures or reporting a read failure.
+		var captureErr error
+		captured, captureErr = captureCommand(ctx, captureState, c)
+		e.mu.Lock()
+		if r, err := e.store.Lookup(c); err != nil {
+			e.mu.Unlock()
+			return protocol.Receipt{}, err
+		} else if r != nil {
+			e.mu.Unlock()
+			return *r, nil
+		}
+		if e.stopping {
+			e.mu.Unlock()
+			return protocol.Receipt{}, failure("stopping", "server is shutting down")
+		}
+		if captureErr != nil {
+			e.mu.Unlock()
+			return protocol.Receipt{}, captureErr
+		}
+		before, errBefore := captureRoot(captureState, c)
+		after, errAfter := captureRoot(e.snap, c)
+		if errBefore != nil || errAfter != nil || before != after {
+			e.mu.Unlock()
+			return protocol.Receipt{}, failure("stale_workspace", "workspace changed while capturing context; review and send again")
+		}
+	}
+	defer e.mu.Unlock()
 	next := clone(e.snap)
-	target, err := apply(&next, c)
+	target, err := apply(&next, captured)
 	if err != nil {
 		return protocol.Receipt{}, err
 	}
@@ -87,6 +125,9 @@ func (e *engine) command(c protocol.Command) (protocol.Receipt, error) {
 		return protocol.Receipt{}, failure("capacity", "fixture snapshot exceeds 4 MiB; remove queued content before submitting")
 	}
 	r := protocol.Receipt{ID: c.ID, State: "accepted", Revision: next.Revision, TargetID: target}
+	if c.Kind == "queue.steer" {
+		r.State = "fixture-delivered"
+	}
 	if err = e.store.Save(next, &c, &r); err != nil {
 		return protocol.Receipt{}, err
 	}
@@ -144,15 +185,13 @@ func (e *engine) tick() error {
 					t.Children[j].State = "completed"
 				}
 			}
-			promptID := t.ID + "-initial"
-			for j := len(t.Activity) - 1; j >= 0; j-- {
-				if t.Activity[j].Role == "user" {
-					promptID = t.Activity[j].ID
+			promptID := fixtureTurnID(t)
+			for j := range t.Activity {
+				if t.Activity[j].Role == "user" && (t.Activity[j].TurnID == promptID || t.Activity[j].ID == promptID) {
 					t.Activity[j].State = "completed"
-					break
 				}
 			}
-			result := protocol.Activity{ID: "result-" + promptID, Role: "agent", Title: "Fixture agent", Text: "Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.", State: "completed"}
+			result := protocol.Activity{ID: "result-" + promptID, TurnID: promptID, Role: "agent", Title: "Fixture agent", Text: "Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.", State: "completed"}
 			found := false
 			for j := range t.Activity {
 				if t.Activity[j].ID == result.ID {
@@ -196,13 +235,7 @@ func fixtureTurnCompleted(t *protocol.Thread) bool {
 			return false
 		}
 	}
-	promptID := t.ID + "-initial"
-	for i := len(t.Activity) - 1; i >= 0; i-- {
-		if t.Activity[i].Role == "user" {
-			promptID = t.Activity[i].ID
-			break
-		}
-	}
+	promptID := fixtureTurnID(t)
 	for _, a := range t.Activity {
 		if a.ID == "result-"+promptID && a.State == "completed" {
 			return true
@@ -211,16 +244,35 @@ func fixtureTurnCompleted(t *protocol.Thread) bool {
 	return false
 }
 
+// Legacy snapshots have no identity; derive it from their latest original input
+// before they can accept steering, and persist it with startup recovery.
+func fixtureTurnID(t *protocol.Thread) string {
+	if t.TurnID != "" {
+		return t.TurnID
+	}
+	for i := len(t.Activity) - 1; i >= 0; i-- {
+		if t.Activity[i].Role == "user" {
+			return t.Activity[i].ID
+		}
+	}
+	return t.ID + "-initial"
+}
+
+func appendFixturePrompt(t *protocol.Thread, p protocol.Prompt) {
+	capture, _ := json.Marshal(p)
+	t.Activity = append(t.Activity, protocol.Activity{ID: p.ID, TurnID: t.TurnID, Prompt: &p, Role: "user", Text: p.Text, State: "running", Detail: string(capture)})
+}
+
 func startFixturePrompt(t *protocol.Thread) {
 	p := t.Queue[0]
 	t.Queue = t.Queue[1:]
 	t.QueueRevision++
 	t.Effective = p.Settings
 	t.State, t.Tick = "running", 0
+	t.TurnID = p.ID
 	// Keep the accepted capture after it leaves the editable queue. Activity
 	// retention applies to this fixture history just as it does to other detail.
-	capture, _ := json.Marshal(p)
-	t.Activity = append(t.Activity, protocol.Activity{ID: p.ID, Role: "user", Text: p.Text, State: "running", Detail: string(capture)})
+	appendFixturePrompt(t, p)
 	t.Plan = []protocol.PlanStep{{Title: "Review the captured prompt", State: "active"}, {Title: "Complete the synthetic review", State: "pending"}}
 	// Bound the fixture inspector while preserving older child detail in the
 	// ordinary, explicitly retained activity history.
@@ -288,36 +340,34 @@ func Serve(ctx context.Context, home string) error {
 	if !exists {
 		snap = fixture.Initial()
 	} else {
-		for i := range snap.Threads {
-			t := &snap.Threads[i]
-			if t.State != "idle" {
-				t.NeedsResume = true
-				t.State = "interrupted"
-			}
-			for j := range t.Children {
-				if t.Children[j].State == "running" {
-					t.Children[j].State = "interrupted"
-				}
-			}
-			for j := range t.Requests {
-				if t.Requests[j].State == "pending" {
-					t.Requests[j].Revision++
-					t.Requests[j].Delivery = "revalidation-required"
-				}
-			}
-		}
+		recoverThreads(&snap)
 		for i := range snap.Terminals {
 			snap.Terminals[i].State = "ended"
 			snap.Terminals[i].Revision++
 		}
 		snap.Revision++
 	}
+	for i := range snap.Threads {
+		t := &snap.Threads[i]
+		if t.TurnID == "" {
+			t.TurnID = fixtureTurnID(t)
+		}
+	}
+	if !slices.Contains(snap.Capabilities, "fixture-steering") {
+		snap.Capabilities = append(snap.Capabilities, "fixture-steering")
+	}
 	ensureProjects(&snap)
+	ensureAppSettings(&snap)
 	if !slices.Contains(snap.Capabilities, "project-management") {
 		snap.Capabilities = append(snap.Capabilities, "project-management")
 	}
 	if !slices.Contains(snap.Capabilities, "thread-lifecycle") {
 		snap.Capabilities = append(snap.Capabilities, "thread-lifecycle")
+	}
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info"} {
+		if !slices.Contains(snap.Capabilities, capability) {
+			snap.Capabilities = append(snap.Capabilities, capability)
+		}
 	}
 	snap.InstanceID = ID()
 	if err = st.Save(snap, nil, nil); err != nil {
@@ -342,6 +392,8 @@ func Serve(ctx context.Context, home string) error {
 	runctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/workspace", e.workspace)
+	mux.HandleFunc("GET /v1/browse", e.browse)
 	respond := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(v)
@@ -359,7 +411,7 @@ func Serve(ctx context.Context, home string) error {
 			respond(w, protocol.Error{Code: "invalid", Message: "invalid command JSON"})
 			return
 		}
-		receipt, err := e.command(c)
+		receipt, err := e.commandContext(r.Context(), c)
 		if err != nil {
 			w.WriteHeader(409)
 			var pe *protocol.Error
@@ -487,6 +539,7 @@ loop:
 	final := clone(e.snap)
 	for i := range final.Threads {
 		t := &final.Threads[i]
+		t.RestartEligible = restartEligible(t)
 		if t.State == "running" || t.State == "waiting" {
 			t.State = "interrupted"
 			t.NeedsResume = true

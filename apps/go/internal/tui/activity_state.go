@@ -32,7 +32,7 @@ func agentSummary(t protocol.Thread) activitySummary {
 	}
 	s := summarizeActivity(t, states)
 	s.Key = activityKey(t, "agents", identity)
-	s.Label = "Agents"
+	s.Label = fmt.Sprintf("Agents %d", s.Total)
 	return s
 }
 

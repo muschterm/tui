@@ -6,19 +6,84 @@ Status: required by the user on **2026-09-19**. This specifies the shared UI and
 
 ## Placement and navigation
 
+The question/approval card shares the prompt's rounded outline and stable interior
+background. Question tabs, Back/Next arrows, overflow, submission/approval buttons
+and the inline Requests selector use single-row square fills. Rest is neutral,
+hover stronger neutral, and selection accent plus bold. Keyboard focus adds an
+underline independently. Selected tabs keep their treatment when a neighbor is
+hovered. Reserved bracket end cells preserve compact controls in monochrome.
+The Go card remains bounded to 12 rows, with scrollable content; plain and
+limited-color modes preserve geometry and hit regions. See the accepted
+[component rule](components.md).
+
 Pending questions appear immediately above the prompt, alongside the fixed current-plan and active-subagent controls. This area is outside transcript scrolling. The prompt stays present and editable with its settings and usage; a question must not replace it or consume its draft. Keep its controls usable when the right surface is maximized. At short heights, collapse the optional bottom panel and bound/scroll question content before sacrificing answer navigation or the prompt.
 
-One request can contain multiple questions. Show one question at a time inside an outlined container, with short question tabs and answered markers along its top. Keep the active tab visible, with a question menu only when tabs overflow. Place Back/Next beside these tabs only when a previous/next question exists; never wrap around at the ends. Preserve choices and typed answers while moving between questions. The selected tab is client-local; another client's navigation must not move this user's focus. Incomplete and answered questions remain distinguishable without relying on color alone.
+One request can contain multiple questions. Show one question at a time inside an outlined container, with compact, individually filled question buttons and answered markers along its top. Keep the active tab visible, with a question menu only when tabs overflow. Use filled left/right arrows for Back/Next in fixed slots at the ends of the row, with plain `<`/`>` fallbacks. Hide an arrow when that direction has no question, preserving its empty slot; tabs must not use that space. Never wrap around at the ends. When the row overflows, show a contiguous group containing the current question and its nearest neighbors that fit. Arrow navigation selects and reveals the adjacent question. Reserve answered-marker space so progress does not shift the buttons. Preserve choices and typed answers while moving between questions. The selected tab is client-local; another client's navigation must not move this user's focus. Incomplete and answered questions remain distinguishable without relying on color alone.
 
 Show the requesting agent or child identity and the actual question. Render supplied single choices as vertical radio options and multiple choices as vertical checkboxes, including a final Other/free-fill choice where supported. Open-ended questions use text input. Preserve required/optional rules and validation. Options… appears only when some choice content is outside the visible viewport; scrolling and keyboard focus still reach every choice. Free text must be available when the source supports it; do not invent an answer shape the agent cannot receive. Source defaults remain editable and are never already submitted answers. Identify blocking versus asynchronous behavior because it changes what the user can expect.
 
 Back, Next, and selecting a tab only navigate. Selecting a radio option records the draft and automatically advances to the next question if present. Checkbox toggles stay on the current page so several values can be chosen. Choosing Other focuses its free-text field and does not advance with an empty answer. Open-ended answers use their text field; users can navigate through the top tabs and applicable Next control. Submit is explicit and separate. Validate required answers before submitting. For a source expecting one answer object, submit its answers together; do not turn a multi-question request into unrelated prompts. Per-question delivery requires explicit integration support. Decline, cancel and skip are distinct actions where supplied; skipping a required question must not fabricate a response.
 
-For several requests, provide a compact Requests selector with pending count and source/status. Hide that selector when only one request is pending; do not label it Next (1). Show one request's question pages at a time instead of stacking unbounded cards. New requests remain discoverable without stealing text input or erasing another draft. Navigation and submission have keyboard and mouse paths; exact bindings remain prototype work and must respect editor/PTY focus.
+Give Submit, Options, Requests and approval choices the same compact button treatment where present, with clear gaps and hover/focus feedback; use an overflow menu before choices can overlap. For several requests, provide a compact Requests selector with pending count and source/status. Hide that selector when only one request is pending; do not label it Next (1). Show one request's question pages at a time instead of stacking unbounded cards. New requests remain discoverable without stealing text input or erasing another draft. Navigation and submission have keyboard and mouse paths; exact bindings remain prototype work and must respect editor/PTY focus.
 
-When space is tight, this area contains one scrollable question or approval card alongside the compact Plan and Agents summaries. Scroll the card's content while keeping request navigation and explicit answer/approval actions reachable. The normal prompt, settings and usage remain visible. Preserve drafts when switching requests and do not use overflow handling to submit, dismiss or resolve one.
+In the [single-column phone layout](layout.md#single-column-layouts-on-small-screens), this card lives in Conversation; the attention bell remains available in the other columns and reveals it without losing answer drafts. When space is tight, this area contains one scrollable question or approval card alongside the compact Plan and Agents summaries. Scroll the card's content while keeping request navigation and explicit answer/approval actions reachable. The normal prompt, settings and usage remain visible. Preserve drafts when switching requests and do not use overflow handling to submit, dismiss or resolve one.
 
 Permission requests share this area through distinct [approval cards](activity.md#approval-cards), with action details and provider-supported decisions rather than question inputs. Switching between a question and an approval preserves the question's draft and does not submit either request.
+
+## Answered questions in conversation history
+
+**Accepted, 2026-09-20:** after authoritative resolution confirms the submitted
+response, replace the live question form with a compact, read-only **Answered**
+card in the chat conversation. This is shared behavior for all three reference
+apps. The response belongs to the original request and its thread/turn; it is
+neither a new prompt nor a queued or steered message.
+
+Use one rounded outlined container with a stable background, following the
+[component rule](components.md). Give it a quiet Answered header and a completion
+indicator for the response, not the entire agent turn. Pair each original question
+with its submitted answer in question order, using spacing and text hierarchy
+without repeated You/Agent labels or nested boxes. Retain meaningful requesting
+child identity when needed to distinguish the source.
+
+Show selected choice labels, every selected value for a multiple-choice answer,
+and the accepted free text, including Other text. Preserve explicit optional
+omissions/skips as such; never display defaults or a losing client's unsent draft
+as the submitted answer. Retain the question wording/options as answered rather
+than relabelling old answers using a newer request schema.
+
+Short Q&A stays readable directly in the card. Bound long previews and show Expand
+only when content is hidden, indicating additional questions or text. Expansion
+reveals the full accepted Q&A inline in the transcript; Collapse restores the
+compact presentation. Mouse and keyboard reach both actions, and all text remains
+selectable/copyable. Transcript scrolling handles expanded content; history never
+occupies the fixed pending-request area or reduces the prompt/settings/usage
+footer. Preserve the reading anchor when expanding/collapsing and restore local
+expansion/reading state with the thread.
+
+Place the card at the response's recorded resolution point in conversation
+chronology, retaining its connection to the originating request. Later agent
+work follows normally. Incoming resolution must not steal focus or pull someone
+away from older text they are reading. The card has no answer-editing inputs,
+Submit, queue or Steer controls; viewing it cannot change or resend the answer.
+
+Submitting, accepted-for-delivery and uncertain/failed delivery must not appear
+as successfully Answered. Keep the existing pending/delivery feedback until the
+authoritative outcome is known. Declined, cancelled, withdrawn, expired or
+provider-resolved requests retain their actual outcomes and must not imply the
+user supplied an answer. If an integration distinguishes answer acceptance from
+confirmed delivery, preserve that distinction visibly.
+
+Retain one history entry per answered request revision, backed by the accepted
+question-and-answer snapshot and resolution identity/order. Repeated snapshots,
+lost receipts, reconnect and restart must update/recover that entry without
+duplicates or resubmission. All clients see the accepted response, while losing
+or stale local drafts remain separately recoverable. For older records, show
+only preserved content and known ordering; do not invent missing answers,
+request wording, delivery confirmation or timestamps.
+
+**Implementation gap:** the current Go slice saves resolved requests and their
+answers, but does not yet add this Q&A card to the transcript. This section is an
+accepted design requirement, not evidence that the history renderer exists.
 
 ## Blocking and asynchronous requests
 
@@ -54,6 +119,14 @@ A true asynchronous adapter path must establish continued useful work, the pendi
 Shared scenarios cover one/several questions, mixed choices/free text, multiselect, required validation, Back/Next without submission, retained drafts, and explicit Submit/decline/cancel. Exercise simultaneous requests from root and child runs, blocking scope alongside other active work, real progress during async waiting, and acknowledged later answers.
 
 Test competing clients, stale revisions, withdrawal during editing, lost acknowledgment, provider timeout, late answers, reattach and restart/Resume. Inspect long questions, narrow/short layouts, surface maximization, transcript scrolling and preserved prompt drafts. Terminal checks and provider checks are separate; screenshots establish neither.
+
+For answered-history cards, verify exact single/multiple/free-text/Other answers
+and optional omissions, original question snapshots, source identity and response
+chronology. Exercise compact/expanded states, mouse/keyboard access, copying,
+dark/light and narrow layouts, reading-anchor and per-thread restoration. Confirm
+one entry across competing clients, duplicate snapshots, retries and recovery;
+pending or failed delivery must never gain a successful Answered label. Viewing,
+expanding and copying history must neither submit answers nor change the prompt.
 
 ## Question-card refinement — 2026-09-20
 

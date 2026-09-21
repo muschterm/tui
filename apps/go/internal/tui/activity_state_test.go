@@ -52,7 +52,7 @@ func TestActivitySummaryLabelsAndEmpty(t *testing.T) {
 		t.Fatalf("empty plan: %+v", got)
 	}
 	thread := protocol.Thread{State: "running", Children: []protocol.Child{{State: "running"}, {State: "completed"}, {State: "running"}}, Plan: []protocol.PlanStep{{State: "completed"}, {State: "active"}}}
-	if got := agentSummary(thread); got.Label != "Agents" || got.Total != 3 || got.Completed != 1 {
+	if got := agentSummary(thread); got.Label != "Agents 3" || got.Total != 3 || got.Completed != 1 {
 		t.Fatalf("agents: %+v", got)
 	}
 	if got := planSummary(thread); got.Label != "Plan 1/2" {
@@ -61,7 +61,7 @@ func TestActivitySummaryLabelsAndEmpty(t *testing.T) {
 	for i := range thread.Children {
 		thread.Children[i].State = "completed"
 	}
-	if got := agentSummary(thread); got.Label != "Agents" || !got.Dismissible {
+	if got := agentSummary(thread); got.Label != "Agents 3" || !got.Dismissible {
 		t.Fatalf("completed agents: %+v", got)
 	}
 }

@@ -2,7 +2,10 @@ package tui
 
 import "charm.land/bubbles/v2/textarea"
 
-const maxPromptRows = 8
+const (
+	minPromptRows = 2
+	maxPromptRows = 8
+)
 
 // inputScroll describes visual rows, including soft wraps and the cursor's
 // trailing cell. Offset and CursorRow are zero-based content row positions.

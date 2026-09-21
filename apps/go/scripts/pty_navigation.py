@@ -34,9 +34,17 @@ def main():
 
     def thread_row(term):
         for y, line in enumerate(term.screen()):
-            if y >= 6 and 'New thread' in line[:24]:
+            if y >= 5 and 'New thread' in line[:24]:
                 return y
         raise AssertionError('New thread navigation row missing')
+
+    def quick_action(term, row):
+        # Both hover actions are centered in the slot immediately left of ⋮.
+        menu_x = term.screen()[row].index('\ueb10')
+        quick_x = menu_x - 3
+        term.send(f'\x1b[<35;{quick_x+1};{row+1}M'.encode())
+        assert term.screen()[row][quick_x] in ('\ueab2', '\uea81'), 'quick icon missing beside menu'
+        term.click(quick_x, row)
 
     with tempfile.TemporaryDirectory(prefix='tui-navigation-home-', dir='/tmp') as directory:
         home = Path(directory)
@@ -67,8 +75,8 @@ def main():
             a.key(2)
             a.pump(1.2)
             original = view('navigation-a')['Active']
-            # Default left pane is 24 cells: its visible folder-plus is at x=19.
-            a.click(19, 3)
+            # Default 24-cell sidebar has a single search/filter/add/new header.
+            a.click(17, 2)
             paste(a, str(marker))
             a.click_label('Add folder as project')
             a.pump(1.1)
@@ -77,7 +85,7 @@ def main():
             check('existing directory' in screen and str(marker) in screen,
                   'regular-file rejection retains folder input and visible error')
             a.send(b'\x1b')
-            a.click(19, 3)
+            a.click(17, 2)
             paste(a, str(project))
             a.send(b'\r', 1.2)
             projects = snapshot()['projects']
@@ -86,18 +94,59 @@ def main():
                   'adding folder selects project filter without changing active thread')
             check(not any(t.get('ProjectID') == selected['ID'] for t in snapshot()['threads']),
                   'adding project creates no thread or execution')
-            a.click(3, 3)
+            a.click(14, 2)
             paste(a, str(project))
             capture(a, '02-project-path-search')
             check('Navigation project' in '\n'.join(a.screen()), 'project picker searches server paths')
             a.send(b'\r', .8)
-            a.click_label('New thread')
+            # Compose icon at the right of the inline search header.
+            a.click(20, 2)
             a.pump(1.2)
+            draft_view = view('navigation-a')
+            check(draft_view['Active'] == '' and draft_view['DraftProjectID'] == selected['ID']
+                  and not any(t.get('ProjectID') == selected['ID'] for t in snapshot()['threads']),
+                  'New thread opens local draft without authoritative thread')
+            paste(a, 'Navigation start')
+            a.click(14, 2)
+            a.click_label('All projects')
+            original_title = next(t['Title'] for t in snapshot()['threads'] if t['ID'] == original)
+            a.click_label(original_title[:8])
+            a.pump(1.2)
+            check(view('navigation-a')['Active'] == original, 'existing thread selection leaves local draft')
+            a.click(14, 2)
+            paste(a, 'Navigation project')
+            a.send(b'\r', .8)
+            a.click(20, 2)
+            a.pump(.8)
+            check(view('navigation-a')['DraftThreads'][selected['ID']]['Draft'] == 'Navigation start'
+                  and 'Navigation start' in '\n'.join(a.screen()),
+                  'returning to new thread restores its project-local draft')
+            a.send(b'\r', .8)
+            check(not any(t.get('ProjectID') == selected['ID'] for t in snapshot()['threads'])
+                  and view('navigation-a')['DraftThreads'][selected['ID']]['Draft'] == 'Navigation start',
+                  'Send without model preserves local prompt and creates no thread')
+            a.click_label('Choose model')
+            # Outside click dismisses without activating underlying New thread.
+            a.click(20, 2)
+            check('Demo model' not in '\n'.join(a.screen())
+                  and view('navigation-a')['DraftThreads'][selected['ID']]['Draft'] == 'Navigation start',
+                  'outside click dismisses centered model modal without pass-through')
+            a.click_label('Choose model')
+            a.click_label('Reference · Demo model')
+            a.send(b'\r', 1.1)
             current = view('navigation-a')['Active']
             thread = next(t for t in snapshot()['threads'] if t['ID'] == current)
-            check(thread['State'] == 'idle' and thread['Checkout'] == str(project.resolve())
-                  and not any(thread.get(k) for k in ['Activity', 'Queue', 'Requests', 'Children', 'Plan']),
-                  'New thread creates empty idle Demo thread in selected server folder')
+            check(thread['Checkout'] == str(project.resolve()) and any(
+                  item['Text'] == 'Navigation start' for item in (thread.get('Activity') or []) + (thread.get('Queue') or [])),
+                  'first valid Send creates thread and accepts initial prompt')
+            a.click_label('Reference')
+            check('read-only during active work' in '\n'.join(a.screen()),
+                  'active turn configuration is read-only')
+            a.pump(9)
+            a.click_label('Reference')
+            check('Reference · Demo model' in '\n'.join(a.screen()), 'idle thread configuration remains editable')
+            a.send(b'\x1b')
+            a.send(b'\x1b')
             # Creation focuses the prompt. Input is a bracketed paste, never Send.
             paste(a, 'Preserved navigation draft')
             check(view('navigation-a')['Threads'][current]['Draft'] == 'Preserved navigation draft',
@@ -108,10 +157,10 @@ def main():
             b.key(2)
             b.pump(1.2)
             check(view('navigation-b').get('ProjectFilter', '') == '', 'second client project filter stays independent')
-            b.click(4, thread_row(b))
+            b.click(4, thread_row(b) + 1)
             paste(b, 'Second client draft')
-            check(view('navigation-b')['Active'] == current, 'second client observes same thread with local draft')
-            a.click(3, 3)
+            check(view('navigation-b')['Active'] == current, 'thread metadata selects same thread with local draft')
+            a.click(14, 2)
             paste(a, 'Navigation')
             capture(a, '03-project-name-search')
             check('Navigation project' in '\n'.join(a.screen()), 'project picker searches names')
@@ -120,25 +169,42 @@ def main():
             row = thread_row(a)
             a.send(f'\x1b[<35;5;{row+1}M'.encode())
             capture(a, '04-close-hover')
-            a.click(2, row)
+            quick_action(a, row)
             a.pump(1.2)
             check(next(t for t in snapshot()['threads'] if t['ID'] == current).get('Closed', False),
                   'hover check closes idle thread without submitting its draft')
-            a.click(4, thread_row(a))
+            a.click_label('Closed (')
+            a.pump(.8)
+            a.click(22, thread_row(a) + 1)
             a.pump(1.2)
-            check(not next(t for t in snapshot()['threads'] if t['ID'] == current).get('Closed', False)
+            check(next(t for t in snapshot()['threads'] if t['ID'] == current).get('Closed', False)
+                  and 'This thread is closed' in '\n'.join(a.screen())
                   and view('navigation-a')['Threads'][current]['Draft'] == 'Preserved navigation draft',
-                  'Closed row reopens thread and restores unsent draft')
+                  'Closed card edge views thread without reopening and restores draft')
+            a.click_label('Reopen')
+            a.pump(.8)
+            check(not next(t for t in snapshot()['threads'] if t['ID'] == current).get('Closed', False),
+                  'explicit Reopen changes lifecycle without sending draft')
+            quick_action(a, thread_row(a))
+            a.pump(.8)
+            a.click(22, thread_row(a) + 1)
+            a.send(b'\x1b')
+            a.send(b'\r', 1.1)
+            sent = next(t for t in snapshot()['threads'] if t['ID'] == current)
+            check(not sent.get('Closed', False) and any(item['Text'] == 'Preserved navigation draft'
+                  for item in (sent.get('Activity') or []) + (sent.get('Queue') or [])),
+                  'Send from closed view atomically reopens and accepts preserved prompt')
+            a.pump(9)
             row = thread_row(a)
-            a.click(2, row)
+            quick_action(a, row)
             a.pump(.8)
             row = thread_row(a)
             a.send(f'\x1b[<35;5;{row+1}M'.encode())
-            a.click(2, row)
+            quick_action(a, row)
             capture(a, '05-delete-confirm')
             a.send(b'\r', .8)
             check(any(t['ID'] == current for t in snapshot()['threads']), 'default Enter cancels permanent deletion')
-            a.click(2, thread_row(a))
+            quick_action(a, thread_row(a))
             a.click_label('Delete permanently')
             a.pump(1.3)
             b.pump(1.3)

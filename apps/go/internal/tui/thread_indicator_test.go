@@ -43,7 +43,7 @@ func TestThreadIndicatorPrecedence(t *testing.T) {
 	}
 }
 
-func TestThreadIndicatorHoverPreservesStatusUntilFinished(t *testing.T) {
+func TestThreadIndicatorHoverPreservesStatus(t *testing.T) {
 	for _, state := range []string{"running", "waiting", "failed", "idle"} {
 		for _, light := range []bool{false, true} {
 			m := navigationModel()
@@ -51,26 +51,23 @@ func TestThreadIndicatorHoverPreservesStatusUntilFinished(t *testing.T) {
 			th := &m.snapshot.Threads[0]
 			th.State, th.Queue, th.Requests, th.Children = state, nil, nil, nil
 			id := th.ID
-			m.hover = "thread-quick:" + id
+			m.hover = "thread:" + id
 			f := m.render()
-			h := controlHit(t, f, m.hover)
-			glyph, action := "●", "thread"
-			if state == "idle" {
-				glyph, action = m.icon("check"), "thread-close"
-			}
-			if h.Action.Kind != action || !strings.Contains(ansi.Strip(ansi.Cut(f.rows[h.Rect.Y], h.Rect.X, h.Rect.X+2)), glyph) {
+			h := controlHit(t, f, "thread-status:"+id)
+			if h.Action.Kind != "thread" || !strings.Contains(ansi.Strip(ansi.Cut(f.rows[h.Rect.Y], h.Rect.X, h.Rect.X+2)), "●") {
 				t.Fatalf("%s: hover replaced status or routed wrong action", state)
+			}
+			if hasControl(f, "thread-quick:"+id) != (state == "idle") {
+				t.Fatal("quick close eligibility changed", state)
 			}
 			p := colors(light)
 			want := map[string]string{"waiting": p.gold, "failed": p.red, "idle": p.green}[state]
 			if state != "running" && m.threadIndicatorColor(threadIndicator(*th)) != want {
 				t.Fatalf("%s: wrong color", state)
 			}
-			if state != "idle" {
-				clickControl(m, h)
-				if m.busy != nil {
-					t.Fatal("status click attempted to close unfinished thread")
-				}
+			clickControl(m, h)
+			if m.busy != nil {
+				t.Fatal("status click attempted to close a thread")
 			}
 			more := controlHit(t, f, "thread-menu:"+id)
 			if !strings.Contains(ansi.Strip(ansi.Cut(f.rows[more.Rect.Y], more.Rect.X, more.Rect.X+3)), m.icon("more-vertical")) {

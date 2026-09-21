@@ -196,7 +196,7 @@ func TestQuestionReviewCaptures(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"radio", "light-radio", "multi-other", "narrow", "invalid-submit", "light-error", "narrow-error"} {
+	for _, scenario := range []string{"radio", "light-radio", "multi-other", "narrow", "invalid-submit", "light-error", "narrow-error", "many-first", "many-middle", "many-last", "light-many"} {
 		m, req := questionReviewModel()
 		if scenario == "light-radio" || scenario == "light-error" {
 			m.state.Light = true
@@ -221,6 +221,23 @@ func TestQuestionReviewCaptures(t *testing.T) {
 		if scenario == "light-error" {
 			m.setRequestFeedback(m.state.Active, req.ID, req.Revision, "Server rejected answer · retry after correcting it", false)
 			m.hover = "answer-submit"
+			m.configureInputs()
+		}
+		if strings.HasPrefix(scenario, "many-") || scenario == "light-many" {
+			m.snapshot.Threads[0].Requests[0].Questions = nil
+			for i := 0; i < 9; i++ {
+				m.snapshot.Threads[0].Requests[0].Questions = append(m.snapshot.Threads[0].Requests[0].Questions, protocol.Question{
+					ID: fmt.Sprint("q", i), Label: fmt.Sprint("Review ", i+1), Text: fmt.Sprintf("What should we check in area %d?", i+1), Kind: "single", Options: []string{"Layout", "Keyboard", "Pointer"},
+				})
+			}
+			m.Update(tea.WindowSizeMsg{Width: 64, Height: 26})
+			if scenario == "many-middle" || scenario == "light-many" {
+				m.selectQuestion(4)
+			}
+			if scenario == "many-last" {
+				m.selectQuestion(8)
+			}
+			m.state.Light = scenario == "light-many"
 			m.configureInputs()
 		}
 		f := m.render()

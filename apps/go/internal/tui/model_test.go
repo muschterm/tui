@@ -149,6 +149,7 @@ func TestCrowdedFooterRemainsReachable(t *testing.T) {
 
 func TestPromptCapturesSettingsAndContextAtSend(t *testing.T) {
 	m := testModel()
+	m.snapshot.Threads[0].State = "idle"
 	m.prompt.SetValue("keep this submission")
 	m.activate(action{Kind: "attach-kind", Value: "file"})
 	m.snapshot.Threads[0].Tick = 17
@@ -179,7 +180,7 @@ func BenchmarkViewWide(b *testing.B) {
 }
 
 func TestLayoutKeepsComposerAndControls(t *testing.T) {
-	for _, size := range [][2]int{{160, 50}, {120, 40}, {80, 30}, {60, 24}, {48, 22}} {
+	for _, size := range [][2]int{{160, 50}, {120, 40}, {80, 30}, {60, 24}, {48, 22}, {47, 22}, {40, 22}} {
 		for _, light := range []bool{false, true} {
 			for _, expanded := range []bool{false, true} {
 				m := testModel()
@@ -207,10 +208,19 @@ func TestLayoutKeepsComposerAndControls(t *testing.T) {
 						t.Errorf("%s hit outside workspace: %+v", name, h)
 					}
 				}
-				if found["maximize"] != (f.geom.Right.W > 0 && f.geom.Right.H > 0) {
+				if found["maximize"] != (!m.singleColumn() && f.geom.Right.W > 0 && f.geom.Right.H > 0) {
 					t.Errorf("%s maximize visibility does not match right panel", name)
 				}
-				for _, k := range []string{"left", "right", "bottom", "attention", "prompt", "send", "answer-submit"} {
+				keys := []string{"attention", "prompt", "send"}
+				if m.singleColumn() {
+					keys = append(keys, "columns")
+				} else {
+					keys = append(keys, "left", "right", "bottom")
+				}
+				if m.conversationVisible() {
+					keys = append(keys, "answer-submit")
+				}
+				for _, k := range keys {
 					if !found[k] {
 						t.Errorf("%s missing %s", name, k)
 					}

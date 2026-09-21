@@ -25,7 +25,7 @@ Launch starts or attaches to the background server. The application home is `~/.
 ./bin/tui-go server stop
 ```
 
-`--client desk` restores that named client's saved view, including drafts and geometry. The default client identity is unique so simultaneous launches navigate independently; use different explicit names for independent persistent views. View documents are stored through the server, separate from authoritative execution snapshots. `snapshot` prints diagnostic state JSON. `probe` reports environment/runtime information and does not establish terminal capability support. Restart preserves fixture state but requires explicit Resume; reattaching to a still-running server only catches up.
+`--client desk` restores that named client's saved view, including drafts and geometry. The default client identity is unique so simultaneous launches navigate independently; use different explicit names for independent persistent views. View documents are stored through the server, separate from authoritative execution snapshots. `snapshot` prints diagnostic state JSON. `probe` reports environment/runtime information and does not establish terminal capability support. Restart preserves fixture state and requires explicit Resume by default (eligible Demo work may continue under the explicit General setting); reattaching to a still-running server only catches up.
 
 ## Prototype interaction
 
@@ -52,14 +52,65 @@ Pointer paths include visible controls, divider dragging, wheel scrolling and te
 
 Controls use Nerd Font Codicons by default; configure a patched font in your terminal. `TUI_GO_ICONS=ascii ./bin/tui-go` selects the explicit plain-symbol fallback. Pane glyphs reflect visible open/closed state. Tabs contain an icon and name; hovering a tab or focusing its icon reveals the close action. Only the icon slot closes it. The overflow control appears only when some tabs are hidden, with one row per surface and Delete as a keyboard close path.
 
-The composer starts at one row and grows with wrapped text and newlines to eight rows where space permits. Short layouts reduce the cap while keeping fixed controls visible. Additional text scrolls and remains intact. Scrollbars appear for overflowing transcript, inspector, request text, composer/answer, navigation, bottom output and menus. Click the track to page or drag the thumb; one-cell tracks have no drag travel, so use wheel/keyboard. Reading older input lines does not move the insertion cursor; typing returns to it. See [controls validation and captures](../research/go-controls-2026-09-19.md).
+The composer starts at two editable rows inside its outline and grows with wrapped text and newlines to eight rows where space permits. Short layouts reduce the cap while keeping fixed controls visible. Additional text scrolls and remains intact. Scrollbars appear for overflowing transcript, inspector, request text, composer/answer, navigation, bottom output and menus. Click the track to page or drag the thumb; one-cell tracks have no drag travel, so use wheel/keyboard. Reading older input lines does not move the insertion cursor; typing returns to it. See [controls validation and captures](../research/go-controls-2026-09-19.md).
 
 Input routing measures controls without painting. The runtime combines pending
 visual updates at up to 60 frames per second while processing every input and
 state transition immediately. Scroll offsets stay within current content bounds.
 See the [wheel-input regression and measurements](../research/go-scroll-performance-2026-09-19.md).
 
+## Phone-sized terminals
+
+The minimum is now **40×22**, including the reported **47×22** iPhone size.
+Below 60 columns, tap the top-left hamburger or press F2 to select Conversation,
+Projects & threads, Surfaces or Terminal. The picker also exposes Commands;
+F3/F5 directly select Surfaces/Terminal. The prompt, settings/usage overflow and
+Send/Stop remain available. The other fixed activity controls live in Conversation;
+the bell returns to pending questions. Selecting a column preserves drafts, tabs
+and terminal sessions. A wider resize restores the saved pane arrangement.
+See the [small-screen behavior](layout.md#single-column-layouts-on-small-screens).
+
+Reopen `./apps/go/bin/tui-go` from the repository root to use the rebuilt client;
+this presentation change requires no server restart. The 22-row minimum remains.
+Actual iPhone terminal, SSH and mobile keyboard behavior still need user testing;
+our Go render and OS-PTY checks do not establish device compatibility.
+[Validation and captures](../research/go-small-screen-2026-09-20.md) record the
+40 passing PTY checks and remaining device review.
+
 ## Application protocol v1
+
+### Fixture queue steering
+
+Each queue row and the full queue menu expose **Steer**, with pointer and
+Tab/Enter activation. It adds the saved queued message to the same active Demo
+turn, preserving captured settings/attachments and the ordinary draft. At narrow
+widths Steer stays labelled while Edit/Remove use icons with descriptive help.
+Unavailable activation shows a five-second notice without moving focus; pending
+or uncertain delivery remains visible until a receipt or explicit Retry resolves
+it. Editing the same queued item requires Save or Cancel before Steer.
+
+The new optional `fixture-steering` capability gates `queue.steer`. It uses
+`TargetID` for the queued prompt, `Revision` for the queue revision and
+`ExpectedTurnID` for the observed `Thread.TurnID`. Accepted synthetic delivery
+returns `fixture-delivered`; `Activity.TurnID` and `Activity.Prompt` retain its
+turn and complete captured input. Queue removal, history and receipt commit
+together. A stale queue/turn, finished/closed/interrupted turn, unavailable
+capability or settings mismatch leaves the prompt queued. A waiting fixture turn
+accepts steering without resolving its pending questions or approvals.
+
+Restarting the rebuilt server upgrades legacy fixture turn identities and
+advertises this capability; attaching the new TUI to an older running server
+does not upgrade it. To enable steering on an existing home, detach the old TUI,
+run `./apps/go/bin/tui-go server stop` from the repository root, then launch
+`./apps/go/bin/tui-go`. Server restart preserves state and requires explicit
+Resume of unfinished work. Do not restart merely to reconcile a lost receipt.
+
+This is a fixture capability, not verified Codex/Claude/ACP delivery. The
+[shared steering design](activity.md#steering-a-queued-message) applies to all
+three reference apps, while [implementation evidence](../research/go-steering-2026-09-20.md)
+records the bounded Go behavior and remaining integration work.
+
+### Snapshot and command transport
 
 The authoritative wire shapes are [protocol types](../../apps/go/internal/protocol/types.go); handlers are in [server.go](../../apps/go/internal/server/server.go), transitions in [commands.go](../../apps/go/internal/server/commands.go), and transaction boundaries in [storage.go](../../apps/go/internal/storage/storage.go). This is an application protocol, distinct from ACP v1. Some nested fields currently use Go's exported field names in JSON; consumers should follow the actual types rather than infer naming from the top-level snapshot tags.
 
@@ -91,7 +142,7 @@ Current bounds: 768 KiB command bodies; 16,384-byte prompts; 32 queued prompts p
 
 [go.mod](../../apps/go/go.mod) pins Go 1.27.1, Bubble Tea 2.0.9, Bubbles 2.2.1, Lip Gloss 2.0.6, modernc SQLite 1.59.0 and coder/websocket 1.8.15, with checked-in module sums. Tea/Bubbles/Lip Gloss supply input/rendering, composer widgets and styling but add terminal compatibility work. These maintained releases were verified through the public Go module proxy and their downloaded versioned source on 2026-09-19. The existing transitive `uniseg` 0.4.7 dependency is now direct for grapheme-safe editing; `x/ansi` 0.11.8 provides cell-aware clipping/sanitization, and `x/sys` 0.48.0 supplies Unix locks and terminal queries. Their cost is a pinned Unicode/terminal implementation surface that still needs compatibility checks. Pure-Go SQLite avoids a cgo deployment dependency at the cost of a larger dependency/binary footprint. WebSocket support supplies transport framing and connection handling; application authentication, versioning and catch-up remain this repository's responsibility. The POSIX lock/process implementation currently targets macOS/Linux; Windows remains outstanding.
 
-The fixture runner is intentionally bounded to synthetic work. There are no workspace file captures/writes, Git operations, agent jobs or interactive terminal subprocesses. Application persistence is real. A displayed terminal's controller field is fixture state, not a verified PTY controller contract. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
+The fixture runner is intentionally bounded to synthetic work. Workspace file context capture is limited to the source-backed UTF-8 attachment path described below. There are no workspace file writes, Git mutations, real agent jobs or interactive terminal subprocesses. Application persistence is real. A displayed terminal's controller field is fixture state, not a verified PTY controller contract. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
 
 ## Evidence and next slice
 
@@ -122,10 +173,19 @@ Summary dismissal is frontend-local per thread. The fixture protocol has no run 
 
 The bell uses a pending-count badge and packs against visible pane controls.
 Completed Plan/Agents summaries swap their leading dot for X on hover/focus;
-only the icon dismisses, while the label opens history. Agents keeps its compact
-name and exposes state/count in hover help. Closed (formerly Recents) uses a section heading.
+only the icon dismisses, while the label opens history. Agents shows “Agents N”
+with the total child count, including completed children; state and working count
+remain in hover help. Closed (formerly Recents) uses a section heading.
 
-Questions use a bounded outlined card, top tabs, vertical radio/checkbox choices,
+The total-count correction was validated on 2026-09-20 with
+`GOCACHE=/tmp/tui-go-build make check` (formatting, vet, race tests and build).
+The 13-child regression covers 12 completed/one working, all completed, hover,
+both themes and widths 48/80/120. Deterministic View captures were reviewed for
+working/completed states and both themes at 48×22. These captures exercise the
+renderer; this correction has not been checked in a native terminal session.
+
+Questions use a bounded outlined card, single-row square-filled top tabs, fixed-slot filled
+Back/Next arrows, vertical radio/checkbox choices,
 optional Other text, and open-ended text. Single-choice selection advances;
 checkbox selection does not. Every submission remains explicit. Controls and
 scrolling follow the [question contract](questions.md#question-card-refinement--2026-09-20).
@@ -146,16 +206,23 @@ new terminal capability is implied by this presentation work.
 ## Projects and thread organization
 
 The navigation now offers All projects or a searchable name/path selector, an
-adjacent folder-plus Add project control and New thread. Add accepts an existing
+adjacent folder-plus Add project control and a square-and-pencil New thread icon
+in its header. Add accepts an existing
 folder on the server, deduplicates its canonical path and leaves its files intact.
-A project starts empty; New thread creates an idle Demo thread without submitting
-a prompt. The selected filter only changes that client's navigation.
+A project starts empty; New thread opens a local per-project draft. Explicitly
+choose Reference model after the preset Demo Agent; first valid Send creates the
+thread and accepts its initial prompt atomically. The selected filter only changes that client's navigation.
+
+Thread titles and metadata share a padded card background and rounded outline, with
+a blank row between threads. Hover/focus highlights the entire card; metadata and
+padding select for reading, while the status and menu buttons keep their own actions.
+See [card and compose-icon validation](../research/go-thread-cards-2026-09-20.md).
 
 Open rows show pulsing blue working, yellow/orange attention, red error or green
 finished/idle circles. Only finished, closable rows expose a hover/focus checkmark
 to Close, and a vertical ellipsis offers Close or
 Reopen plus Delete permanently. Closed replaces Recents; selecting a closed row
-reopens it, and its hover trash opens a Cancel-first permanent-delete confirmation.
+reads it without reopening, and its hover trash opens a Cancel-first permanent-delete confirmation.
 Close currently requires no active/queued work, pending requests or active children.
 Reopen restores the draft/surfaces and does not Resume interrupted execution.
 F4 exposes Projects, Add project, New thread, Closed threads and selected-thread
@@ -232,3 +299,130 @@ Close icons remain centered within their existing hit areas. Rebuild/relaunch
 only the TUI. See the [spacing review](../research/go-spacing-2026-09-20.md) and
 [responsive footer review](../research/go-footer-overflow-2026-09-20.md), followed by
 [grouped overflow and prompt outline](../research/go-composer-groups-2026-09-20.md).
+
+Question navigation refinement: filled `◀`/`▶` icons (`<`/`>` in plain mode)
+replace Back/Next text. Their slots stay reserved when either end is unavailable.
+Question buttons have padding, individual backgrounds and a bold active state;
+limited-color and plain-symbol modes add brackets in reserved end cells. The
+current question remains visible in a contiguous group as navigation
+advances; overflow alone exposes the all-questions menu. Answer checkmarks reserve
+space. Submit, Options, Requests and approval choices use matching compact buttons.
+See [navigation validation and captures](../research/go-question-tabs-2026-09-20.md).
+
+The accepted [component rule](components.md) supersedes the earlier two-style
+corner experiments: prompt, thread, request and dialog containers use rounded
+outlines and stable interior backgrounds; question/surface tabs and compact
+actions use single-row square fills. Square outlines remain available. Rest and
+hover use distinct neutral shades; selection uses accent plus bold, and keyboard
+focus independently underlines the label. Status colors remain semantic.
+Question content remains scrollable inside its 12-row maximum. Tab edges select;
+the separate icon closes. Incremental painting bounds retained ANSI styling.
+The [earlier control experiments](../research/go-prompt-corners-2026-09-20.md)
+remain historical evidence and do not validate the new component states.
+Fresh [component validation](../research/go-components-2026-09-20.md) records
+the shared resolver, render captures, race tests and 56 local PTY checks.
+
+The queue now groups its count, previews and Steer/Edit/Remove/reorder actions in a
+rounded container. It shows up to two preview rows, or one below 28 terminal rows;
+the header reports hidden items and opens the full queue. Actions stay inside
+the shared inset and align with their message. Boundary arrows retain their
+slots while disabled. The outline adds one row at normal heights, two in the
+short layout; request content and prompt growth account for that space.
+
+Answered-question history is an accepted [shared design requirement](questions.md#answered-questions-in-conversation-history) awaiting implementation. The Go slice currently saves accepted answers on resolved requests, but removing the pending form does not yet create a readable Q&A transcript card. No runtime support is claimed by the documentation update.
+
+## Thread quick-action placement — 2026-09-20
+
+Close and trash now occupy the fixed slot directly left of the vertical ellipsis.
+The leading circle keeps its status color and selects/reopens the thread. Hover
+or keyboard focus reveals the eligible action without shifting the title. The
+phone navigation column uses the same placement. Existing inactive-only Close
+and permanent-Delete confirmation behavior remain unchanged.
+
+Validation on 2026-09-20: `GOCACHE=/tmp/tui-go-build make check` passed formatting,
+vet, race tests and build. The action-slot regressions cover narrow navigation,
+47×22 phone navigation, plain glyphs, keyboard activation and unchanged deletion
+confirmation. `python3 scripts/pty_navigation.py --artifacts /private/tmp/tui-thread-actions-20260920`
+passed all 18 isolated OS-PTY checks using the relocated icons. Deterministic
+Close/Trash hover captures were visually reviewed; native phone/SSH hover behavior
+was not tested in this pass. Reopen the rebuilt TUI; no server restart is needed.
+
+## Sidebar/settings refinement (2026-09-20)
+
+The header now combines local thread-title search with Project filter, Add project
+and New thread icons. The filter displays a stable project badge, and its picker
+has a distinct settings gear per row (Tab also reaches gears). Closed is pinned
+above app settings, defaults collapsed for new clients and scrolls independently
+when expanded. App settings uses General, Appearance, Keybindings and About with
+`Settings / <category>`. A project gear enters only that named project with
+Project, General and Keybindings and `Settings / <category> / <project name>`.
+There is no All projects settings scope or project Appearance; F8 cannot change
+theme while project settings is visible. The selected form replaces all main
+workspace panes and the composer. Back at bottom-left restores them. Compact
+settings uses hamburger/F2 to switch categories and form.
+
+Project name, icon, color and inherited/overridden workspace default persist on the
+server. Project contains only Name/Icon/Remove; color is nested inside Icon.
+Project General shows the effective workspace default and Use app default reset,
+using revisioned `project.update`. Project Keybindings reports inherited app
+bindings and unavailable overrides. Confirmed Remove project deletes its threads
+but keeps disk files; active work blocks it and stale confirmations are rejected.
+App General stores this server's
+workspace default and off-by-default restart continuation. Worktree preferences
+are saved but creation explicitly fails until provisioning exists. Recovery is
+verified only for eligible Demo work; unknown providers, manually stopped work
+and pending requests remain gated. Theme stays client-local.
+
+For this settings scope/presentation correction, rebuild with `make build` and
+relaunch the TUI; no server restart is needed when its settings capabilities are
+already present. To use the backend settings with an already-running
+older server, detach the TUI, run `./bin/tui-go server stop`, then reopen
+`./bin/tui-go --client desk`. Stop cancels owned fixture work; the default restart
+requires Resume. No existing application home was stopped during validation.
+
+See [settings behavior](settings.md), [project navigation](projects.md), and the
+[validation report](../research/go-sidebar-settings-2026-09-20.md).
+The latest [project scope checks and captures](../research/go-project-settings-scope-2026-09-20.md)
+record the separation of project identity, project overrides and app settings.
+
+## Draft-first creation and Closed composer
+
+New thread retains one draft per project in the attached client's saved view, including prompt, settings and attachments. It creates no authoritative thread until `thread.start` accepts the initial prompt and explicit agent/settings together. Invalid input leaves the draft intact. `thread.create` remains a legacy API and is not used by this UI. The fixture presets Demo Agent and offers only Reference model; selecting it fills supported defaults. Real Codex and Claude integrations remain implementation step 4.
+
+During active work, including waiting, composer settings show the effective running values read-only and Send captures those values. The prior idle preference remains stored and becomes editable again when idle. Required options gate Send. Queued items retain their own accepted captures.
+
+Closed thread selection opens history and its composer without changing lifecycle. Above the composer, “This thread is closed · Send a message to reopen” has a far-right Reopen action and a two-line compact layout. Explicit Reopen sends nothing. `prompt.reopen-send` compares lifecycle revision, reopens and accepts a valid captured prompt in one transaction; rejected or stale sends cannot reopen it.
+
+The checkout/branch row below the controls reads server metadata through `GET /v1/workspace` with either `project_id` or `thread_id`, on selection or explicit refresh. Non-Git, detached, fixture and unavailable states are distinct. It performs no Git mutation. The new capabilities are `thread-start`, `closed-thread-send` and `workspace-info`; an already-running older server needs a user-controlled upgrade/restart to advertise them. Relaunching only the TUI does not upgrade that server. No automatic restart of user-owned work is authorized by this refinement.
+
+[Validation for this refinement](../research/go-draft-composer-2026-09-20.md) records Go checks, 96 isolated OS-PTY checks and renderer captures separately from actual terminal/device verification. Earlier navigation captures do not establish the new behavior.
+
+## Project destinations, folders and file mentions
+
+The targeted project/path slice adds an always-shown searchable New thread
+project picker, including Add project. Selecting or registering an existing folder
+opens/restores that client's per-project draft; the first valid Send still creates
+the authoritative thread. Add project uses directory completion and never creates
+a folder. App General's revisioned **Project starting folder** defaults to the
+server user's home and controls the picker's initial location.
+
+Inline `@` completion browses the draft project or thread checkout. Up/Down
+selects; Enter/Tab browses a directory or selects a file; Escape dismisses without
+Send. Selection inserts a relative mention and removable attachment. The server
+captures regular UTF-8 files at Send, bounded to 64 KiB each and eight attachments,
+with root-escape rejection. Accepted prompts retain their bytes through retries,
+queues and recovery. See [projects](projects.md), [settings](settings.md#project-starting-folder)
+and [file mentions](activity.md#inline-file-mentions).
+
+The added capabilities are `path-completion` and `workspace-file-context`.
+Rebuild and relaunch the client, and explicitly restart an older backend when
+ready to load them. From `apps/go`, run `make build`, detach the old client, then
+`./bin/tui-go server stop` and `./bin/tui-go --client desk` (using your own client
+name). Stopping cancels owned fixture work; restart follows the saved recovery
+preference and defaults to explicit Resume. The running user server is not
+restarted by this implementation task. Older servers show upgrade guidance;
+client relaunch alone cannot enable these server capabilities.
+
+Validation and remaining limits are tracked in the
+[project-path checkpoint](../implementation/project-path-checkpoint.md). This
+slice adds no provider, collaborative-editor or embedded-terminal integration.

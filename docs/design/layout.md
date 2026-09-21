@@ -29,13 +29,19 @@ Application content is illustrative. Projects and threads can populate the navig
 
 Keep a show/hide-left icon at the application's top-left. At top-right, the controls are exactly, from left to right: maximize/restore the right host's active surface, show/hide the center-bottom panel, and show/hide the right host. This supersedes the earlier two-icon top-right arrangement. Maximize belongs in this application chrome, not the right surface header. Show maximize/restore only while the right host is actually visible, including a deliberately opened empty chooser; a host hidden by a toggle or responsive geometry has no maximize control. All have keyboard equivalents, with exact bindings deferred under Q24. Hiding a region must not hide its restoration control.
 
-The ADE has no global content search. The 2026-09-20 review adds a searchable project selector and existing-folder Add project action; [project filtering](projects.md) stays local to each client. File search remains part of the file workflow. Closed replaces Recents and can collapse to its heading or hide entirely, with a discoverable restoration action even when hidden. Neither action deletes its items. [Close/Reopen and permanent Delete](threads.md) have separate row actions.
+The ADE has no global content search. The 2026-09-20 review adds thread-title search, a searchable project selector and existing-folder Add project action; [thread/project filtering](projects.md) stays local to each client. File search remains part of the file workflow. Closed replaces Recents and stays pinned above the bottom-left settings gear. Collapse shows its count; expand hides the count and uses a separate bounded list. The heading always remains reachable. A legacy hide preference collapses content while preserving that restoration control. Neither action deletes its items. [Close/Reopen and permanent Delete](threads.md) have separate row actions.
 
 ## Controls and composer refinement (2026-09-19)
 
 The first implementation review requests Nerd Font control icons, assuming a patched font such as JetBrains Mono or Maple Mono. Use a consistent, verified icon set: the Go slice uses Codicons for shell controls and Nerd Font Font Awesome glyphs for the requested circular Send/Stop controls and paperclip. Navigation, bottom-panel and right-panel controls have distinct open/closed glyphs; maximize/restore also changes glyph. Keep descriptive hover/focus labels and keyboard paths. Fonts cannot be reliably detected through terminal protocols, so provide an explicit plain-symbol fallback.
 
 Tabs show a surface-type icon followed by its name. Hovering the tab replaces that icon with a close glyph; keyboard focus on the icon reveals the same action. Clicking the name selects the tab; only the icon slot closes it. Show overflow only when some tabs are hidden, keep the active tab visible, and use one row per surface in the overflow menu with the same icon/close slot. Do not duplicate every surface into separate select/close entries.
+
+The accepted [component rule](components.md) uses one-row square fills for surface
+and question tabs and compact actions. Prompt, thread, request and dialog
+containers keep rounded outlines over stable backgrounds. Hover strengthens a
+neutral border/fill; selection retains its accent and bold label independently
+of pointer movement. Keyboard focus adds an underline to control labels.
 
 Center close glyphs within their cell hit areas, including modal headers and tab
 menus. Give the typing area a complete, clearly visible outline, with the
@@ -56,14 +62,38 @@ right-aligned group, before the visible gauge and attachment/Stop/Send controls.
 If necessary the gauge also collapses into that usage ellipsis, which opens
 full context occupancy, capacity, percentage, billing, limits and cost details.
 Never mix usage into the settings menu or invent missing telemetry. Keep every
-hidden value/action reachable by mouse and keyboard. Hidden recovery actions
-or selected/running differences give the settings ellipsis an amber tint. An
+hidden value/action reachable by mouse and keyboard. Hidden recovery actions give the settings ellipsis an amber tint. An
 open menu keeps its item order during resize and incoming activity, so a pending click/Enter cannot select a different item.
 Keep the same layout when the right surface is maximized. This 2026-09-20 review
 supersedes the earlier request to wrap settings; it changes presentation only,
 never drafts, captured settings or execution.
 
-Enter sends from the prompt composer. Shift+Enter inserts a newline, with Ctrl+J as a fallback when the terminal cannot distinguish modified Enter. Pasting multiline content never submits it. Grow the composer with explicit and wrapped lines to a bounded height, then scroll without discarding text. Eight visible lines is the initial implementation choice within the user's suggested five-to-eight range; short windows reduce that cap to preserve requests, settings and usage. Answers still require their separate explicit Submit action.
+Enter sends from the prompt composer. Shift+Enter inserts a newline, with Ctrl+J as a fallback when the terminal cannot distinguish modified Enter. Pasting multiline content never submits it. Start the empty or single-line composer at two editable rows inside its outline, excluding borders and the settings/actions row. Grow with explicit and wrapped lines to a bounded height, then scroll without discarding text; clearing or shortening the draft returns to two rows. Eight visible lines is the initial implementation choice within the user's suggested five-to-eight range; short windows reduce that cap to preserve requests, settings and usage. Answers still require their separate explicit Submit action.
+
+New thread opens a persisted local creation draft with a visible model choice;
+no authoritative thread exists until a valid first Send. Settings are editable
+before creation and while idle, and read-only during active work, including
+waiting. Show the confirmed running values during work. An explicit queued text
+edit displays and preserves that item's captured settings instead. See
+[thread configuration](thread-configuration.md) and [ADR 0011](../adr/0011-first-send-thread-creation.md).
+
+Below the settings/actions row, show a separate checkout context row: checkout
+kind/name at left and observed branch at right. Both open the same read-only
+path/branch details with an explicit refresh. Distinguish worktree, detached HEAD,
+unborn branch, non-Git and unavailable metadata; a fixture has no real branch.
+Inspection is an asynchronous server read, never a renderer effect. No checkout
+or branch mutation is implied by opening these details.
+
+Selecting a Closed thread opens its preserved conversation and draft without
+reopening it. Place “This thread is closed · Send a message to reopen” above the
+prompt with a separate far-right Reopen control; compact widths may split it
+across two rows. Reopen changes lifecycle only; Send atomically reopens and accepts
+the prompt. Retain draft/configuration if validation or lifecycle checks fail.
+
+Centered menus and dialogs consume outside clicks to dismiss without activating
+underlying content. Dim the background within terminal color capabilities; true
+pixel blur is unavailable. Full pane settings remains a workspace replacement,
+not a centered modal. See [components](components.md).
 
 Scrollable content shows a proportional scrollbar only when it overflows. Support wheel and keyboard scrolling, track paging and thumb dragging where cell geometry permits it. Input read-scrolling preserves the insertion cursor and draft; typing follows that cursor again. A one-cell viewport can show a position indicator but has no vertical thumb travel; wheel and keyboard remain available. Keep scroll positions bounded and preserve the input-burst performance correction.
 
@@ -126,7 +156,7 @@ The ADE also requires a [usage display](usage.md) available when sidebars or the
 
 Permission requests use distinct approval cards in this same area, showing the action, supplied targets and supported decisions, with full detail in Activity. They coexist with questions through request navigation and preserve the normal prompt draft. See [approval cards](activity.md#approval-cards).
 
-Keep a fixed area immediately above the prompt, outside transcript scrolling, with one Agents summary, a compact Plan summary and pending requests. Show “Agents” with a pulsing blue circle for established active work. Only when every child has successfully completed, use a solid green circle; retain the summary until explicitly dismissed. On hover or keyboard focus, the completed circle becomes an X in the same leading icon slot. Only that slot dismisses; the label still opens history. Keep the working count and full state in hover/focus help and the inspector. Never offer dismissal while work is unfinished. Activating the summary opens the singleton Agents surface, where individual children and full available history remain accessible. Plan uses completed/total progress (n/N), the same blue working and solid green all-completed states, and the same completed-only dismissal. Failed, interrupted, waiting, stale and unknown states stay distinct and never imply success. Dismissal belongs to the frontend thread view; new work or a changed group/plan reopens its summary, while unrelated stream updates do not. Tools/MCP continue to open Activity. See [activity](activity.md).
+Keep a fixed area immediately above the prompt, outside transcript scrolling, with one Agents summary, a compact Plan summary and pending requests. Show “Agents N”, where N is the total number of children in the represented group, including completed children, with a pulsing blue circle for established active work. The count stays visible as children finish and after all have completed; it is not the remaining working count. Only when every child has successfully completed, use a solid green circle; retain the summary until explicitly dismissed. On hover or keyboard focus, the completed circle becomes an X in the same leading icon slot. Only that slot dismisses; the label still opens history. Keep the working count and full state in hover/focus help and the inspector. Never offer dismissal while work is unfinished. Activating the summary opens the singleton Agents surface, where individual children and full available history remain accessible. Plan uses completed/total progress (n/N), the same blue working and solid green all-completed states, and the same completed-only dismissal. Failed, interrupted, waiting, stale and unknown states stay distinct and never imply success. Dismissal belongs to the frontend thread view; new work or a changed group/plan reopens its summary, while unrelated stream updates do not. Tools/MCP continue to open Activity. See [activity](activity.md).
 
 Question sets show one question at a time via top tabs and conditional Back/Next, preserve typed answers/selections, and have an explicit Submit separate from navigation. Answers target the request rather than the prompt queue. Keep pending requests visible and accessible in narrow and maximized layouts, alongside preserved ADE configuration/usage access. Compact tokens and exact arrangement remain prototype work. Blocking versus asynchronous delivery is capability-dependent and specified in [questions](questions.md).
 
@@ -135,6 +165,40 @@ Existing file buffers and each surface's view state survive inspection; viewing 
 When space is tight, use compact Agents and Plan summaries and one scrollable question or approval card at a time. Keep the prompt visible and settings/usage reachable through the responsive footer. Individual children remain accessible in Agents. Omit absent or explicitly dismissed activity instead of reserving empty rows.
 
 Bound the request card's height and scroll its content independently. Keep request selection, answer navigation and the explicit submission/decision controls reachable without replacing the composer. Selecting another pending request preserves drafts. Apply the existing right/left and bottom-pane collapse rules before allowing fixed activity to crowd out the prompt. Numeric breakpoints, row budgets and minimum dimensions remain prototype decisions.
+
+## Single-column layouts on small screens
+
+The 2026-09-20 phone review adds a column picker rather than squeezing multiple
+panes into a narrow viewport. The Go prototype uses one column below 60 columns,
+with a tested minimum of 40×22; 47×22 is an explicit target. These numeric
+breakpoints are prototype choices, not universal terminal capability claims.
+
+A top-left hamburger opens **Conversation**, **Projects & threads**, **Surfaces**,
+**Terminal**, and Commands. F2 opens the same picker; Tab/arrows and Enter select
+an entry. F3 selects Surfaces and F5 selects Terminal. The selected column fills
+the available width above the composer. Surfaces retains its existing tabs and
+empty chooser; Terminal shows the existing bottom session or explicit New terminal.
+Choosing a column only changes presentation, never opens or closes a terminal
+session. Selecting a thread returns to Conversation.
+
+Keep the prompt, context attachments, settings/usage overflow and Send/Stop in
+every active thread's column. Outside Conversation, cap the prompt viewport at
+three rows to leave useful room for the selected content. Question/approval
+cards, queued messages and activity summaries live in Conversation; temporarily
+hide them while the user explicitly views another column. The persistent bell
+keeps pending requests discoverable and selecting an attention item reveals its
+question in Conversation. Preserve answer drafts and request identity. This is
+the compact-column exception to the fixed activity area, not permission for
+incoming events to switch the selected view.
+
+Save the selected compact column with the client/thread view, independently of
+wide pane visibility, sizes and maximization. Resizing back restores the wider
+arrangement; resizing narrow again restores the compact selection. Explicit thread
+selection and attention activation return to Conversation while retaining its
+other surfaces. Pane toggles/maximize give way to the hamburger on small screens;
+resizing a pane there shows a brief unavailable notice rather than changing hidden
+wide geometry. Below the tested minimum, preserve drafts, show the required size,
+keep Commands/detach reachable, and do not let Enter submit an invisible prompt.
 
 ## Unavailable terminal features
 
@@ -169,3 +233,5 @@ Client focus, scroll position, and active selection are frontend-local. Multiple
 - Initial shell choice, child-mouse versus selection behavior, terminal-controller transfer/close authority, and shutdown/confirmation details. Terminal close ends the session; panel toggles preserve it. Terminals can occupy the right host and center-bottom panel, while the bottom panel remains usable for other surfaces.
 
 These choices will be resolved through the [interview](interview.md), rather than inferred from the schematic.
+
+Settings replaces the left navigation with categories and the full main workspace with the selected configuration, hiding conversation, right/bottom surfaces and composer. Bottom-left Back restores the prior workspace without losing drafts, reading positions or surface sessions. Compact settings switches categories/form through its hamburger/F2. See [settings](settings.md).

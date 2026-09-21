@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
 func finishActivity(m *Model) {
@@ -139,6 +140,49 @@ func TestActivityAnimationUsesOneClockAndStops(t *testing.T) {
 	}
 }
 
+func TestAgentsTotalSurvivesCompletionAndHover(t *testing.T) {
+	for _, width := range []int{40, 47, 48, 80, 120} {
+		for _, light := range []bool{false, true} {
+			m := testModel()
+			m.state.Light = light
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+			m.snapshot.Threads[0].Children = nil
+			for i := range 13 {
+				m.snapshot.Threads[0].Children = append(m.snapshot.Threads[0].Children, protocol.Child{ID: fmt.Sprint(i), State: "completed"})
+			}
+			m.snapshot.Threads[0].Children[12].State = "running"
+			for _, finished := range []bool{false, true} {
+				if finished {
+					finishActivity(m)
+				}
+				s := agentSummary(m.thread())
+				if s.Label != "Agents 13" || s.Total != 13 || s.Working == finished || s.Dismissible != finished {
+					t.Fatalf("finished %t: %+v", finished, s)
+				}
+				if !finished && (s.Completed != 12 || s.WorkingCount != 1) {
+					t.Fatalf("last working agent: %+v", s)
+				}
+				m.activityPhase = 0
+				dim := m.activityColor(s)
+				m.activityPhase = 6
+				bright := m.activityColor(s)
+				if finished && (dim != m.colors().green || bright != dim) || !finished && bright == dim {
+					t.Fatalf("finished %t: unexpected pulse %s / %s", finished, dim, bright)
+				}
+				for _, hover := range []string{"", "agents", "dismiss-agents"} {
+					m.hover = hover
+					f := m.render()
+					h := controlHit(t, f, "agents")
+					label := ansi.Strip(ansi.Cut(f.rows[h.Rect.Y], h.Rect.X, h.Rect.X+h.Rect.W))
+					if !strings.Contains(label, "Agents 13") || hasControl(f, "dismiss-agents") != finished {
+						t.Fatalf("width %d, light %t, finished %t, hover %q: %q", width, light, finished, hover, label)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestAggregateActivationRetainsFullChildAccess(t *testing.T) {
 	m := testModel()
 	clickControl(m, controlHit(t, m.measure(), "agents"))
@@ -177,11 +221,14 @@ func TestMaximizeShownOnlyForVisibleHostAndWorksEmpty(t *testing.T) {
 }
 
 func TestEmptyMaximizedChooserKeepsFooterReachableAtEverySize(t *testing.T) {
-	for _, size := range [][2]int{{48, 22}, {60, 24}, {80, 30}, {120, 40}} {
+	for _, size := range [][2]int{{40, 22}, {47, 22}, {48, 22}, {60, 24}, {80, 30}, {120, 40}} {
 		m := testModel()
 		m.state.Layout.Right, m.state.Layout.Maximized = true, true
 		m.viewState().Host.Chooser = true
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		if m.singleColumn() {
+			m.activate(action{Kind: "column", Index: int(shell.RightRegion)})
+		}
 		f := m.measure()
 		for _, h := range f.hits {
 			if h.Rect.X < 0 || h.Rect.Y < 0 || h.Rect.X+h.Rect.W > m.width || h.Rect.Y+h.Rect.H > m.height-1 {
@@ -191,7 +238,7 @@ func TestEmptyMaximizedChooserKeepsFooterReachableAtEverySize(t *testing.T) {
 				t.Fatalf("%v: chooser covers composer: %#v", size, h)
 			}
 		}
-		if !hasControl(f, "send") || !hasControl(f, "maximize") {
+		if !hasControl(f, "send") || hasControl(f, "maximize") == m.singleColumn() {
 			t.Fatal("lost composer or restore control", size)
 		}
 	}
@@ -234,7 +281,7 @@ func TestActivityReviewCaptures(t *testing.T) {
 }
 
 func TestActivityLeadingDismissSlotAndMeasurement(t *testing.T) {
-	for _, width := range []int{48, 80, 120} {
+	for _, width := range []int{40, 47, 48, 80, 120} {
 		for _, key := range []string{"", "agents", "dismiss-agents", "plan", "dismiss-plan"} {
 			m := testModel()
 			m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
@@ -273,7 +320,7 @@ func TestUnfinishedActivityNeverHasDismissTarget(t *testing.T) {
 		if hasControl(f, "dismiss-agents") || hasControl(f, "dismiss-plan") {
 			t.Fatal("unfinished circle dismissible", state)
 		}
-		if agentSummary(m.thread()).Label != "Agents" {
+		if agentSummary(m.thread()).Label != fmt.Sprintf("Agents %d", len(m.thread().Children)) {
 			t.Fatal("agents label encodes state")
 		}
 		if !strings.Contains(controlHit(t, f, "agents").Label, agentSummary(m.thread()).State) {

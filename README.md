@@ -31,7 +31,7 @@ The subsequent [gap review](docs/design/interview.md#gap-review-background-atten
 | Workspace surfaces | [Collaborative editor and autosave](docs/design/editor.md), [Git and stop-for-review conflict resolution](docs/design/git-client.md), [checkouts and worktrees](docs/design/workspaces.md) |
 | Delivery | [Implementation sequence](docs/design/implementation.md), [shared coding and verification requirements](docs/design/quality.md) |
 
-Each application has its own identity. Executable names, home directories, and environment prefixes such as `my-app`, `~/.myapp/`, and `MYAPP_HOME` are placeholders. A server survives TUI exit, supports multiple clients, and preserves state under the application home; explicit server restart recovery waits for Resume. The ADE is the example domain, while other applications supply their own navigation, workflow, and surfaces.
+Each application has its own identity. Executable names, home directories, and environment prefixes such as `my-app`, `~/.myapp/`, and `MYAPP_HOME` are placeholders. A server survives TUI exit, supports multiple clients, and preserves state under the application home; server restart recovery waits for Resume by default, with [explicit opt-in continuation](docs/design/settings.md) for verified integrations. The ADE is the example domain, while other applications supply their own navigation, workflow, and surfaces.
 
 ## Architecture decisions
 
@@ -43,7 +43,15 @@ Each application has its own identity. Executable names, home directories, and e
 - [Go snapshot and command contract](docs/adr/0006-go-snapshot-command-contract.md)
 - [Thread deletion and saved-view projection](docs/adr/0007-thread-deletion-and-view-projection.md)
 
+- [Cell-native component state](docs/adr/0008-cell-native-component-state.md)
+- [Turn-bound queued-message steering](docs/adr/0009-turn-bound-steering.md)
+
+The accepted [component construction and interaction states](docs/design/components.md)
+specify variants, selection, hover and keyboard focus.
+
 [First-slice validation](docs/research/go-slice-validation-2026-09-19.md) · [Actual Go render captures](docs/research/go-captures/README.md) · [Notification/question review](docs/research/go-question-review-2026-09-20.md) · [Latest project/thread navigation review](docs/research/go-navigation-review-2026-09-20.md)
+
+[Sidebar and settings behavior](docs/design/settings.md) · [Sidebar implementation review](docs/research/go-sidebar-settings-2026-09-20.md) · [Draft/composer and modal review](docs/research/go-draft-composer-2026-09-20.md)
 
 ## Research and evidence
 

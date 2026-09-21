@@ -15,7 +15,28 @@ func (m *Model) openProjectDialog(mode string) {
 	m.projectInput.Placeholder = "Search projects…"
 	if mode == "add" {
 		m.menuTitle = "Add project"
-		m.projectInput.Placeholder = "Existing folder path on the server…"
+		m.projectInput.Placeholder = "Type a folder name or path…"
+	}
+	if mode == "new-thread" {
+		m.menuTitle = "New thread in project"
+	}
+	if mode == "project-root" {
+		m.menuTitle = "Project starting folder"
+		m.projectInput.Placeholder = "Type a folder name or path…"
+		value := m.snapshot.AppSettings.ProjectDirectory
+		if value == "" || value == "~" {
+			value = "~/"
+		}
+		if !strings.HasSuffix(value, "/") {
+			value += "/"
+		}
+		m.projectInput.SetValue(value)
+		m.projectDirectoryRevision = m.snapshot.AppSettings.Revision
+		m.projectDirectoryConflicted = false
+	}
+	if mode == "rename" {
+		m.menuTitle = "Project name"
+		m.projectInput.Placeholder = "Display name…"
 	}
 	m.projectInput.SetWidth(max(1, min(68, max(20, m.width-6))-4))
 	m.projectInput.SetHeight(1)
@@ -25,24 +46,37 @@ func (m *Model) openProjectDialog(mode string) {
 }
 
 func (m *Model) refreshProjectMenu() {
-	if m.projectMode == "add" {
-		m.menu = []menuItem{{"Add folder as project", action{Kind: "project-submit"}}, {"Cancel", action{Kind: "project-cancel"}}}
+	if m.projectMode == "rename" {
+		m.menu = []menuItem{{"Save name", action{Kind: "project-rename-submit"}}, {"Cancel", action{Kind: "project-cancel"}}}
+		return
+	}
+	if m.projectMode == "add" || m.projectMode == "project-root" {
+		m.menu = m.folderMenu()
+		m.menuIndex = min(max(0, m.menuIndex), len(m.menu)-1)
 		return
 	}
 	query := strings.ToLower(strings.TrimSpace(m.projectInput.Value()))
 	m.menu = nil
-	if query == "" || strings.Contains("all projects", query) {
+	if m.projectMode != "new-thread" && (query == "" || strings.Contains("all projects", query)) {
 		m.menu = append(m.menu, menuItem{"All projects", action{Kind: "project-filter"}})
 	}
 	for _, p := range m.snapshot.Projects {
 		if query == "" || strings.Contains(strings.ToLower(p.Name+" "+p.Path), query) {
-			m.menu = append(m.menu, menuItem{p.Name + " · " + p.Path, action{Kind: "project-filter", ID: p.ID}})
+			a := action{Kind: "project-filter", ID: p.ID}
+			if m.projectMode == "new-thread" {
+				a = action{Kind: "thread-create", Value: p.ID}
+			}
+			m.menu = append(m.menu, menuItem{p.Name + " · " + p.Path, a})
 		}
 	}
 	if len(m.menu) == 0 {
 		m.menu = append(m.menu, menuItem{"No matching projects", action{Kind: "project-no-match"}})
 	}
-	m.menu = append(m.menu, menuItem{m.icon("project-add") + " Add project…", action{Kind: "project-add"}})
+	kind := "project-add"
+	if m.projectMode == "new-thread" {
+		kind = "project-add-thread"
+	}
+	m.menu = append(m.menu, menuItem{m.icon("project-add") + " Add project…", action{Kind: kind}})
 	m.menuIndex = min(max(0, m.menuIndex), len(m.menu)-1)
 	m.menuOffset = 0
 }
@@ -54,15 +88,49 @@ func (m *Model) projectKey(k tea.KeyPressMsg) tea.Cmd {
 		m.menu = nil
 		m.projectInput.Blur()
 		return m.setFocus("prompt")
-	case "up", "shift+tab":
+	case "tab", "shift+tab":
+		if k.String() == "tab" && (m.projectMode == "add" || m.projectMode == "project-root") && m.menu[m.menuIndex].Action.Kind == "path-directory" {
+			return m.activate(m.menu[m.menuIndex].Action)
+		}
+		if m.projectMode == "filter" {
+			step := 1
+			if k.String() == "shift+tab" {
+				step = -1
+			}
+			if step > 0 && !m.projectGear && m.menu[m.menuIndex].Action.Kind == "project-filter" && m.menu[m.menuIndex].Action.ID != "" {
+				m.projectGear = true
+			} else if step < 0 && m.projectGear {
+				m.projectGear = false
+			} else {
+				m.menuIndex = (m.menuIndex + step + len(m.menu)) % len(m.menu)
+				item := m.menu[m.menuIndex]
+				m.projectGear = step < 0 && item.Action.Kind == "project-filter" && item.Action.ID != ""
+			}
+			return nil
+		}
+		if k.String() == "tab" {
+			m.menuIndex = (m.menuIndex + 1) % len(m.menu)
+		} else {
+			m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
+		}
+		return nil
+	case "up":
+		m.projectGear = false
 		m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
 		return nil
-	case "down", "tab":
+	case "down":
+		m.projectGear = false
 		m.menuIndex = (m.menuIndex + 1) % len(m.menu)
 		return nil
 	case "enter":
+		if m.projectGear && m.projectMode == "filter" {
+			return m.activate(action{Kind: "project-settings", ID: m.menu[m.menuIndex].Action.ID})
+		}
 		return m.activate(action{Kind: "menu-select", Index: m.menuIndex})
+	case "shift+enter", "ctrl+j":
+		return nil
 	}
+	m.projectGear = false
 	cmd := updateInput(&m.projectInput, k)
 	m.projectError = ""
 	m.menuIndex = 0
@@ -77,8 +145,36 @@ func (m *Model) acceptThreadOperation(msg commandMsg) bool {
 		return true
 	}
 	switch msg.command.Kind {
+	case "settings.update":
+		if m.projectMode == "project-root" && msg.local.Kind == "path-project-root-save" && m.projectInput.Value() == msg.local.Value {
+			m.projectMode, m.menu = "", nil
+			m.projectInput.Blur()
+			m.setFocus("sidebar-settings")
+		} else if m.projectMode == "project-root" {
+			m.projectDirectoryRevision = msg.command.Revision + 1
+		}
+		m.status = "App settings saved"
+	case "project.update":
+		if m.projectMode == "rename" && m.projectInput.Value() == msg.command.ProjectSettings.Name {
+			m.projectMode, m.menu = "", nil
+			m.projectInput.Blur()
+			m.setFocus("sidebar-settings")
+		} else if m.projectMode == "rename" {
+			m.projectEditRevision = msg.command.Revision + 1
+		}
+		m.status = "Project settings saved"
+	case "project.remove":
+		if m.state.ProjectFilter == msg.command.ProjectID {
+			m.state.ProjectFilter = ""
+		}
+		if m.settingsProjectID == msg.command.ProjectID {
+			m.settingsPage, m.settingsProjectID = "", ""
+		}
+		m.reconcileThreadMembership()
+		m.status = "Project and its threads removed · files kept"
 	case "project.add":
 		if m.projectMode == "add" {
+			m.pendingProjectDraft = msg.local.Value == "new-thread"
 			m.projectMode = ""
 			m.menu = nil
 			m.projectInput.Blur()
@@ -91,6 +187,10 @@ func (m *Model) acceptThreadOperation(msg commandMsg) bool {
 		m.state.ProjectFilter = msg.command.ProjectID
 		m.reconcileThreadMembership()
 		m.status = "Thread created · Demo"
+	case "thread.start":
+		m.state.StartedDraft = &startedDraft{ThreadID: msg.receipt.TargetID, Command: msg.command, Revision: msg.receipt.Revision}
+		m.reconcileThreadMembership()
+		m.status = "Initial prompt accepted · Demo"
 	case "thread.close":
 		if m.state.Active == msg.command.ThreadID {
 			m.selectThread(m.nextOpenThread(msg.command.ThreadID))

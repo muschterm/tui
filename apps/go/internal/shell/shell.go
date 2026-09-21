@@ -270,3 +270,25 @@ func boolCell(b bool) int {
 	}
 	return 0
 }
+
+// ColumnGeometry shows one full-width region above the shared center footer.
+// It never changes pane visibility, sizes or maximize preferences.
+func ColumnGeometry(width, height, footerHeight int, region Region) Geometry {
+	w, h := max(0, width), max(0, height)
+	top := min(1, h)
+	body := h - top
+	footer := min(max(0, footerHeight), body)
+	g := Geometry{Top: Rect{0, 0, w, top}, Center: Rect{0, h - footer, w, footer}}
+	content := Rect{0, top, w, body - footer}
+	switch region {
+	case LeftRegion:
+		g.Left = content
+	case RightRegion:
+		g.Right = content
+	case BottomRegion:
+		g.Bottom = content
+	default:
+		g.Center = Rect{0, top, w, body}
+	}
+	return g
+}

@@ -1,0 +1,33 @@
+{
+  "harness": "OS PTY; SGR pointer and keyboard; isolated server home",
+  "checks": [
+    "regular-file rejection retains folder input and visible error",
+    "adding folder selects project filter without changing active thread",
+    "adding project creates no thread or execution",
+    "project picker searches server paths",
+    "New thread opens local draft without authoritative thread",
+    "existing thread selection leaves local draft",
+    "returning to new thread restores its project-local draft",
+    "Send without model preserves local prompt and creates no thread",
+    "outside click dismisses centered model modal without pass-through",
+    "first valid Send creates thread and accepts initial prompt",
+    "active turn configuration is read-only",
+    "idle thread configuration remains editable",
+    "bracketed paste persists unsent thread draft",
+    "second client project filter stays independent",
+    "thread metadata selects same thread with local draft",
+    "project picker searches names",
+    "filtering leaves center thread selected",
+    "hover check closes idle thread without submitting its draft",
+    "Closed card edge views thread without reopening and restores draft",
+    "explicit Reopen changes lifecycle without sending draft",
+    "Send from closed view atomically reopens and accepts preserved prompt",
+    "default Enter cancels permanent deletion",
+    "confirmed delete removes authoritative thread",
+    "live SQLite snapshot and all saved client views remove deleted thread",
+    "other client remains usable and saves view after deletion",
+    "other client shows no view CAS/save failure",
+    "project addition and thread lifecycle preserve project files"
+  ],
+  "result": "PASS"
+}

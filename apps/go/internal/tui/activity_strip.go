@@ -17,19 +17,23 @@ type activityTick struct{}
 // One bounded animation clock drives all visible indicators. It does not dirty
 // persisted view state, and stops when no visible work is running.
 func (m *Model) activityAnimating() bool {
-	if !m.connected || m.width < 48 || m.height < 22 || len(m.menu) > 0 {
+	if m.settingsPage != "" {
+		return false
+	}
+	if !m.connected || m.terminalTooSmall() || len(m.menu) > 0 {
 		return false
 	}
 	t := m.thread()
-	if activeTurn(t) && (t.State == "running" || agentSummary(t).Working || planSummary(t).Working) {
+	if m.conversationVisible() && activeTurn(t) && (t.State == "running" || agentSummary(t).Working || planSummary(t).Working) {
 		return true
 	}
-	left := m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Left
-	visible := max(0, left.H-10)
-	if left.W == 0 || visible == 0 {
+	left := m.workspaceGeometry(m.footerHeight()).Left
+	rows, closed := m.navigationSections()
+	viewport, _, _ := m.navigationLayout(left, len(rows), len(closed))
+	visible := viewport.H
+	if left.W == 0 || visible == 0 || m.settingsPage != "" {
 		return false
 	}
-	rows := m.navigationRows()
 	start := min(max(0, m.navScroll), max(0, len(rows)-visible))
 	for _, row := range rows[start:min(len(rows), start+visible)] {
 		if row.kind == "thread" && !row.thread.Closed && threadIndicator(row.thread) == threadWorking {
@@ -178,7 +182,7 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 		closeKey := "dismiss-" + c.kind
 		engaged := m.hover == c.kind || m.focus == c.kind || m.hover == closeKey || m.focus == closeKey
 		if engaged && c.kind != "thinking" {
-			bg = p.selected
+			bg = m.hoverFill()
 		}
 		if c.kind != "thinking" {
 			// The label always inspects history. The leading icon is a separate

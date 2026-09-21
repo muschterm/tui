@@ -36,7 +36,7 @@ func PruneThreadViewCommands(data json.RawMessage, live map[string]bool, deleted
 		if !ok {
 			return nil, fmt.Errorf("invalid view field")
 		}
-		for _, known := range []string{"Threads", "Active", "Edit", "Pending", "PendingAction"} {
+		for _, known := range []string{"Threads", "Active", "Edit", "Pending", "PendingAction", "StartedDraft", "DraftThreads", "DraftProjectID"} {
 			if strings.EqualFold(key, known) {
 				changed = changed || key != known
 				key = known
@@ -100,6 +100,38 @@ func PruneThreadViewCommands(data json.RawMessage, live map[string]bool, deleted
 				delete(fields, "PendingAction")
 			}
 			changed = true
+		}
+	}
+	// An acknowledged first send may still be awaiting its snapshot in the
+	// frontend. Deletion removes that accepted capture without erasing text
+	// typed after it was submitted or any other project's unsent draft.
+	if raw, ok := fields["StartedDraft"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		var started struct {
+			ThreadID string
+			Command  Command
+		}
+		if err := json.Unmarshal(raw, &started); err != nil {
+			return nil, fmt.Errorf("invalid StartedDraft: %w", err)
+		}
+		if started.ThreadID != "" && !live[started.ThreadID] {
+			delete(fields, "StartedDraft")
+			changed = true
+			if rawDrafts, ok := fields["DraftThreads"]; ok {
+				var drafts map[string]json.RawMessage
+				if err := json.Unmarshal(rawDrafts, &drafts); err != nil {
+					return nil, fmt.Errorf("invalid DraftThreads: %w", err)
+				}
+				if rawDraft, ok := drafts[started.Command.ProjectID]; ok {
+					var draft struct{ Draft string }
+					if err := json.Unmarshal(rawDraft, &draft); err != nil {
+						return nil, fmt.Errorf("invalid project draft: %w", err)
+					}
+					if draft.Draft == started.Command.Text {
+						delete(drafts, started.Command.ProjectID)
+						fields["DraftThreads"] = rawObject(drafts)
+					}
+				}
+			}
 		}
 	}
 	// An older/incomplete save can retain a thread action without its command.

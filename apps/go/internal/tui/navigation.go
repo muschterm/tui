@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/muschterm/tui/apps/go/internal/protocol"
@@ -13,103 +12,52 @@ type navigationRow struct {
 	thread protocol.Thread
 }
 
-func (m *Model) navigationRows() []navigationRow {
-	var open, closed []navigationRow
-	for _, t := range m.snapshot.Threads {
-		if m.state.ProjectFilter != "" && t.ProjectID != m.state.ProjectFilter {
-			continue
-		}
-		rows := []navigationRow{{"thread", t}, {"state", t}}
-		if t.Closed {
-			closed = append(closed, rows...)
-		} else {
-			open = append(open, rows...)
-		}
-	}
-	if len(open) == 0 {
-		open = append(open, navigationRow{kind: "empty"})
-	}
-	open = append(open, navigationRow{kind: "gap"}, navigationRow{kind: "closed"})
-	if !m.state.RecentsHidden && !m.state.RecentsCollapsed {
-		open = append(open, closed...)
-	}
-	return open
+func (m *Model) threadCardState(t protocol.Thread) componentState {
+	return m.controlState(t.ID == m.state.Active, "thread:"+t.ID, "thread-status:"+t.ID, "thread-quick:"+t.ID, "thread-menu:"+t.ID)
 }
 
-func (m *Model) renderNav(f *frame, r shell.Rect) {
+// A rounded surface contains title and metadata, with one blank row between
+// threads. Its outline keeps the grouping visible in monochrome terminals.
+// Register the whole row first so explicit status/menu hit areas take precedence.
+func (m *Model) renderThreadCardBackground(f *frame, r shell.Rect, t protocol.Thread, part string) {
 	p := m.colors()
+	state := m.threadCardState(t)
+	visual := m.componentStyle(roundedOutline, state, p.text, p.nav)
+	bg := visual.background
+	// All cells keep the sidebar background. Border and label styling carry
+	// selection, hover and focus without changing the card silhouette.
 	f.fill(r, p, p.nav)
-	x, w := r.X+2, max(1, r.W-4)
-	f.text(x, r.Y+1, w, "PROJECTS", p.muted, p.nav)
-	label := "All projects"
-	for _, project := range m.snapshot.Projects {
-		if project.ID == m.state.ProjectFilter {
-			label = project.Name
-		}
+	b := componentBorder(roundedOutline, m.plainIcons)
+	edge, horizontal, left, right, ink := b.Left, b.Top, b.TopLeft, b.TopRight, visual.border
+	if part == "card-bottom" {
+		left, right = b.BottomLeft, b.BottomRight
 	}
-	f.button(m, x, r.Y+2, max(1, w-3), label, "projects", action{Kind: "projects"}, p.text, p.nav)
-	f.button(m, x+w-3, r.Y+2, 3, m.icon("project-add"), "project-add", action{Kind: "project-add"}, p.blue, p.nav)
-	f.hits[len(f.hits)-1].Label = "Add an existing project folder"
-	f.button(m, x, r.Y+3, w, m.icon("add")+" New thread", "thread-create", action{Kind: "thread-create"}, p.blue, p.nav)
-	f.navigation = shell.Rect{X: x, Y: r.Y + 5, W: w, H: max(0, r.H-10)}
-	f.hits = append(f.hits, hit{f.navigation, action{}, "Threads · wheel / arrows to scroll", "navigation"})
-	rows := m.navigationRows()
-	f.navMax = max(0, len(rows)-f.navigation.H)
-	offset := min(max(0, m.navScroll), f.navMax)
-	for i := 0; i < f.navigation.H && offset+i < len(rows); i++ {
-		row, y := rows[offset+i], f.navigation.Y+i
-		switch row.kind {
-		case "thread":
-			m.renderThreadRow(f, shell.Rect{X: x, Y: y, W: w, H: 1}, row.thread)
-		case "state":
-			label := row.thread.State
-			if m.state.ProjectFilter == "" {
-				label += " · " + row.thread.Project
-			}
-			f.text(x+2, y, max(1, w-2), label, p.muted, p.nav)
-		case "empty":
-			f.text(x, y, w, "No open threads", p.muted, p.nav)
-		case "closed":
-			count := 0
-			for _, t := range m.snapshot.Threads {
-				if t.Closed && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
-					count++
-				}
-			}
-			label := fmt.Sprintf("CLOSED (%d)", count)
-			a := action{Kind: "recents-collapse"}
-			if m.state.RecentsHidden {
-				label = "Show Closed"
-				a.Kind = "recents-hide"
-			}
-			f.button(m, x, y, w, label, "recents", a, p.muted, p.nav)
-		}
+	if part == "card-top" || part == "card-bottom" {
+		f.text(r.X, r.Y, r.W, left+strings.Repeat(horizontal, max(0, r.W-2))+right, ink, p.nav)
+	} else {
+		f.fill(shell.Rect{X: r.X + 1, Y: r.Y, W: max(0, r.W-2), H: 1}, p, bg)
+		f.text(r.X, r.Y, 1, edge, ink, p.nav)
+		f.text(r.X+r.W-1, r.Y, 1, edge, ink, p.nav)
 	}
-	f.scrollbar(m, shell.Rect{X: x + w, Y: f.navigation.Y, W: 1, H: f.navigation.H}, "navigation", len(rows), f.navigation.H, offset, p.nav)
-	f.button(m, x, r.Y+r.H-4, w, "Commands  F4", "commands", action{Kind: "commands"}, p.muted, p.nav)
-	f.button(m, x, r.Y+r.H-2, w, m.icon("theme")+"  Theme  F8", "theme", action{Kind: "theme"}, p.violet, p.nav)
+	a := action{Kind: "thread", ID: t.ID}
+	f.hits = append(f.hits, hit{r, a, t.Title + " · " + t.Project, "thread:" + t.ID})
 }
 
 func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 	p := m.colors()
 	key, quick, more := "thread:"+t.ID, "thread-quick:"+t.ID, "thread-menu:"+t.ID
-	engaged := m.hover == key || m.hover == quick || m.hover == more || m.focus == key || m.focus == quick || m.focus == more
-	bg := p.nav
-	if t.ID == m.state.Active || engaged {
-		bg = p.selected
-	}
+	interaction := m.threadCardState(t)
+	visual := m.componentStyle(roundedOutline, interaction, p.text, p.nav)
+	bg, engaged := visual.background, interaction.Hovered || interaction.Focused
 	a := action{Kind: "thread", ID: t.ID}
-	if t.Closed {
-		a.Kind = "thread-reopen"
-	}
-	labelWidth := max(1, r.W-5)
-	// Keep a trailing title cell blank and center the menu glyph in its slot.
-	// Long titles must not run their truncation mark into the vertical ellipsis.
+	labelWidth := max(1, r.W-8)
+	// Reserve adjacent quick-action/menu slots, including when the quick action
+	// is hidden. Keep a blank title gutter so hover never moves the title.
 	label := fit(safe(t.Title), max(1, labelWidth-1))
-	f.button(m, r.X+2, r.Y, labelWidth, label, key, a, p.text, bg)
+	f.styledButton(r.X+2, r.Y, labelWidth, label, key, a, visual)
 	f.hits[len(f.hits)-1].Label = t.Title + " · " + t.Project
 	state := threadIndicator(t)
-	glyph, kind, help, fg := "●", "thread", t.State, m.threadIndicatorColor(state)
+	glyph, help, fg := "●", t.State, m.threadIndicatorColor(state)
 	if m.plainIcons {
 		glyph = "o"
 	}
@@ -122,22 +70,23 @@ func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 	if !m.connected {
 		help = "Disconnected · last known " + t.State
 	}
-	if t.Closed {
-		kind, help = "thread-delete", "Delete thread permanently"
-		if engaged {
-			glyph, fg = m.icon("trash"), p.red
-		}
-	} else if m.connected && state == threadFinished && protocol.ThreadCloseBlocked(t) == "" {
-		kind, help = "thread-close", "Close thread"
-		if engaged {
-			glyph = m.icon("check")
-		}
-	}
-	f.button(m, r.X, r.Y, 2, glyph, quick, action{Kind: kind, ID: t.ID}, fg, bg)
+	status := "thread-status:" + t.ID
+	f.styledButton(r.X, r.Y, 2, glyph, status, a, m.componentStyle(roundedOutline, m.controlState(false, status), fg, bg))
 	f.hits[len(f.hits)-1].Label = help + " · " + t.Title
-	// Generic button hover uses blue; preserve the status color on this slot.
-	f.text(r.X, r.Y, 2, glyph, fg, bg)
-	f.button(m, r.X+r.W-3, r.Y, 3, " "+m.icon("more-vertical")+" ", more, action{Kind: "thread-menu", ID: t.ID}, p.muted, bg)
+	kind, quickGlyph, quickHelp := "", "", ""
+	if t.Closed {
+		kind, quickGlyph, quickHelp, fg = "thread-delete", m.icon("trash"), "Delete thread permanently", p.red
+	} else if m.connected && state == threadFinished && protocol.ThreadCloseBlocked(t) == "" {
+		kind, quickGlyph, quickHelp = "thread-close", m.icon("check"), "Close thread"
+	}
+	if kind != "" {
+		if !engaged {
+			quickGlyph = ""
+		}
+		f.styledButton(r.X+r.W-6, r.Y, 3, centered(quickGlyph, 3), quick, action{Kind: kind, ID: t.ID}, m.componentStyle(roundedOutline, m.controlState(false, quick), fg, bg))
+		f.hits[len(f.hits)-1].Label = quickHelp + " · " + t.Title
+	}
+	f.styledButton(r.X+r.W-3, r.Y, 3, " "+m.icon("more-vertical")+" ", more, action{Kind: "thread-menu", ID: t.ID}, m.componentStyle(roundedOutline, m.controlState(false, more), p.muted, bg))
 	f.hits[len(f.hits)-1].Label = "Thread options · " + t.Title
 }
 
@@ -164,12 +113,12 @@ func (m *Model) selectThread(id string) {
 	if !ok && id != "" {
 		return
 	}
-	if m.state.Active != "" {
+	if m.hasComposer() {
 		v := m.viewState()
 		v.Draft = m.prompt.Value()
 		v.RightVisible = m.state.Layout.Right
 	}
-	m.state.Active = id
+	m.state.Active, m.state.DraftProjectID = id, ""
 	m.state.Layout.Right = id != "" && m.viewState().RightVisible
 	m.state.Layout.Maximized = false
 	if id == "" {
@@ -206,6 +155,7 @@ func (m *Model) reconcileThreadMembership() {
 			delete(m.requestFeedback, id)
 		}
 	}
+	m.reconcileStartedDraft()
 	if m.state.Edit != nil && !live[m.state.Edit.ThreadID] {
 		m.state.Edit = nil
 		m.markDirty()
@@ -238,6 +188,10 @@ func (m *Model) reconcileThreadMembership() {
 			if p.ID == m.pendingProjectSelection {
 				m.state.ProjectFilter = p.ID
 				m.pendingProjectSelection = ""
+				if m.pendingProjectDraft {
+					m.pendingProjectDraft = false
+					m.beginThreadDraft(p.ID)
+				}
 				m.markDirty()
 				break
 			}

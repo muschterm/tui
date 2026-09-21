@@ -188,3 +188,40 @@ func TestDeleteAndViewWriteSerialize(t *testing.T) {
 		t.Fatalf("race resurrected data: %s %v", final.Data, err)
 	}
 }
+
+func TestInitialSendTombstonePreservesLocalProjectDraft(t *testing.T) {
+	s, snap := deletionStore(t)
+	start := protocol.Command{Version: 1, ID: "start-original", Kind: "thread.start", ProjectID: "project", Text: "private-first-prompt", Agent: "Fixture agent"}
+	if err := s.Save(snap, &start, &protocol.Receipt{ID: start.ID, State: "accepted", TargetID: "gone"}); err != nil {
+		t.Fatal(err)
+	}
+	view := json.RawMessage(`{"Pending":{"ID":"start-original","Kind":"thread.start","ProjectID":"project","Text":"private-first-prompt"},"PendingAction":{"Kind":"send","Value":"private-action"},"DraftProjectID":"project","DraftThreads":{"project":{"Draft":"local draft to preserve"}}}`)
+	if _, err := s.PutView("drafting", view, 0); err != nil {
+		t.Fatal(err)
+	}
+	snap.Threads, snap.Terminals = snap.Threads[1:], snap.Terminals[1:]
+	del := protocol.Command{Version: 1, ID: "delete-start", Kind: "thread.delete", ThreadID: "gone"}
+	if err := s.Save(snap, &del, &protocol.Receipt{ID: del.ID, State: "accepted"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadView("drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A late write is projected identically and cannot restore the accepted payload.
+	got, err = s.PutView("drafting", view, got.Revision)
+	if err != nil || bytes.Contains(got.Data, []byte("private")) || !bytes.Contains(got.Data, []byte("local draft to preserve")) || !bytes.Contains(got.Data, []byte("DraftProjectID")) {
+		t.Fatalf("bad draft projection: %s %v", got.Data, err)
+	}
+	receipt, err := s.Lookup(start)
+	if err != nil || receipt == nil || receipt.State != "deleted" || receipt.TargetID != "" {
+		t.Fatalf("lost tombstone: %+v %v", receipt, err)
+	}
+	var command []byte
+	if err := s.db.QueryRow("SELECT command FROM commands WHERE id=?", start.ID).Scan(&command); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(command, []byte("sha256:")) || bytes.Contains(command, []byte("private")) {
+		t.Fatalf("retained start payload: %s", command)
+	}
+}

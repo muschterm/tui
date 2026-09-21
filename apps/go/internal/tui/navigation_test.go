@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
 func navigationModel() *Model {
@@ -24,6 +26,7 @@ func navigationModel() *Model {
 		t.LifecycleRevision = 3
 	}
 	m.state.Layout.Left = true
+	m.state.RecentsCollapsed = false
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
 	return m
 }
@@ -118,8 +121,8 @@ func TestNavigationLifecycleRoutesAndDeleteDefaultsToCancel(t *testing.T) {
 	id = m.snapshot.Threads[1].ID
 	m.snapshot.Threads[1].Closed = true
 	clickControl(m, controlHit(t, m.measure(), "thread:"+id))
-	if m.busy == nil || m.busy.Kind != "thread.reopen" || m.busy.ThreadID != id {
-		t.Fatal("closed row did not reopen")
+	if m.busy != nil || m.state.Active != id || !m.thread().Closed {
+		t.Fatal("closed row must select without reopening")
 	}
 	m = navigationModel()
 	id = m.state.Active
@@ -154,7 +157,15 @@ func TestNavigationHoverControlsHaveSeparateHitboxes(t *testing.T) {
 		row := controlHit(t, f, "thread:"+id)
 		quick := controlHit(t, f, "thread-quick:"+id)
 		more := controlHit(t, f, "thread-menu:"+id)
-		if quick.Rect.X+quick.Rect.W > row.Rect.X || row.Rect.X+row.Rect.W > more.Rect.X {
+		status := controlHit(t, f, "thread-status:"+id)
+		// The full card is a selection fallback; the title's specific hit
+		// area stays between the status and the trailing action buttons.
+		for _, h := range f.hits {
+			if h.Key == row.Key && h.Rect.Y == status.Rect.Y && h.Rect.X == status.Rect.X+status.Rect.W {
+				row = h
+			}
+		}
+		if row.Rect.X+row.Rect.W > quick.Rect.X || quick.Rect.X+quick.Rect.W != more.Rect.X {
 			t.Fatal("quick/menu actions overlap thread label")
 		}
 		m.Update(tea.MouseMotionMsg{X: row.Rect.X, Y: row.Rect.Y})
@@ -166,11 +177,121 @@ func TestNavigationHoverControlsHaveSeparateHitboxes(t *testing.T) {
 			kind = "thread-delete"
 		}
 		painted := ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], quick.Rect.X, quick.Rect.X+quick.Rect.W))
-		if !strings.Contains(painted, want) || quick.Action.Kind != kind {
+		if painted != " "+want+" " || quick.Action.Kind != kind {
 			t.Fatal("hover did not expose lifecycle icon")
+		}
+		if got := ansi.Strip(ansi.Cut(f.rows[status.Rect.Y], status.Rect.X, status.Rect.X+status.Rect.W)); !strings.Contains(got, "●") {
+			t.Fatal("hover replaced the leading status circle")
 		}
 		if !reflect.DeepEqual(f.hits, m.measure().hits) {
 			t.Fatal("navigation hitboxes differ when measured")
+		}
+		clickControl(m, quick)
+		if closed {
+			if m.busy != nil || len(m.menu) == 0 || m.menu[m.menuIndex].Action.Kind != "thread-delete-cancel" {
+				t.Fatal("trash bypassed the existing confirmation")
+			}
+		} else if m.busy == nil || m.busy.Kind != "thread.close" || m.busy.ThreadID != id {
+			t.Fatal("checkmark did not close the intended thread")
+		}
+	}
+}
+
+func TestNavigationComposeIconKeyboardAndMouse(t *testing.T) {
+	for _, plain := range []bool{false, true} {
+		for _, mouse := range []bool{false, true} {
+			m := navigationModel()
+			m.plainIcons = plain
+			m.state.ProjectFilter = "alpha"
+			m.prompt.SetValue("existing draft")
+			f := m.render()
+			h := controlHit(t, f, "thread-create")
+			text := strings.TrimSpace(ansi.Strip(ansi.Cut(f.rows[h.Rect.Y], h.Rect.X, h.Rect.X+h.Rect.W)))
+			if text != m.icon("compose") || !strings.Contains(h.Label, "New thread") {
+				t.Fatal("compose control lost icon or descriptive help")
+			}
+			if mouse {
+				clickControl(m, h)
+			} else {
+				m.setFocus(h.Key)
+				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			}
+			if m.projectMode != "new-thread" || m.prompt.Value() != "existing draft" {
+				t.Fatal("compose must offer a project destination without changing existing input")
+			}
+			m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.busy != nil || m.state.DraftProjectID != "alpha" || m.state.Active != "" || m.prompt.Value() != "" || m.state.Threads["thread-shell"].Draft != "existing draft" {
+				t.Fatal("compose must open a local draft and preserve existing input")
+			}
+		}
+	}
+}
+
+func TestThreadQuickActionSlotStaysBesideMenu(t *testing.T) {
+	for _, width := range []int{16, 24, 47} {
+		for _, closed := range []bool{false, true} {
+			for _, plain := range []bool{false, true} {
+				m := navigationModel()
+				m.plainIcons = plain
+				m.state.Layout.LeftWidth = width
+				th := &m.snapshot.Threads[0]
+				th.Closed, th.State, th.Title = closed, "idle", strings.Repeat("Long 界 title ", 5)
+				th.Queue, th.Children, th.Requests = nil, nil, nil
+				if width == 47 {
+					m.Update(tea.WindowSizeMsg{Width: 47, Height: 22})
+					m.activate(action{Kind: "column", Index: int(shell.LeftRegion)})
+				}
+				id := th.ID
+				f := m.render()
+				if !hasControl(f, "thread-quick:"+id) {
+					t.Fatalf("missing quick: width=%d closed=%v plain=%v nav=%+v closedNav=%+v footer=%d", width, closed, plain, f.navigation, f.closedNavigation, m.footerHeight())
+				}
+				quick, more := controlHit(t, f, "thread-quick:"+id), controlHit(t, f, "thread-menu:"+id)
+				if quick.Rect.W != 3 || quick.Rect.X+quick.Rect.W != more.Rect.X {
+					t.Fatal("quick action is not directly left of menu", width)
+				}
+				prefix := ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], 0, quick.Rect.X))
+				m.setFocus(quick.Key)
+				f = m.render()
+				if controlHit(t, f, quick.Key).Rect != quick.Rect || ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], 0, quick.Rect.X)) != prefix {
+					t.Fatal("focus shifted the title or action slot")
+				}
+				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				if closed && (m.busy != nil || len(m.menu) == 0) || !closed && (m.busy == nil || m.busy.Kind != "thread.close") {
+					t.Fatal("keyboard activation lost the lifecycle action")
+				}
+			}
+		}
+	}
+}
+
+func TestNavigationCardMetadataAndPaddingSelectWithoutLifecycleAction(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		for _, point := range []string{"leading edge", "trailing edge", "metadata", "metadata edge", "bottom border"} {
+			t.Run(fmt.Sprintf("closed=%t/%s", closed, point), func(t *testing.T) {
+				m := navigationModel()
+				target := &m.snapshot.Threads[1]
+				target.Closed = closed
+				m.prompt.SetValue("keep this draft")
+				original := m.state.Active
+				f := m.render()
+				card := controlHit(t, f, "thread:"+target.ID)
+				x, y := card.Rect.X, card.Rect.Y
+				switch point {
+				case "trailing edge":
+					x += card.Rect.W - 1
+				case "metadata":
+					x, y = x+4, y+2
+				case "metadata edge":
+					x, y = x+card.Rect.W-1, y+2
+				case "bottom border":
+					x, y = x+4, y+3
+				}
+				m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+				if m.state.Active != target.ID || m.busy != nil || m.state.Threads[original].Draft != "keep this draft" {
+					t.Fatal("card did not select thread and preserve previous draft")
+				}
+			})
 		}
 	}
 }
@@ -179,7 +300,7 @@ func TestNavigationClosedHeaderAndEmptyDeletedReconciliation(t *testing.T) {
 	m := navigationModel()
 	m.snapshot.Threads[1].Closed = true
 	text := ansi.Strip(strings.Join(m.render().rows, "\n"))
-	if !strings.Contains(text, "CLOSED (1)") || strings.Contains(text, "RECENTS") {
+	if !strings.Contains(text, "Closed") || strings.Contains(text, "RECENTS") {
 		t.Fatal("Closed did not replace Recents")
 	}
 	deleted := m.state.Active
@@ -227,32 +348,22 @@ func TestNavigationProjectAddFailureRetainsVisibleInput(t *testing.T) {
 	}
 }
 
-func TestNavigationEmptyAndClosedHaveNoInvisiblePromptInput(t *testing.T) {
-	for _, closed := range []bool{false, true} {
-		m := navigationModel()
-		m.prompt.SetValue("existing draft")
-		if closed {
-			m.snapshot.Threads[0].Closed = true
-		} else {
-			m.snapshot.Threads = nil
-			m.state.Active = ""
-		}
-		m.setFocus("prompt")
-		want := "empty-new"
-		if closed {
-			want = "transcript"
-		}
-		if m.focus != want {
-			t.Fatal("focus targeted an unavailable composer", m.focus)
-		}
-		m.Update(tea.PasteMsg{Content: "should not insert"})
-		if strings.Contains(m.prompt.Value(), "should not insert") {
-			t.Fatal("hidden composer consumed paste")
-		}
-		m.activate(action{Kind: "send"})
-		if m.busy != nil {
-			t.Fatal("empty or closed thread sent prompt")
-		}
+func TestNavigationEmptyHasNoInvisiblePromptInput(t *testing.T) {
+	m := navigationModel()
+	m.prompt.SetValue("existing draft")
+	m.snapshot.Threads = nil
+	m.state.Active = ""
+	m.setFocus("prompt")
+	if m.focus != "empty-new" {
+		t.Fatal("focus targeted an unavailable composer", m.focus)
+	}
+	m.Update(tea.PasteMsg{Content: "should not insert"})
+	if strings.Contains(m.prompt.Value(), "should not insert") {
+		t.Fatal("hidden composer consumed paste")
+	}
+	m.activate(action{Kind: "send"})
+	if m.busy != nil {
+		t.Fatal("empty workspace sent prompt")
 	}
 }
 
@@ -282,7 +393,7 @@ func TestNavigationCaptures(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"dark", "light", "filter", "closed", "delete", "narrow"} {
+	for _, scenario := range []string{"dark", "light", "filter", "closed", "delete", "narrow", "scroll", "plain", "ansi"} {
 		m := navigationModel()
 		m.snapshot.Threads[1].Closed = true
 		m.snapshot.Threads[1].State = "idle"
@@ -300,6 +411,17 @@ func TestNavigationCaptures(t *testing.T) {
 			m.activate(action{Kind: "thread-delete", ID: m.snapshot.Threads[1].ID})
 		case "narrow":
 			m.Update(tea.WindowSizeMsg{Width: 48, Height: 22})
+		case "scroll":
+			for i := 0; i < 12; i++ {
+				m.snapshot.Threads = append(m.snapshot.Threads, protocol.Thread{ID: fmt.Sprint(i), Title: "Review 界面 é — long title", State: "idle", Project: "Alpha", ProjectID: "alpha"})
+			}
+			m.Update(tea.WindowSizeMsg{Width: 110, Height: 22})
+			m.navScroll = 2
+		case "plain":
+			m.plainIcons = true
+			m.colorProfile = colorprofile.NoTTY
+		case "ansi":
+			m.colorProfile = colorprofile.ANSI
 		}
 		m.configureInputs()
 		name := fmt.Sprintf("%dx%d-light%t-navigation-%s.ansi", m.width, m.height, m.state.Light, scenario)

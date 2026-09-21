@@ -92,8 +92,11 @@ class Terminal:
                 elif code == 'D': x = max(0, x-n)
                 elif code == 'G': x = n-1
                 elif code == 'r':
-                    top = n-1
-                    bottom = (parts[1] or self.rows)-1 if len(parts)>1 else self.rows-1
+                    # Replaying earlier, larger frames after a resize must not
+                    # create a scrolling region outside the current grid.
+                    top = min(self.rows-1, max(0, n-1))
+                    requested_bottom = (parts[1] or self.rows)-1 if len(parts)>1 else self.rows-1
+                    bottom = max(top, min(self.rows-1, requested_bottom))
                     x = y = 0
                 elif code in ('S', 'T'):
                     for _ in range(min(n, bottom-top+1)):
@@ -253,7 +256,13 @@ def main():
             narrow = a.screen()
             check(any('Reference' in row and '\uf0aa' in row for row in narrow),
                   'narrow composer keeps model and Send on the same row')
-            a.click_label('\ueb10')  # Footer vertical ellipsis; navigation is responsive-hidden.
+            question_y, question_row = next((i, row) for i, row in enumerate(narrow) if '▶' in row)
+            a.click(question_row.index('\ueb10'), question_y)
+            check('Questions' in '\n'.join(a.screen()) and '3 Notes' in '\n'.join(a.screen()),
+                  'question overflow opens direct access to hidden pages in the narrow header')
+            a.send(b'\x1b')
+            footer_y, footer_row = next((i, row) for i, row in enumerate(a.screen()) if '\uf0aa' in row)
+            a.click(footer_row.index('\ueb10'), footer_y)  # Scope to settings, not question overflow.
             check('More settings' in '\n'.join(a.screen()) and 'Effort: Medium' in '\n'.join(a.screen()),
                   'SGR pointer opens hidden composer settings from vertical ellipsis')
             (artifacts / 'composer-overflow.screen.txt').write_text('\n'.join(a.screen())+'\n')
@@ -343,10 +352,20 @@ def main():
             check(question_state()['QuestionIndex'] == 1 and drafts[0][1]['Choices'] == ['Clarity']
                   and question_request()['State'] == 'pending',
                   'checkbox pointer and Space toggle selection without advancing or submitting')
-            q.click_label('Next')
+            q.click_label('▶')
             q.send(b'Native PTY review note', 1.2)
             check(question_state()['QuestionIndex'] == 2 and question_request()['State'] == 'pending',
-                  'Next opens optional text question without submitting')
+                  'filled Next arrow opens optional text question without submitting')
+            # End arrows disappear without letting tabs fill their reserved slots.
+            last_screen = q.screen()
+            last_row_index, last_row = next((i, row) for i, row in enumerate(last_screen) if '3 Notes' in row and '◀' in row)
+            back_x = last_row.index('◀')
+            check('▶' not in last_row and '1 Focus' in last_row and '2 Priorities' in last_row,
+                  'single-row question tabs preserve navigation and hide only the Next arrow')
+            q.click(back_x, last_row_index)
+            q.pump(1.2)
+            check(question_state()['QuestionIndex'] == 1 and question_request()['State'] == 'pending',
+                  'filled Back arrow revisits the previous question without submitting')
             q.click_label('1 Focus')
             q.pump(1.2)
             check(question_state()['QuestionIndex'] == 0 and question_request()['State'] == 'pending',

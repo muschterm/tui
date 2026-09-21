@@ -57,8 +57,12 @@ A named workspace association used to organize threads and their default checkou
 _Avoid_: Thread, agent connection
 
 **Turn**:
-One submitted prompt and the resulting agent work through completion, failure, or cancellation, including its tools and delegated work.
+An initial prompt and the resulting agent work through completion, failure, or cancellation, including any accepted steering input, tools and delegated work.
 _Avoid_: Tool call when referring to the whole response cycle
+
+**Steer**:
+Deliver a chosen queued message as additional input to the same active turn.
+_Avoid_: Interrupt, Resume, reorder, start a new turn
 
 **Application server**:
 The background owner of running application work and the state that attached frontends observe.

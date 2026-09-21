@@ -26,29 +26,19 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 	left := composerInset(width)
 	right := width - left
 	available := right - left
-	t, v := m.thread(), m.viewState()
-	mismatch := activeTurn(t) && v.Settings != t.Effective
+	t := m.thread()
+	selected := m.composerSelection()
 	control := func(label, key, help, tone string, a action) composerControl {
 		return composerControl{width: ansi.StringWidth(label) + 2, label: label, key: key, help: help, tone: tone, action: a}
 	}
 	var settings, actions []composerControl
-	for _, s := range composerSettings(t.Agent, v.Settings) {
+	for _, s := range composerSettings(t.Agent, selected) {
 		label, help, tone := s.label, title(s.field)+": "+s.label, "setting"
-		if mismatch {
-			help = "Selected " + strings.ToLower(help[:1]) + help[1:]
-			if s.field == "model" {
-				label, tone = "Selected "+label, "gold"
-			}
-		}
 		settings = append(settings, control(label, "settings:"+s.field, help, tone, action{Kind: "settings", Value: s.field}))
-	}
-	if mismatch {
-		var labels []string
-		for _, s := range composerSettings(t.Agent, t.Effective) {
-			labels = append(labels, s.label)
+		if m.configurationLocked() {
+			settings[len(settings)-1].tone = "muted"
+			settings[len(settings)-1].help += " · read-only during active work"
 		}
-		label := "Running · " + strings.Join(labels, " · ")
-		settings = append(settings, control(label, "settings:effective", label, "gold", action{Kind: "settings", Value: "effective"}))
 	}
 	if m.state.Edit != nil {
 		settings = append(settings,
@@ -68,6 +58,9 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 		actions = append(actions, control(m.icon("stop"), "interrupt", "Stop", "red", action{Kind: "interrupt"}))
 	}
 	actions = append(actions, control(m.icon("send"), "send", "Send · Enter", "blue", action{Kind: "send"}))
+	if reason := m.sendBlocked(); reason != "" {
+		actions[len(actions)-1].tone, actions[len(actions)-1].help = "muted", reason
+	}
 	more := control(m.icon("more-vertical"), "composer-more", "More settings", "muted", action{Kind: "composer-more"})
 	hidden := map[string]bool{}
 	needed := func() int {

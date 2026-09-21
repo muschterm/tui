@@ -21,8 +21,24 @@ Go-first does not relax the shared interaction or visual requirements. It establ
 
 ## Completion evidence
 
+The queued-message [Steer contract](activity.md#steering-a-queued-message) is a
+shared requirement for all three apps. The Go fixture exercises it before real
+providers: active-turn identity, retained captures, stale-action rejection and
+deduplicated receipts. Step 1/4 adapter probes must separately verify same-turn
+steering, supported content/settings and uncertain-delivery reconciliation;
+implement honest unavailability when unsupported. This does not replace the
+separate async-question probe or permit a Stop-and-Send fallback.
+
 The first interactive review also requested [clipboard context and centered read-only previews](activity.md#clipboard-intake-and-read-only-previews). Implement this as a bounded part of captured-context work in step 4: first durable artifact intake and retrieval, then text/Markdown viewers and image clipboard/thumbnail/graphics integration with actual terminal checks. The viewer does not depend on step 5's collaborative editor. Agent delivery still needs negotiated input capabilities and must not be inferred from a working local preview. See the [current feasibility and integration gaps](../research/clipboard-previews-2026-09-19.md); this staging does not claim the functionality already exists.
 
 Each slice needs observable behavior and relevant validation. Simulated agent output is useful test data but does not establish working provider integration. Library support claims do not establish the full terminal matrix. A reference app is not complete while mouse paths, file-write safety, source-supported child history, or agreed fallback states are absent.
 
 The final documentation should let an agent start a new domain-specific application by following the shared specification, copying a small working reference, and understanding which contracts the application must supply. Extract reusable packages only when those real usages clarify the boundary.
+
+The 2026-09-20 sidebar/settings slice adds local thread search, project identity
+controls, server-owned defaults and confirmed project removal. Restart remains
+Resume-gated by default, with explicit opt-in only for verified eligible Demo
+continuation. Real worktree provisioning and provider recovery remain integration
+work. See [settings](settings.md) and [validation](../research/go-sidebar-settings-2026-09-20.md).
+
+The draft-first refinement keeps New thread local until atomic first Send, keeps the active settings row read-only, and allows reading Closed threads before explicit Reopen or atomic reopen-and-send. Its read-only checkout/branch context does not complete the Git workflows in step 6. Real Codex and Claude connections were already required in step 4; selectable fixture labels do not add those integrations. See [thread configuration](thread-configuration.md), [thread lifecycle](threads.md) and [current slice](go-slice.md#draft-first-creation-and-closed-composer).

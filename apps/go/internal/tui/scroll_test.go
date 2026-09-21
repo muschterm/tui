@@ -122,7 +122,7 @@ func TestRestorationWaitsForActualViewport(t *testing.T) {
 }
 
 func TestMeasurementMatchesPaintedControls(t *testing.T) {
-	for _, size := range [][2]int{{160, 50}, {80, 30}, {48, 22}, {35, 12}} {
+	for _, size := range [][2]int{{160, 50}, {80, 30}, {48, 22}, {47, 22}, {40, 22}, {39, 22}, {35, 12}} {
 		for _, menu := range []bool{false, true} {
 			m := scrollModel()
 			m.width, m.height = size[0], size[1]

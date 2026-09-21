@@ -109,7 +109,9 @@ func applyProject(s *protocol.Snapshot, c protocol.Command) (string, error) {
 		if len(s.Projects) >= 128 {
 			return "", failure("capacity", "at most 128 projects are supported")
 		}
-		p := protocol.Project{ID: projectIdentity("path", path), Name: filepath.Base(path), Path: path}
+		// Registration identity must not survive removal: stale confirmations
+		// must never apply to a later registration of the same directory.
+		p := protocol.Project{ID: "project-" + ID(), Name: filepath.Base(path), Path: path, Revision: 1}
 		s.Projects = append(s.Projects, p)
 		return p.ID, nil
 	case "thread.create":
@@ -125,6 +127,9 @@ func applyProject(s *protocol.Snapshot, c protocol.Command) (string, error) {
 		}
 		if project == nil {
 			return "", failure("not_found", "project does not exist")
+		}
+		if protocol.EffectiveWorkspaceDefault(s.AppSettings, *project) == "worktree" {
+			return "", failure("unsupported_workspace", "worktree creation is unavailable in this server; select current checkout in settings")
 		}
 		title := strings.TrimSpace(c.Text)
 		if title == "" {
@@ -149,6 +154,7 @@ func applyProject(s *protocol.Snapshot, c protocol.Command) (string, error) {
 				return "", failure("conflict", "thread identity already exists")
 			}
 		}
+		project.Revision++
 		s.Threads = append(s.Threads, protocol.Thread{ID: id, ProjectID: project.ID, Project: project.Name, Title: title, Checkout: project.Path, Agent: "Fixture agent", State: "idle", Selected: settings, Effective: settings, QueueRevision: 1})
 		return id, nil
 	default:

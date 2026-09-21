@@ -52,3 +52,48 @@ A folder-plus button sits beside the project selector and opens the add-project 
 T3's settlement action first checks environment support, then refuses starting/running work and threads awaiting approval or user input. Its inverse dispatches an explicit user reopening intent. Those source checks support keeping active work discoverable, but do not establish this application's lifecycle semantics. See [settle and unsettle actions](https://github.com/pingdotgg/t3code/blob/72c44a847c0a76f33b0d21f47548125b7032ec35/apps/web/src/hooks/useThreadActions.ts#L494). The user's subsequent choice here is **Close / Reopen**, with a **Closed** navigation group; T3's settlement name and automatic-settlement policies are not adopted.
 
 T3's sidebar asks before deleting conversation history when its user-configurable deletion-confirmation preference is enabled. Its deletion hook can separately offer removal of an orphaned worktree. See [conditional history confirmation](https://github.com/pingdotgg/t3code/blob/72c44a847c0a76f33b0d21f47548125b7032ec35/apps/web/src/components/Sidebar.tsx#L3276) and [separate worktree-removal question](https://github.com/pingdotgg/t3code/blob/72c44a847c0a76f33b0d21f47548125b7032ec35/apps/web/src/hooks/useThreadActions.ts#L334). Our requested Delete flow uses one explicit confirmation by default and preserves project folders, Git worktrees and files. Close remains reversible and preserves history; Delete is a distinct action. These are user-selected behavior requirements, not claims that T3 implements the same contract.
+
+## Compose action and thread surfaces — 2026-09-20
+
+Inspected the same pinned checkout's [New thread button](https://github.com/pingdotgg/t3code/blob/72c44a847c0a76f33b0d21f47548125b7032ec35/apps/web/src/components/Sidebar.tsx#L3503)
+and [row surface classes](https://github.com/pingdotgg/t3code/blob/72c44a847c0a76f33b0d21f47548125b7032ec35/apps/web/src/components/Sidebar.tsx#L1121),
+and viewed the bundled marketing screenshot again. New thread uses Lucide
+`SquarePenIcon` inside an icon-sized sidebar button with an accessible name and
+tooltip. Thread rows share a rounded surface with active, selected and hover
+backgrounds; ordinary rows may be transparent. The screenshot shows an older
+sidebar arrangement and does not independently verify the current button.
+
+The Go translation uses Nerd Fonts v3.4.0 `fa-pen_to_square` (U+F044, verified
+against the pinned glyph metadata) with a `+` plain fallback. Its location is the
+right end of the navigation heading. The user's request for stronger containment
+adds an always-visible quiet background, shared title/metadata padding and one separator row. The subsequent rounded-corner
+request adds a full rounded outline matching the prompt. These are our terminal adaptations, not
+claims that T3 draws bordered cards or uses the same spacing. No T3 runtime was
+started, no assets were copied and no remote Git operations were performed.
+
+## Updated sidebar/settings source inspection — 2026-09-20
+
+Re-inspected the user's updated local checkout at
+`/Users/muschterm/Developer/git/github.com/pingdotgg/t3code`, clean HEAD
+`1ba471a37cd6b0f18820795f4505206f4723a0e3`. No pull, push or source mutation. This
+adds evidence to the earlier pinned review rather than replacing its history.
+
+- `apps/web/src/components/sidebar/SidebarThreadHeader.tsx`: flexible Search
+  input with project scope, folder-plus and square-pen actions at its right.
+- `apps/web/src/components/Sidebar.tsx` around 4410–4570: project filter swaps
+  folder icon for `ProjectFavicon`; picker rows expose a right-aligned gear.
+  Its bottom settled shelf near 4890 uses a collapsed count and expanded title.
+- `apps/web/src/projectIdentity.ts` and `components/ProjectFavicon.tsx`: stable
+  name-derived monograms/color, explicit overrides and optional asset fallback.
+  Our user's first/last-letter rule is intentionally simpler than T3's digit and
+  multi-word heuristic; terminal cells replace DOM image rendering.
+- `components/settings/ProjectSettingsPanel.tsx` around 295–361: confirmation
+  includes project threads/history and says files remain on disk.
+- `components/settings/SettingsSidebarNav.tsx`: grouped settings navigation;
+  `SettingsPanels.tsx` around 2791 gates restart continuation by server support.
+
+The user selected this direction while retaining **Open/Closed**, explicitly
+approved confirmed project-plus-thread removal, and requested per-environment
+restart continuation off by default. These are source observations and recorded
+choices; they are not evidence that this terminal app supports T3's providers,
+assets, worktrees or recovery integrations. See [settings](../design/settings.md).

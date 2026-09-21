@@ -32,6 +32,7 @@ def indexed(n):
 
 def cells(text, default_fg, default_bg):
     fg, bg, inverse = default_fg, default_bg, False
+    bold = underline = False
     x = y = pos = 0
     while pos < len(text):
         char = text[pos]
@@ -45,6 +46,15 @@ def cells(text, default_fg, default_bg):
                 code = codes[i]
                 if code == 0:
                     fg, bg, inverse = default_fg, default_bg, False
+                    bold = underline = False
+                elif code == 1:
+                    bold = True
+                elif code == 22:
+                    bold = False
+                elif code == 4:
+                    underline = True
+                elif code == 24:
+                    underline = False
                 elif code == 7:
                     inverse = True
                 elif code == 27:
@@ -85,7 +95,7 @@ def cells(text, default_fg, default_bg):
         if unicodedata.category(char) in ("Cc", "Cf", "Cs", "Cn"):
             raise ValueError(f"Unsupported control {ord(char):04x}")
         width = 0 if unicodedata.combining(char) else (2 if unicodedata.east_asian_width(char) in ("W", "F") else 1)
-        yield x, y, char, width, bg if inverse else fg, fg if inverse else bg
+        yield x, y, char, width, bg if inverse else fg, fg if inverse else bg, bold, underline
         x += width
 
 
@@ -101,8 +111,10 @@ def render(source, output, font_path):
     image = Image.new("RGB", (cols * cw, rows * ch), bg)
     draw = ImageDraw.Draw(image)
     font = ImageFont.truetype(str(font_path), 15)
+    bold_path = font_path.with_name(font_path.name.replace("-Regular", "-Bold"))
+    bold_font = ImageFont.truetype(str(bold_path), 15) if bold_path.exists() else font
     rectangles, texts = [], []
-    for x, y, char, width, color, background in parsed:
+    for x, y, char, width, color, background, bold, underline in parsed:
         if x + width > cols or y >= rows:
             raise ValueError(f"Cell outside {cols}x{rows}: ({x},{y}) {char!r}")
         px, py = x * cw, y * ch
@@ -110,8 +122,12 @@ def render(source, output, font_path):
             draw.rectangle((px, py, px + width * cw - 1, py + ch - 1), fill=background)
             rectangles.append(f'<rect x="{px}" y="{py}" width="{width*cw}" height="{ch}" fill="{background}"/>')
         if char != " ":
-            draw.text((px, py + 15), char, font=font, fill=color, anchor="ls")
-            texts.append(f'<text x="{px}" y="{py+15}" fill="{color}">{html.escape(char)}</text>')
+            draw.text((px, py + 15), char, font=bold_font if bold else font, fill=color, anchor="ls")
+            weight = ' font-weight="700"' if bold else ''
+            texts.append(f'<text x="{px}" y="{py+15}" fill="{color}"{weight}>{html.escape(char)}</text>')
+        if underline and width:
+            draw.line((px, py+17, px+width*cw-1, py+17), fill=color)
+            rectangles.append(f'<rect x="{px}" y="{py+17}" width="{width*cw}" height="1" fill="{color}"/>')
     output.mkdir(parents=True, exist_ok=True)
     (output / f"{source.stem}.ansi.gz").write_bytes(gzip.compress(source.read_bytes(), mtime=0))
     image.save(output / f"{source.stem}.png")

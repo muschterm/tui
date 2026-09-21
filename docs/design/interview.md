@@ -443,3 +443,169 @@ Stop and Send retain highest priority. The user also requests an outlined typing
 area with a less subtle separation from the settings/actions below it. These
 are presentation corrections; measurements still require supplied telemetry.
 See [composer behavior](layout.md#controls-and-composer-refinement-2026-09-19).
+
+## Question navigation buttons (2026-09-20)
+
+The user requests filled arrow icons for Back/Next, reserving their slots when
+hidden so question IDs cannot fill them. Question tabs should look like buttons,
+using a distinct background or container. When a batch exceeds the available
+width, the current question must stay visible and Back/Next must reveal the
+adjacent questions. Apply similar treatment to other controls where it improves
+recognition. This refinement retains explicit Submit and preserved drafts; see
+[question behavior](questions.md#placement-and-navigation).
+
+## Compose icon and contained thread rows (2026-09-20)
+
+The user requests replacing `+ New thread` with an icon following T3 Code and
+making sidebar threads feel contained rather than like separate text lines.
+Use its square-and-pencil compose treatment and grouped row surfaces, translated
+to a compact padded terminal card containing title and metadata. Preserve the
+accepted status circles, hover actions and vertical options. See [thread cards](threads.md#open-and-closed-navigation)
+and [New thread](projects.md#create-a-thread-in-a-project).
+
+The user subsequently asks for more rounded corners, citing the prompt box, and
+extends the request to buttons and tabs where appropriate. Thread cards and the
+question/approval container use rounded outlines. Question navigation/actions
+and surface tabs use compact, single-row pills; pane-toggle chrome stays unboxed.
+Round caps must preserve the separate close icon, reserved arrow slots and
+keyboard paths. Limited-color/plain layouts keep equal-width readable fallbacks.
+
+The next correction asks for less rounding, using the prompt border as the
+reference, and for thread background colors to stay inside their borders. Replace
+the solid pill silhouette with thin outlined ends on compact one-row controls.
+Thread cards retain their prompt-style corners but fill only their interior;
+hover/selected backgrounds must not paint square border cells.
+
+The user rejects the outlined-end result. That was an implementation
+misinterpretation, not an accepted design decision. Restore the preceding filled
+buttons/tabs and retain the requested interior-only thread background fix. The
+request for a smaller visual corner radius remains unresolved; do not claim the
+outlined ends satisfied it or reintroduce them as an accepted specification.
+
+The user's latest clarification requires the prompt outline's small rounded
+corners with background fill contained inside the border. This supersedes both
+cap experiments above: the thin-end substitution was an implementation error,
+not a user decision. The Go implementation now uses actual top/side/bottom borders
+for normal-height buttons and tabs. Three rows per control strip, with a one-row
+rectangular fallback below 28 terminal rows, is an implementation tradeoff rather
+than an explicitly requested height. Thread-card dimensions remain unchanged;
+only interior cells receive their fill. See the [current visual specification](visual-design.md#pane-controls-and-surface-chrome).
+
+The latest clarification explicitly asks for two types: an outlined and filled
+surface, and a filled surface with the same shape but no visible border line.
+The user confirms the proposed split: thread cards and the prompt use the outlined
+style; buttons and tabs use the background-only style. Their small rounded
+silhouette remains the intended appearance. The current text implementation uses
+stepped half/quadrant-block corners for the latter; the user has not approved that
+approximation as equivalent to a smooth curve. The outer question/approval card
+remains outlined as a routine hierarchy choice.
+
+The user next suggests returning to borders, using different shades for rest,
+hover and selection, and asks for a reusable component-building rule and possibly
+an ADR once the approach is settled. The recommendation is stable backgrounds,
+neutral rest/hover borders, an accent selected border, and independent text cues
+for selection and keyboard focus. This remains a proposal, not a confirmed change
+to the preceding split. See [components](components.md) and
+[proposed ADR 0008](../adr/0008-cell-native-component-state.md).
+
+The user clarifies that the border-shade approach applies to rounded components.
+Square components may be outlined or borderless with a background, with the latter
+preferred for a tighter fit; question tabs are suggested as a candidate. The
+recommendation is rounded outlines for grouping/input cards and square fills for
+question tabs, surface tabs and compact actions. Square outlines remain available
+when a compact element needs an explicit boundary. Placement and exact state
+mapping remain under review in the component proposal; no runtime change has been
+made by this documentation pass.
+
+
+## Accepted component construction, 2026-09-20
+
+The user approved implementing the [component rule](components.md) and
+[ADR 0008](../adr/0008-cell-native-component-state.md). This settles the preceding
+review and supersedes the earlier pill, curved-end and stepped-corner treatments.
+Prompt, thread, request and dialog containers use rounded outlines with stable
+interior backgrounds. Question tabs, surface tabs and compact actions use
+single-row square fills; square outlines remain available. Rest is neutral,
+hover stronger neutral, selection accent plus bold, and keyboard focus separately
+underlined. Selection remains visible when a neighboring control is hovered;
+semantic status icons retain their colors. The implementation and its evidence
+are separate from this acceptance record.
+
+The user subsequently requests a container around queued messages: the queue
+header, previews and Edit/Remove/reorder controls currently blend together and
+into surrounding content. Apply the accepted rounded-container rule to the queue
+group, with inset, aligned rows and bounded access to additional queued items.
+This changes grouping, not queue execution, settings captures or attachment
+preservation.
+
+## Queued-message steering, 2026-09-20
+
+The user requests a **Steer** button on queued messages so a selected message
+can join the current conversation immediately instead of waiting for another
+turn, and explicitly requires this in the overall design. Ordinary Send continues
+to queue during active work. Steer targets the same active turn, preserving the
+queued payload and settings, without implicit Stop/Resume, reordering or a new
+turn. It is conditional on verified adapter support and must have an honest
+unavailable state. The [shared steering contract](activity.md#steering-a-queued-message)
+defines race, acknowledgment and recovery behavior for all three native apps.
+
+## Answered questions in conversation history, 2026-09-20
+
+The user asks whether answered questions are displayed nicely in the conversation.
+Inspection confirms that Go currently saves the answers and removes the pending
+form, but does not render the Q&A in its transcript. The user approves adding the
+proposed compact, read-only **Answered** card to the design: show each original
+question with its submitted answer, and allow expansion of longer content.
+The [shared history contract](questions.md#answered-questions-in-conversation-history)
+records presentation, accepted-response identity and recovery requirements.
+Implementation remains outstanding; this follow-up changes documentation only.
+
+## Agents summary total, 2026-09-20
+
+The user clarifies that the compact summary must read **circle · Agents N**,
+where N is the total children in the represented group, including completed
+children. With 13 children and 12 completed, the circle still pulses blue and the
+label stays **Agents 13**; after the last completes, the circle becomes solid
+green and the label remains **Agents 13**. This adds the count to the earlier
+“just Agents” label decision; it does not restore working/finished wording.
+Existing exceptional-state colors and completed-only icon dismissal still apply.
+
+## Phone-sized terminal and column selection, 2026-09-20
+
+The user reports an iPhone terminal at **47×22** and requests support below the
+former 48-column minimum. The user proposes choosing the visible column with a
+hamburger menu and asks for a recommendation. The implementation uses one column
+at a time below 60 columns and validates a 40×22 minimum. The prompt and actions
+remain available; Conversation owns questions, queued messages and activity,
+while the bell reveals pending questions from another column. Column selection
+preserves work and restores the wider pane arrangement after a resize. See the
+[small-screen contract](layout.md#single-column-layouts-on-small-screens).
+
+## Thread lifecycle action placement, 2026-09-20
+
+The user moves the Close checkmark and Closed-thread trash action directly left
+of each row's vertical ellipsis. This supersedes the earlier leading-circle swap.
+Keep the status circle on the left and reserve the trailing action slot so titles
+do not shift on hover/focus. Close eligibility and explicit Delete confirmation
+remain unchanged. See [thread presentation](threads.md#open-and-closed-navigation).
+
+### Sidebar/settings refinement — 2026-09-20
+
+User approved the updated local T3 reference's simplified search/filter/add/new
+header, colored project badges, per-project gear/settings, bottom app settings
+with General/Appearance/Keybindings/About and bottom Back navigation. Keep this
+app's **Open/Closed** terminology, not Settled. Closed stays at the bottom with
+count only while collapsed. App workspace default is Current checkout, project
+overrides are supported, and Continue threads after restart is off by default.
+
+Asked whether removing a project should also delete its threads while preserving
+disk files. User: “Remove project and its threads after confirmation.” This is
+now the accepted removal contract. No real worktree/protocol support is inferred
+from storing defaults; see [settings](settings.md) and [projects](projects.md).
+
+The user then clarified the settings layout: **the left sidebar is category
+navigation, and the center/right panels are fully replaced by the selected
+category's configuration**, as in T3. The Project category appears when entering
+through a project's gear. The composer and bottom workspace are hidden too,
+with their state preserved for Back. This supersedes the intermediate
+implementation that placed the settings form inside the left sidebar.

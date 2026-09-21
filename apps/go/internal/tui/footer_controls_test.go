@@ -67,14 +67,20 @@ func TestStopAndEffectiveSettingsOnlyForActiveTurn(t *testing.T) {
 			m.viewState().Settings.Effort = "high"
 			controls, hidden := m.composerLayout(48)
 			controls = append(controls, hidden...)
-			foundStop, foundEffective := false, false
+			foundStop := false
 			for _, c := range controls {
 				foundStop = foundStop || c.action.Kind == "interrupt"
-				foundEffective = foundEffective || c.key == "settings:effective"
 			}
 			want := !resume && (state == "running" || state == "waiting")
-			if foundStop != want || foundEffective != want {
-				t.Fatalf("%s resume %v: stop %v effective %v", state, resume, foundStop, foundEffective)
+			if foundStop != want || m.configurationLocked() != want {
+				t.Fatalf("%s resume %v: stop %v locked %v", state, resume, foundStop, m.configurationLocked())
+			}
+			wantSettings := m.viewState().Settings
+			if want {
+				wantSettings = m.thread().Effective
+			}
+			if m.composerSelection() != wantSettings {
+				t.Fatal("row does not show the current editable/effective settings")
 			}
 		}
 	}
@@ -160,6 +166,7 @@ func TestComposerLongUnicodeModelTruncatesBeforeHiding(t *testing.T) {
 func TestComposerOverflowPointerKeyboardResizeAndDraft(t *testing.T) {
 	for _, pointer := range []bool{false, true} {
 		m := testModel()
+		m.snapshot.Threads[0].State = "idle"
 		m.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
 		m.setFocus("prompt")
 		m.Update(tea.PasteMsg{Content: "keep this unsent draft"})

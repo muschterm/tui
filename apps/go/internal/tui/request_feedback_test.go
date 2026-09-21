@@ -74,7 +74,7 @@ func TestMouseSubmitPreservesLegacyQuestionWireContract(t *testing.T) {
 }
 
 func TestQuestionValidationRemainsVisibleUnderSubmitHover(t *testing.T) {
-	for _, size := range [][2]int{{160, 50}, {80, 30}, {48, 22}} {
+	for _, size := range [][2]int{{160, 50}, {80, 30}, {48, 22}, {47, 22}, {40, 22}} {
 		m, r := questionReviewModel()
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m.prompt.SetValue("preserved")

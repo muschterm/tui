@@ -24,6 +24,8 @@ func agentDisplayName(value string) string {
 }
 func modelDisplayName(value string) string {
 	switch strings.ToLower(value) {
+	case "":
+		return "Choose model"
 	case "fixture-model":
 		return "Reference"
 	case "claude-opus-5", "claude opus 5":

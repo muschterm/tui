@@ -24,6 +24,12 @@ Record acknowledged operations and outcomes sufficiently to reconcile retries af
 
 Accepted prompts retain the content captured from their explicit context attachments at Send, together with source identity and relevant revision/range or diff scope. Preserve those snapshots through queuing, reconnect and restart/Resume; a later read of the source is not an equivalent recovery. Apply the artifact readiness and acceptance guarantees below. See [prompt context](activity.md#prompt-context-attachments).
 
+Steered prompts retain that same captured payload and their targeted turn identity.
+Preserve pending/unconfirmed/accepted delivery state and its command identity so
+neither retries nor normal queue dispatch duplicate the input. Accepted steering
+leaves the waiting queue and remains in conversation history; restart does not
+retarget it to a new turn. See [steering](activity.md#steering-a-queued-message).
+
 Persist each prompt's selected model, effort, permissions and applicable context/speed settings captured at Send. Keep explicit queued-item revisions and the resulting turn's acknowledged effective configuration distinguishable. Reconnect and restart/Resume retain the accepted selection; current composer defaults do not replace it. See [per-prompt settings](thread-configuration.md#settings-captured-per-prompt).
 
 ## Artifacts and database evolution
@@ -36,6 +42,8 @@ Version application storage and protocol expectations. Before migration, make a 
 
 Process handles, PTYs, sockets and in-memory provider objects are not resumable database state. Persisted identifiers and transcripts describe previous work; they do not prove a process is alive or a session resumable. Reconcile server identity, owned processes and provider capabilities before presenting recovered work as running.
 
-After server restart, restore history and queues, mark unfinished runs interrupted, and require explicit **Resume** before continuing saved execution. This is accepted behavior. Never replay side-effecting tool calls, approvals or dispatch queued execution merely to reconstruct state. Resume may depend on provider support or require a new session; unsupported recovery must be visible. Attaching to an already-live server instead catches up with continuing work and does not introduce a restart Resume gate.
+After server restart, restore history and queues, mark unfinished runs interrupted, and require explicit **Resume** by default before continuing saved execution. The later [environment setting](settings.md#continue-threads-after-restart) allows opt-in continuation only for verified eligible integrations; manual Stop and pending requests remain gated. Never replay side-effecting tool calls, approvals or dispatch queued execution merely to reconstruct state. Resume may depend on provider support or require a new session; unsupported recovery must be visible. Attaching to an already-live server instead catches up with continuing work and does not introduce a restart Resume gate.
 
 Graceful server stop saves state while cancelling work and stopping owned processes; workspace modifications remain. [Go tests](../../apps/go/internal/storage/storage_test.go) verify revisioned draft saves, legacy-schema migration with a pre-migration backup containing live WAL data, and rejection of newer schemas without changing database bytes. [Server tests](../../apps/go/internal/server/server_test.go) verify persisted views, restart awaiting Resume and durable fixture-command deduplication. Recovery of externally changed buffers, peer-safe undo, paused autosave on conflicts/deletion/replacement, transport-failure acknowledgment injection, interrupted artifact publication, failed-migration recovery workflows, unavailable provider sessions and configured-home isolation remain unverified.
+
+Revisioned app execution defaults and project overrides share the server state transaction. Confirmed project removal purges thread-owned views and payloads atomically and retains minimal retry fingerprints; disk files are outside this deletion. See [ADR 0010](../adr/0010-environment-settings-and-recovery.md).

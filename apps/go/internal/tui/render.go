@@ -13,6 +13,15 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
+const (
+	minTerminalWidth  = 40
+	minTerminalHeight = 22
+)
+
+func (m *Model) terminalTooSmall() bool {
+	return m.width < minTerminalWidth || m.height < minTerminalHeight
+}
+
 func lipColor(s string) color.Color { return lipgloss.Color(s) }
 func (f *frame) put(r shell.Rect, text string) {
 	if f.rows == nil || r.W <= 0 || r.H <= 0 {
@@ -25,7 +34,7 @@ func (f *frame) put(r shell.Rect, text string) {
 			continue
 		}
 		line := fit(lines[i], r.W)
-		f.rows[y] = ansi.Cut(f.rows[y], 0, r.X) + line + ansi.Cut(f.rows[y], r.X+r.W, ansi.StringWidth(f.rows[y]))
+		f.rows[y] = compactSGR(ansi.Cut(f.rows[y], 0, r.X) + line + ansi.Cut(f.rows[y], r.X+r.W, ansi.StringWidth(f.rows[y])))
 	}
 }
 func (f *frame) fill(r shell.Rect, p palette, bg string) {
@@ -39,20 +48,9 @@ func (f *frame) text(x, y, w int, s, fg, bg string) {
 	}
 }
 func (f *frame) button(m *Model, x, y, w int, label, key string, a action, fg, bg string) {
-	if w <= 0 {
-		return
-	}
-	p := m.colors()
-	if m.focus == key || m.hover == key {
-		bg = p.selected
-		fg = p.blue
-		if m.colorProfile == colorprofile.ANSI {
-			fg = p.text
-		}
-	}
-	f.text(x, y, w, label, fg, bg)
-	f.hits = append(f.hits, hit{shell.Rect{X: x, Y: y, W: w, H: 1}, a, label, key})
+	f.styledButton(x, y, w, label, key, a, m.componentStyle(squareFill, m.controlState(false, key), fg, bg))
 }
+
 func (f *frame) selection(a, b [2]int) string {
 	if a[1] > b[1] || a[1] == b[1] && a[0] > b[0] {
 		a, b = b, a
@@ -73,28 +71,30 @@ func (f *frame) selection(a, b [2]int) string {
 func (m *Model) compact() bool { return m.height < 28 }
 
 func (m *Model) baseFooterHeight(w int) int {
-	n := 2 + max(1, m.promptRows) + m.activityStripHeight(w) + m.composerControlsHeight(w)
-	if len(m.thread().Queue) > 0 {
-		if m.compact() {
-			n++
-		} else {
-			n += min(2, len(m.thread().Queue)) + 1
-		}
+	n := 3 + max(1, m.promptRows) + m.composerControlsHeight(w) + m.closedBannerHeight(w)
+	if m.conversationVisible() {
+		n += m.activityStripHeight(w) + m.queueHeight()
 	}
 	if len(m.viewState().Attachments) > 0 {
+		n++
+	}
+	if m.viewState().ContextError != "" {
 		n++
 	}
 	return n
 }
 
 func (m *Model) footerHeight() int {
-	if m.state.Active == "" {
+	if m.settingsPage != "" {
 		return 0
 	}
-	if m.thread().Closed {
-		return 2
+	if !m.hasComposer() {
+		return 0
 	}
 	w := max(1, m.state.Layout.Compute(m.width, m.height-1, 0).Center.W-2)
+	if m.singleColumn() {
+		w = max(1, m.width-2)
+	}
 	return m.baseFooterHeight(w) + m.requestHeight(w)
 }
 
@@ -113,21 +113,19 @@ func (m *Model) compose(paint bool) frame {
 		}
 	}
 	footer := m.footerHeight()
-	layout := m.state.Layout
-	if m.state.Active == "" {
-		layout.Bottom = false
-		layout.Right = false
-		layout.Maximized = false
-	}
-	f.geom = layout.Compute(m.width, m.height-1, footer)
+	f.geom = m.workspaceGeometry(footer)
 	g := f.geom
-	if m.width < 48 || m.height < 22 {
-		f.text(1, 1, max(1, m.width-2), "tui-go · resize to at least 48 × 22", p.gold, p.canvas)
+	if m.terminalTooSmall() {
+		f.text(1, 1, max(1, m.width-2), fmt.Sprintf("tui-go · resize to at least %d × %d", minTerminalWidth, minTerminalHeight), p.gold, p.canvas)
 		f.button(m, 1, 3, 12, "Commands", "commands", action{Kind: "commands"}, p.blue, p.canvas)
 		f.text(1, 5, max(1, m.width-2), "Draft preserved · Ctrl+Q detaches", p.text, p.canvas)
 		if len(m.menu) > 0 {
 			m.renderMenu(&f)
 		}
+		return f
+	}
+	if m.settingsPage != "" {
+		m.renderSettingsWorkspace(&f)
 		return f
 	}
 	m.renderChrome(&f, g)
@@ -155,11 +153,9 @@ func (m *Model) compose(paint bool) frame {
 	if transcript.H > 0 {
 		m.renderTranscript(&f, transcript)
 	}
-	if m.state.Active == "" {
+	if !m.hasComposer() && r.H > 0 {
 		m.renderEmptyThreads(&f, r)
-	} else if m.thread().Closed {
-		f.button(m, r.X+2, r.Y+r.H-2, max(1, r.W-4), "Closed · Reopen thread", "thread-reopen", action{Kind: "thread-reopen", ID: m.state.Active}, p.blue, p.input)
-	} else {
+	} else if m.hasComposer() {
 		m.renderFooter(&f, shell.Rect{X: r.X + 1, Y: r.Y + r.H - fh, W: max(1, r.W-2), H: fh})
 	}
 	status := m.status
@@ -172,11 +168,18 @@ func (m *Model) compose(paint bool) frame {
 			break
 		}
 	}
+	if m.notice.text != "" {
+		status = m.notice.text
+	}
+	if notice := m.steeringNotice(); notice != "" {
+		status = notice
+	}
 	connection := "● connected"
 	if !m.connected {
 		connection = "○ disconnected · stale"
 	}
 	f.text(1, m.height-1, m.width-2, connection+"  ·  "+status, p.muted, p.nav)
+	m.renderMentions(&f)
 	if len(m.menu) > 0 {
 		m.renderMenu(&f)
 	}
@@ -259,56 +262,30 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	p := m.colors()
 	v := m.viewState()
-	t := m.thread()
 	x, w, y := r.X, r.W, r.Y
-	y = m.renderActivityStrip(f, shell.Rect{X: x, Y: y, W: w})
-	if len(t.Queue) > 0 {
-		if !m.compact() {
-			f.button(m, x, y, w, fmt.Sprintf("%d queued", len(t.Queue)), "queue", action{Kind: "queue"}, p.gold, p.canvas)
-			y++
+	if m.conversationVisible() {
+		y = m.renderActivityStrip(f, shell.Rect{X: x, Y: y, W: w})
+		y = m.renderQueue(f, shell.Rect{X: x, Y: y, W: w, H: m.queueHeight()})
+		if req, ok := m.request(); ok {
+			y = m.renderRequest(f, shell.Rect{X: x, Y: y, W: w, H: m.requestHeight(w)}, req)
 		}
-		for i, q := range t.Queue {
-			limit := 2
-			if m.compact() {
-				limit = 1
-			}
-			if i >= limit {
-				break
-			}
-			textWidth := max(1, w-21)
-			queueLabel := "  " + q.Text
-			if m.compact() {
-				queueLabel = fmt.Sprintf("%d queued · %s", len(t.Queue), q.Text)
-			}
-			f.button(m, x, y, textWidth, queueLabel, "queue-row:"+q.ID, action{Kind: "queue"}, p.muted, p.canvas)
-			bx := x + textWidth
-			f.button(m, bx, y, 6, "Edit", "edit:"+q.ID, action{Kind: "edit", ID: q.ID}, p.blue, p.canvas)
-			f.button(m, bx+6, y, 7, "Remove", "remove:"+q.ID, action{Kind: "remove", ID: q.ID}, p.muted, p.canvas)
-			f.button(m, bx+13, y, 4, "↑", "up:"+q.ID, action{Kind: "move", ID: q.ID, Index: -1}, p.blue, p.canvas)
-			f.button(m, bx+17, y, 4, "↓", "down:"+q.ID, action{Kind: "move", ID: q.ID, Index: 1}, p.blue, p.canvas)
-			y++
-		}
-	}
-	if req, ok := m.request(); ok {
-		y = m.renderRequest(f, shell.Rect{X: x, Y: y, W: w, H: m.requestHeight(w)}, req)
 	}
 	if len(v.Attachments) > 0 {
 		f.button(m, x, y, w, fmt.Sprintf("%d context attachments · manage / remove", len(v.Attachments)), "attachments", action{Kind: "attachments"}, p.blue, p.input)
 		y++
 	}
-	f.fill(shell.Rect{X: x, Y: y, W: w, H: max(0, r.Y+r.H-y)}, p, p.canvas)
-	border := p.muted
-	if m.focus == "prompt" {
-		border = p.blue
+	if v.ContextError != "" {
+		f.button(m, x, y, w, "Send failed: "+v.ContextError, "context-error", action{Kind: "context-error"}, p.red, p.canvas)
+		y++
 	}
-	f.text(x, y, w, "╭"+strings.Repeat("─", max(0, w-2))+"╮", border, p.input)
-	y++
+	y = m.renderClosedBanner(f, shell.Rect{X: x, Y: y, W: w})
+	f.fill(shell.Rect{X: x, Y: y, W: w, H: max(0, r.Y+r.H-y)}, p, p.canvas)
 	promptHeight := max(1, m.promptRows)
+	promptStyle := m.componentStyle(roundedOutline, m.controlState(false, "prompt"), p.text, p.input)
+	f.componentBox(m, shell.Rect{X: x, Y: y, W: w, H: promptHeight + 2}, roundedOutline, promptStyle, p.canvas)
+	y++
 	inset := composerInset(w)
 	f.prompt = shell.Rect{X: x + inset, Y: y, W: max(1, w-2*inset), H: promptHeight}
-	for row := y; row < y+promptHeight; row++ {
-		f.text(x, row, w, "│"+strings.Repeat(" ", max(0, w-2))+"│", border, p.input)
-	}
 	if f.rows != nil {
 		f.put(f.prompt, style(p.text, p.input).Width(f.prompt.W).Height(f.prompt.H).Render(m.promptView.View(&m.prompt)))
 	}
@@ -316,8 +293,8 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	promptScroll := m.promptView.Metrics(m.promptMetrics)
 	f.scrollbar(m, shell.Rect{X: f.prompt.X + f.prompt.W, Y: f.prompt.Y, W: 1, H: f.prompt.H}, "prompt", promptScroll.Total, f.prompt.H, promptScroll.Offset, p.input)
 	y += promptHeight
-	f.text(x, y, w, "╰"+strings.Repeat("─", max(0, w-2))+"╯", border, p.input)
-	m.renderComposerControls(f, r, y+1)
+	y = m.renderComposerControls(f, r, y+1)
+	m.renderCheckoutContext(f, shell.Rect{X: x, Y: y, W: w, H: 1})
 }
 func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	if r.W <= 0 || r.H <= 0 {
@@ -347,20 +324,20 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	}
 	active, _ := v.Host.Active()
 	cx := x
+	tabRows := 1
 	visible, overflow := visibleTabs(v.Host.Tabs, active.ID, w-4)
 	for _, slot := range visible {
 		tab := slot.tab
 		f.tab(m, cx, y, slot.width, tab.Title, tab.Kind, "tab:"+tab.ID, "close:"+tab.ID,
-			action{Kind: "tab", ID: tab.ID}, action{Kind: "close", ID: tab.ID}, tab.ID == active.ID, p.panel)
-		cx += slot.width
+			action{Kind: "tab", ID: tab.ID}, action{Kind: "close", ID: tab.ID}, tab.ID == active.ID)
+		cx += slot.width + 1
 	}
 	if overflow {
-		f.button(m, x+w-8, y, 4, " "+m.icon("more"), "tabs", action{Kind: "tabs"}, p.muted, p.panel)
+		f.button(m, x+w-8, y+tabRows/2, 4, " "+m.icon("more"), "tabs", action{Kind: "tabs"}, p.muted, p.panel)
 		f.hits[len(f.hits)-1].Label = "Hidden tabs · open or close a surface"
 	}
-	f.button(m, x+w-4, y, 4, " "+m.icon("add"), "chooser", action{Kind: "chooser"}, p.blue, p.panel)
-	f.text(x, y+1, w, strings.Repeat("─", w), p.line, p.panel)
-	f.detail = shell.Rect{X: x + 1, Y: y + 3, W: max(1, w-2), H: max(0, r.H-5)}
+	f.button(m, x+w-4, y+tabRows/2, 4, " "+m.icon("add"), "chooser", action{Kind: "chooser"}, p.blue, p.panel)
+	f.detail = shell.Rect{X: x + 1, Y: y + tabRows + 2, W: max(1, w-2), H: max(0, r.H-tabRows-4)}
 	f.hits = append(f.hits, hit{f.detail, action{}, "Surface · wheel / arrows to scroll", "right-body"})
 	text := m.surfaceText(active)
 	lines := strings.Split(ansi.Wrap(safe(text), f.detail.W, ""), "\n")
@@ -463,14 +440,14 @@ func (m *Model) renderBottom(f *frame, r shell.Rect) {
 }
 func (m *Model) renderMenu(f *frame) {
 	p := m.colors()
-	w := min(68, max(20, m.width-6))
+	r := m.menuRect()
+	w, h := r.W, r.H
 	extra := 0
 	if m.projectMode != "" {
 		extra = 2
 	}
-	h := min(len(m.menu)+4+extra, max(5+extra, m.height-4))
-	r := shell.Rect{X: max(0, (m.width-w)/2), Y: max(1, (m.height-h)/2), W: w, H: h}
-	f.fill(r, p, p.input)
+	m.renderModalBackdrop(f)
+	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, componentState{Focused: true}, p.text, p.input), p.canvas)
 	f.hits = nil
 	f.scrollbars = nil
 	f.text(r.X+2, r.Y+1, w-7, m.menuTitle, p.violet, p.input)
@@ -481,35 +458,54 @@ func (m *Model) renderMenu(f *frame) {
 			f.put(input, m.projectInput.View())
 		}
 		f.hits = append(f.hits, hit{input, action{}, "Project search / folder path", "project-input"})
-		f.text(r.X+2, r.Y+3, w-4, m.projectError, p.red, p.input)
+		caption, ink := m.projectError, p.red
+		if caption == "" && (m.projectMode == "add" || m.projectMode == "project-root") {
+			caption, ink = m.paths.result.Directory, p.muted
+		}
+		f.text(r.X+2, r.Y+3, w-4, caption, ink, p.input)
 	}
-	visible := h - 3 - extra
+	visible := h - 4 - extra
 	start := m.menuStart(visible)
 	for i := 0; i < visible && start+i < len(m.menu); i++ {
 		index := start + i
 		item := m.menu[index]
-		bg := p.input
-		if index == m.menuIndex {
-			bg = p.selected
-		}
-		if item.Action.Kind == "tab" {
+		if m.projectMode == "filter" && item.Action.Kind == "project-filter" && item.Action.ID != "" {
+			if project, ok := m.projectByID(item.Action.ID); ok {
+				y, key := r.Y+2+extra+i, fmt.Sprintf("menu:%d", index)
+				state := m.controlState(index == m.menuIndex && !m.projectGear, key)
+				f.styledButton(r.X+2, y, w-8, "   "+project.Name, key, action{Kind: "menu-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
+				f.hits[len(f.hits)-1].Label = project.Name + " · " + project.Path
+				m.renderProjectBadge(f, r.X+2, y, project)
+				key = "project-settings:" + project.ID
+				state = m.controlState(index == m.menuIndex && m.projectGear, key)
+				f.styledButton(r.X+w-6, y, 3, centered(m.icon("settings"), 3), key, action{Kind: "project-settings", ID: project.ID}, m.componentStyle(squareFill, state, p.muted, p.input))
+				f.hits[len(f.hits)-1].Label = "Project settings · " + project.Name
+			}
+		} else if item.Action.Kind == "tab" {
 			f.tab(m, r.X+2, r.Y+2+extra+i, w-5, item.Label, item.Action.Value,
 				fmt.Sprintf("menu:%d", index), "menu-tab-close:"+item.Action.ID,
-				action{Kind: "menu-select", Index: index}, action{Kind: "menu-tab-close", ID: item.Action.ID}, index == m.menuIndex, bg)
+				action{Kind: "menu-select", Index: index}, action{Kind: "menu-tab-close", ID: item.Action.ID}, index == m.menuIndex)
 		} else {
 			label := item.Label
 			if item.Action.Kind == "open" {
 				label = m.icon(item.Action.Value) + "  " + label
 			}
-			f.button(m, r.X+2, r.Y+2+extra+i, w-5, label, fmt.Sprintf("menu:%d", index), action{Kind: "menu-select", Index: index}, p.text, bg)
+			key := fmt.Sprintf("menu:%d", index)
+			state := m.controlState(index == m.menuIndex, key)
+			state.Focused = state.Focused || index == m.menuIndex && m.focus != "project-input"
+			f.styledButton(r.X+2, r.Y+2+extra+i, w-5, label, key, action{Kind: "menu-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
 		}
 	}
 	f.scrollbar(m, shell.Rect{X: r.X + w - 2, Y: r.Y + 2 + extra, W: 1, H: visible}, "menu", len(m.menu), visible, start, p.input)
-	f.text(r.X+2, r.Y+h-1, w-4, fmt.Sprintf("↑ ↓  Enter  Esc  %d/%d", m.menuIndex+1, len(m.menu)), p.muted, p.input)
+	help := fmt.Sprintf("↑ ↓  Enter  Esc  %d/%d", m.menuIndex+1, len(m.menu))
+	if m.projectMode == "add" || m.projectMode == "project-root" {
+		help = "↑ ↓  Tab browse  Enter choose  Esc"
+	}
+	f.text(r.X+2, r.Y+h-2, w-4, help, p.muted, p.input)
 }
 func (m *Model) View() tea.View {
 	f := m.render()
-	if (m.selecting || m.selectedText != "") && len(m.menu) == 0 {
+	if m.settingsPage == "" && (m.selecting || m.selectedText != "") && len(m.menu) == 0 {
 		a, b := m.selectionStart, m.selectionEnd
 		if a[1] > b[1] || a[1] == b[1] && a[0] > b[0] {
 			a, b = b, a
