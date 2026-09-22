@@ -4,6 +4,11 @@ status: accepted
 
 # Keep ACP at the agent boundary and use official agent runtimes
 
+**Implementation continuation:** [ADR 0016](0016-built-in-go-acp-bridges.md)
+selects embedded Go bridges with serialized ACP pipes and directly owned
+official CLI children. The [Go bridge checkpoint](../implementation/go-adapter-checkpoint.md)
+records replacement coverage and validation separately from historical adapters.
+
 **Adapter ownership selected, 2026-09-22:** the user rejects separate adapter
 installations and selects our own Go adapters delivered with the application.
 Host installed `claude -p` directly through its JSONL/control protocol and

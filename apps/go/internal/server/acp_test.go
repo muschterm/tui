@@ -177,7 +177,7 @@ func TestMissingExecutableReportsTheInstallHint(t *testing.T) {
 		return agent.Find(&s, "claude").State != agent.StateProbing
 	})
 	probed := agent.Find(&s, "claude")
-	if probed.State != agent.StateUnavailable || !strings.Contains(probed.Detail, "npm install -g @agentclientprotocol/claude-agent-acp") {
+	if probed.State != agent.StateUnavailable || !strings.Contains(probed.Detail, "installed official claude or codex CLI") {
 		t.Fatalf("install hint missing: %q %q", probed.State, probed.Detail)
 	}
 }
@@ -540,7 +540,7 @@ func TestServePublishesAgentsAndProbesThemOnStart(t *testing.T) {
 				t.Fatalf("fixture agent: %+v", a)
 			}
 		case agent.KindACP:
-			if a.State != agent.StateUnavailable || !strings.Contains(a.Detail, "npm install -g") {
+			if a.State != agent.StateUnavailable || !strings.Contains(a.Detail, agent.InstallHint) {
 				t.Fatalf("startup probe of %s: %q %q", a.ID, a.State, a.Detail)
 			}
 			if !strings.HasPrefix(a.Command, "tui-go-agent-that-does-not-exist") {

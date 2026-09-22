@@ -21,13 +21,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=Path('bin/tui-go'))
     parser.add_argument('--agent', choices=['claude', 'codex'], required=True)
-    parser.add_argument('--adapter', type=Path, required=True)
+    parser.add_argument('--adapter', type=Path, help='explicit external ACP adapter; omit for the shipped Go bridge')
+    parser.add_argument('--model', help='explicit model ID from the live catalogue')
+    parser.add_argument('--effort', help='explicit effort value from the live catalogue')
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--artifacts', type=Path, required=True)
     args = parser.parse_args()
     if os.environ.get('TUI_GO_LIVE_ACP') != '1':
         parser.error('set TUI_GO_LIVE_ACP=1; this check consumes provider allowance')
-    binary, adapter, runtime = (p.resolve(strict=True) for p in (args.binary, args.adapter, args.runtime))
+    binary, runtime = (p.resolve(strict=True) for p in (args.binary, args.runtime))
+    adapter = args.adapter.resolve(strict=True) if args.adapter else None
     artifacts = args.artifacts.resolve()
     artifacts.mkdir(parents=True, exist_ok=True)
     report = {'agent': args.agent, 'checks': [], 'result': 'INCOMPLETE'}
@@ -58,7 +61,7 @@ def main():
         environment = dict(os.environ, TUI_GO_HOME=str(home),
                            TUI_GO_AGENT_CLAUDE_COMMAND='/nonexistent/live-check-disabled',
                            TUI_GO_AGENT_CODEX_COMMAND='/nonexistent/live-check-disabled')
-        environment['TUI_GO_AGENT_' + args.agent.upper() + '_COMMAND'] = str(adapter)
+        environment['TUI_GO_AGENT_' + args.agent.upper() + '_COMMAND'] = str(adapter) if adapter else 'builtin:' + args.agent
         environment['CLAUDE_CODE_EXECUTABLE' if args.agent == 'claude' else 'CODEX_PATH'] = str(wrapper)
         # Disable adapter debug-wire logging, without altering auth/config.
         environment.pop('ACP_LOG_FILE', None)
@@ -136,6 +139,13 @@ def main():
             for field in ('Model', 'Effort', 'Permissions', 'Context', 'Speed'):
                 option = next((o for o in agent['Options'] if o['ID'] == agent['Fields'].get(field)), None)
                 settings[field] = option['Current'] if option else 'unavailable'
+                if field == 'Model' and option:
+                    selected = args.model or settings[field] or option['Values'][0]['Value']
+                    check(any(v['Value'] == selected for v in option['Values']), 'explicit model is discovered')
+                    settings[field] = selected
+                if field == 'Effort' and args.effort:
+                    check(option is not None and any(v['Value'] == args.effort for v in option['Values']), 'explicit effort is discovered')
+                    settings[field] = args.effort
             report['selected'] = settings
             project_id = command('project.add', Path=str(project))['TargetID']
             prompt = ('Use AskUserQuestion now to ask exactly one question: Which color? '

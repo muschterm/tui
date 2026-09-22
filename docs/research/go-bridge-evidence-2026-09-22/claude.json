@@ -1,0 +1,84 @@
+{
+  "agent": "claude",
+  "checks": [
+    "adapter ready",
+    "explicit model is discovered",
+    "native question is waiting",
+    "provider supplied requested bounded form",
+    "duplicate answer command returns original receipt",
+    "provider turn completed after answer",
+    "generic completion did not become an authoritative answer receipt",
+    "provider reply corroborates selected answer",
+    "Stop target is waiting on native question",
+    "late answer after Stop rejected",
+    "cancelled waiting question has no accepted answer",
+    "Resume sends no duplicate prompt",
+    "restart retains no dispatched queue copies",
+    "restart retains accepted answer as uncertain",
+    "restart retry returns receipt without replay"
+  ],
+  "result": "PASS",
+  "runtime_version": "2.1.280 (Claude Code)",
+  "adapter_version": "tui-go-claude 0.1.0",
+  "readiness": "ready",
+  "selected": {
+    "Model": "haiku",
+    "Effort": "unavailable",
+    "Permissions": "default",
+    "Context": "unavailable",
+    "Speed": "unavailable"
+  },
+  "first_outcome": {
+    "state": "waiting",
+    "error": "",
+    "queued": 0
+  },
+  "native_question": {
+    "mode": "blocking",
+    "route": "native-response",
+    "questions": [
+      {
+        "ID": "question_0",
+        "Text": "Which color?\n\nBlue: A cool color representing calmness and sky\n\nGreen: A natural color representing growth and nature",
+        "Label": "Color",
+        "Kind": "single",
+        "AllowOther": true,
+        "Required": false,
+        "Options": [
+          "Blue",
+          "Green"
+        ]
+      }
+    ]
+  },
+  "request_delivery": "acp-unconfirmed",
+  "effective": {
+    "Model": "haiku",
+    "Effort": "unavailable",
+    "Permissions": "default",
+    "Context": "unavailable",
+    "Speed": "unavailable"
+  },
+  "shutdown": "confirmed",
+  "runtime_launches": [
+    {
+      "protocol_flags": [
+        "--input-format",
+        "--output-format"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "--input-format",
+        "--output-format"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "--input-format",
+        "--output-format"
+      ]
+    }
+  ],
+  "owned_processes_reaped": 3
+}

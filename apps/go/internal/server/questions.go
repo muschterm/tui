@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
@@ -43,7 +44,14 @@ func (h *acpHandler) CreateElicitation(ctx context.Context, raw json.RawMessage)
 	if !h.questions {
 		return cancelled, fmt.Errorf("native questions are unavailable on this connection")
 	}
-	form, err := agent.ParseClaudeQuestions("question-"+ID(), raw)
+	h.mu.Lock()
+	builtin := h.info.Version == acpbridge.ClaudeIdentity
+	h.mu.Unlock()
+	parse := agent.ParseClaudeQuestions
+	if builtin {
+		parse = agent.ParseBuiltinClaudeQuestions
+	}
+	form, err := parse("question-"+ID(), raw)
 	if err != nil {
 		return cancelled, err
 	}

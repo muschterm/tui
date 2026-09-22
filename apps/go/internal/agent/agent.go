@@ -1,4 +1,4 @@
-// Package agent connects the server to user-owned ACP agent executables. It
+// Package agent connects the server to built-in bridges and external ACP peers. It
 // owns process launch, the ACP client side of the connection, and the pure
 // translation between ACP payloads and the application protocol. It performs no
 // snapshot persistence and knows nothing about the HTTP surface.
@@ -11,14 +11,13 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
-// ErrExecutableMissing reports that a configured adapter is not installed. It
-// is distinguished from other launch failures so the record can carry the
-// documented install hint rather than a bare exec error.
+// ErrExecutableMissing reports that an explicitly configured ACP executable is
+// missing, separately from the built-in bridges' official-runtime discovery.
 var ErrExecutableMissing = errors.New("agent executable was not found on the server's PATH")
 
-// InstallHint names the pinned, user-owned adapters. The application never
-// installs or downloads them.
-const InstallHint = "Install the adapter yourself, for example:\n  npm install -g @agentclientprotocol/claude-agent-acp@0.80.0 @agentclientprotocol/codex-acp@1.12.0\nThen set " + EnvClaudeCommand + " or " + EnvCodexCommand + " if it is not on the server's PATH."
+// InstallHint never suggests another translator installation. Provider bridges
+// ship with this binary; explicitly configured native ACP peers remain optional.
+const InstallHint = "Make the installed official claude or codex CLI available on the server's PATH. For an explicitly configured external ACP agent, check its executable override. The application never installs or downloads runtimes."
 
 // Kind values for protocol.Agent.Kind.
 const (
@@ -59,11 +58,10 @@ const (
 	EnvCodexCommand  = "TUI_GO_AGENT_CODEX_COMMAND"
 )
 
-// Default adapter executables resolved on the server's PATH. The application
-// never installs or downloads them.
+// Built-in identifiers select Go bridges shipped inside the application.
 const (
-	DefaultClaudeCommand = "claude-agent-acp"
-	DefaultCodexCommand  = "codex-acp"
+	DefaultClaudeCommand = "builtin:claude"
+	DefaultCodexCommand  = "builtin:codex"
 )
 
 // IsACP reports whether a thread's recorded agent identity uses a real ACP
@@ -109,6 +107,7 @@ func Ensure(s *protocol.Snapshot, getenv func(string) string) {
 			if existing.Command != def.Command {
 				// A changed executable invalidates every probed fact.
 				existing.Command = def.Command
+				existing.Args = nil
 				existing.State, existing.Detail = StateUnprobed, "Configured executable changed; probe again."
 				existing.Version, existing.ProbedAt = "", ""
 				existing.Options, existing.Fields, existing.Capabilities = nil, protocol.SettingFields{}, nil

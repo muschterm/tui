@@ -3,11 +3,15 @@
 **Start here for the next agent.** This records the user's latest accepted
 direction after reviewing the ACP prototype and the UCF direct-CLI code.
 The original handoff was documentation-only; the continuation checkpoint below
-records subsequent runtime work. The working tree contains substantial
-uncommitted implementation and validation work: preserve it. This handoff takes precedence over the earlier live-validation handoff for
+records subsequent runtime work. Earlier delivery/recovery implementation and
+validation remain part of the baseline: preserve them. This handoff takes precedence over the earlier live-validation handoff for
 what to do next; earlier reports remain evidence of what ran.
 
 ## Latest accepted direction: own Go adapters — 2026-09-22
+
+**Subsequent implementation:** start with the [built-in Go bridge checkpoint](go-adapter-checkpoint.md)
+and [ADR 0016](../adr/0016-built-in-go-acp-bridges.md). The external-adapter-only
+status below is historical; new evidence and remaining gaps are recorded there.
 
 **This supersedes the earlier adapter-reuse recommendation and open ownership
 decision below.** The user tried a new empty `test-tui-go` project and found
@@ -39,9 +43,9 @@ the Go application**, around the user's installed official runtimes:
   bundled provider runtimes. Keep authentication/configuration with those
   official installations and preserve the personal-local-prototype scope.
 
-**Current status:** no custom Go provider bridge exists yet. The present
-implementation still expects the external npm ACP adapters, so the user's
-unavailable state is not fixed by this documentation change. No adapter package,
+**Status at the ownership decision (superseded by the checkpoint above):** no custom Go provider bridge existed yet. That
+implementation still expected the external npm ACP adapters, so the user's
+unavailable state was not fixed by the documentation change. No adapter package,
 symlink or local tool directory was installed during troubleshooting; only
 read-only diagnostics and package/source inspection ran before the user stopped
 that approach. Do not resume the proposed installation. Earlier scratch test

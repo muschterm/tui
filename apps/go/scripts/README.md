@@ -26,10 +26,10 @@ Everything except `render-capture.py` and `pty_acp.py` uses only the standard li
 results and retained artifacts are recorded under `docs/research/`.
 
 The live ACP harness is deliberately excluded from `PTY_HARNESSES` and `make
-pty`. It skips unless `TUI_GO_LIVE_ACP=1`. Install the pinned adapters described
-in [the Go slice](../../../docs/design/go-slice.md#acp-agents--2026-09-22)
-on the server's `PATH` (or use its command overrides), and log in using the
-adapters' own CLI setup. The harness never changes the caller's home or server;
+pty`. It skips unless `TUI_GO_LIVE_ACP=1`. Use the shipped Go bridges with installed
+official CLIs on the server's `PATH`, as described in
+[the Go slice](../../../docs/design/go-slice.md#acp-agents--2026-09-22).
+The official CLIs use their existing login. The harness never changes the caller's home or server;
 its file-write permission probe targets only its newly created scratch project.
 
 ```sh
@@ -56,8 +56,9 @@ The ANSI files are pyte reconstructions, not native terminal screenshots; use
 [the retained evidence](../../../docs/research/go-acp-captures/README.md).
 
 `live_agent_recovery.py` uses the standard library and is also excluded from
-`make pty`. It requires `TUI_GO_LIVE_ACP=1`, an explicit adapter executable and
-official runtime path. It inherits the existing official login/configuration,
+`make pty`. It requires `TUI_GO_LIVE_ACP=1` and an official runtime path; omit
+`--adapter` for the shipped Go bridge, or provide an explicit external ACP peer
+for historical comparison. `--model` selects a discovered model ID. It inherits the existing official login/configuration,
 creates a scratch application home and checkout, and uses an exec wrapper to
 verify which runtime the adapter starts. It never collects credentials or
 grants permissions. Claude asks a synthetic native question, accepts Blue via
@@ -67,7 +68,7 @@ Both verify Resume/restart without queue replay and tracked process exit.
 
 ```sh
 TUI_GO_LIVE_ACP=1 python3 scripts/live_agent_recovery.py \
-  --agent claude --adapter /absolute/path/to/claude-agent-acp \
+  --agent claude \
   --runtime /absolute/path/to/claude --artifacts /tmp/tui-question-check
 ```
 

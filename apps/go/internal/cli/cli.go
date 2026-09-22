@@ -81,8 +81,8 @@ named client's saved view across launches.
 
 The application home defaults to ~/.tui-go and holds state.sqlite, discovery
 and log files. Set --home or TUI_GO_HOME to use another directory; different
-homes are separate servers. The reference currently uses synthetic fixture
-data, not live agents.`,
+homes are separate servers. The reference includes synthetic fixture activity
+and built-in ACP bridges for installed Claude and Codex CLIs.`,
 		Version:       versionLine(),
 		Args:          usage(cobra.NoArgs),
 		SilenceUsage:  true,

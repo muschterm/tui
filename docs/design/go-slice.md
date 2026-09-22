@@ -1,12 +1,12 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects pinned Claude/Codex adapters alongside the fixture runner. Live HTTP checks are recorded separately from terminal validation. Children, general questions and terminal sessions remain fixtures; collaborative files, Git workflows and embedded shells remain incomplete. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner. Live HTTP checks are recorded separately from terminal validation. Children, general questions and terminal sessions remain fixtures; collaborative files, Git workflows and embedded shells remain incomplete. This does not change the accepted product scope or settle later integration decisions.
 
-The [latest agent handoff](../implementation/agent-integration-handoff.md)
-records the accepted follow-up: preserve ACP, compare official Claude runtime
-routes and Codex App Server adapters, and implement one app-owned question
-contract. General native/fallback question delivery and confirmed Answered
-history remain work to do; the runtime has not been changed by that write-up.
+The [built-in Go bridge checkpoint](../implementation/go-adapter-checkpoint.md)
+records the replacement of external adapters with Go implementations around
+installed official CLIs. ACP and the app-owned question contract remain intact.
+General native/fallback question delivery and confirmed Answered history remain
+work to do; historical adapter evidence does not establish bridge parity.
 
 ## Run and preserve a view
 
@@ -600,26 +600,18 @@ run through `make pty`. See the [CLI and standards review](../research/go-cli-re
 
 ## ACP agents — 2026-09-22
 
-**Target setup changed:** the user now requires our own Go ACP adapters shipped
-with the app, using the installed provider CLIs and requiring no separate
-adapter installation. See the [latest handoff](../implementation/agent-integration-handoff.md).
-The commands below describe the existing external-adapter prototype; do not
-install those packages as the next implementation step. The Go replacement is
-not yet implemented, so a missing external adapter still shows unavailable.
+**Default setup:** Go ACP bridges ship inside the application. Put the installed
+official `claude` and `codex` executables on the **server process's PATH**; no
+npm adapter or Agent SDK sidecar is required. The server keeps ACP v1 through
+`github.com/coder/acp-go-sdk` v0.13.5, with serialized in-memory ACP pipes to the
+bridges. The fixture remains available. See [ADR 0016](../adr/0016-built-in-go-acp-bridges.md)
+and the [bridge checkpoint](../implementation/go-adapter-checkpoint.md).
 
-The server now connects stable ACP v1 through `github.com/coder/acp-go-sdk`
-v0.13.5 and user-owned adapter executables. The fixture remains available.
-Install the pinned adapters yourself; the application does not download them:
-
-```sh
-npm install -g @agentclientprotocol/claude-agent-acp@0.80.0 @agentclientprotocol/codex-acp@1.12.0
-```
-
-Put `claude-agent-acp` and `codex-acp` on the **server process's PATH**, or set
-`TUI_GO_AGENT_CLAUDE_COMMAND` and `TUI_GO_AGENT_CODEX_COMMAND` to their executable
-paths before starting it. There is no command-settings form or login flow yet:
-adapters use the user's existing CLI authentication. A missing executable shows
-an install hint; required authentication is reported as unauthenticated.
+`TUI_GO_AGENT_CLAUDE_COMMAND` and `TUI_GO_AGENT_CODEX_COMMAND` still select an
+explicit external ACP executable when desired; unset old overrides to use the
+shipped bridges. There is no command-settings form or login flow: the official
+runtime inherits its existing login/configuration. Missing CLIs report
+unavailable. No installation, download or billing change is performed.
 
 The server automatically discovers the user's installed `claude` and `codex`
 on its PATH and passes their absolute paths to the adapters for both probes and

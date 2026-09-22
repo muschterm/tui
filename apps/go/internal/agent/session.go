@@ -12,6 +12,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
@@ -60,7 +61,7 @@ type QuestionHandler interface {
 }
 
 const ClaudeQuestionVersion = "@agentclientprotocol/claude-agent-acp 0.80.0"
-const CapNativeQuestions = "claude-questions-0.80.0"
+const CapNativeQuestions = "native-questions"
 
 // Options describe one agent process launch.
 type Options struct {
@@ -102,7 +103,9 @@ type Session struct {
 	stop   func()
 	// pid is the child process identifier, or zero for an in-process
 	// connection that owns no process.
-	pid int
+	pid          int
+	processID    func() int
+	disconnected <-chan struct{}
 	// exited closes when the child process has been reaped. It is nil for an
 	// in-process connection, which owns no process.
 	exited      <-chan struct{}
@@ -122,6 +125,33 @@ type Session struct {
 func Start(ctx context.Context, o Options) (*Session, error) {
 	if strings.TrimSpace(o.Command) == "" {
 		return nil, errors.New("no agent executable is configured")
+	}
+	if strings.HasPrefix(o.Command, "builtin:") {
+		if o.Command != "builtin:"+o.AgentID || (o.AgentID != "claude" && o.AgentID != "codex") || len(o.Args) != 0 {
+			return nil, errors.New("invalid built-in adapter selection or arguments")
+		}
+		environment, runtimePath, err := runtimeEnvironment(o.AgentID)
+		if err != nil {
+			return nil, err
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		buffer := newRing(stderrLimit)
+		endpoint, err := acpbridge.Open(ctx, o.AgentID, runtimePath, o.Cwd, environment, buffer)
+		if err != nil {
+			return nil, err
+		}
+		logf := o.Log
+		if logf == nil {
+			logf = func(string, ...any) {}
+		}
+		s := connect(o.Handler, endpoint.Input, endpoint.Output, buffer, endpoint.Stop, logf)
+		s.runtimePath, s.exited = runtimePath, endpoint.Exited
+		s.processID = endpoint.ProcessID
+		s.disconnected = endpoint.Disconnected
+		logf("built-in ACP bridge opened", "agent", o.AgentID, "runtime", runtimePath, "version", acpbridge.Version)
+		return s, nil
 	}
 	path, err := exec.LookPath(o.Command)
 	if err != nil {
@@ -283,7 +313,12 @@ func DecodeUpdate(raw json.RawMessage) Update {
 func (s *Session) Diagnostics() string { return strings.TrimSpace(s.stderr.String()) }
 
 // Done closes when the peer disconnects.
-func (s *Session) Done() <-chan struct{} { return s.conn.Done() }
+func (s *Session) Done() <-chan struct{} {
+	if s.disconnected != nil {
+		return s.disconnected
+	}
+	return s.conn.Done()
+}
 
 // Info returns what initialize reported.
 func (s *Session) Info() Info {
@@ -319,6 +354,13 @@ func (s *Session) Initialize(ctx context.Context) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	if s.processID != nil {
+		s.mu.Lock()
+		s.pid = s.processID()
+		pid := s.pid
+		s.mu.Unlock()
+		s.log("agent process started", "command", s.runtimePath, "pid", pid, "bridge", "builtin")
+	}
 	if resp.ProtocolVersion != acp.ProtocolVersionNumber {
 		return Info{}, fmt.Errorf("agent negotiated protocol version %d; this client implements version %d", resp.ProtocolVersion, acp.ProtocolVersionNumber)
 	}
@@ -326,8 +368,13 @@ func (s *Session) Initialize(ctx context.Context) (Info, error) {
 	if resp.AgentInfo != nil {
 		info.Version = strings.TrimSpace(resp.AgentInfo.Name + " " + resp.AgentInfo.Version)
 	}
-	if questions && info.Version == ClaudeQuestionVersion {
+	if questions && (info.Version == ClaudeQuestionVersion || (info.Version == acpbridge.ClaudeIdentity && resp.AgentCapabilities.Meta["questionDialect"] == acpbridge.QuestionDialect)) {
 		info.Capabilities = append(info.Capabilities, CapNativeQuestions)
+		if info.Version == acpbridge.ClaudeIdentity {
+			info.Capabilities = append(info.Capabilities, acpbridge.QuestionDialect)
+		} else {
+			info.Capabilities = append(info.Capabilities, "claude-questions-0.80.0")
+		}
 	}
 	if resp.AgentCapabilities.LoadSession {
 		info.Capabilities = append(info.Capabilities, CapLoadSession)

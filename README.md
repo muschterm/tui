@@ -2,7 +2,7 @@
 
 A documented foundation for polished terminal applications in Go, Rust, and Bun. The visual target combines Codex’s workspace composition with the richer color, icons, images, and activity hierarchy of Omarchy and herdr, adapted to terminal cells: hideable navigation, a central workspace and prompt, a bottom panel inside the center column, and a right sidebar for files, Git, and activity inspectors.
 
-The deliverable is a shared behavior specification and three complete native server/TUI reference apps. **Go comes first**, using Bubble Tea and the Charm ecosystem; Rust uses Ratatui, and Bun uses TypeScript + React + public Ink with Bun.Terminal. The Go slice supplies a persistent background server, interactive shell and a first ACP integration for pinned Claude/Codex adapters, alongside fixture activity; [2026-09-22 validation](docs/research/go-acp-2026-09-22.md) distinguishes live HTTP results from terminal evidence. Broader agent, file, Git and terminal integrations remain incomplete; the root Bun entry point remains a bootstrap placeholder. See [current scope and launch instructions](docs/design/go-slice.md).
+The deliverable is a shared behavior specification and three complete native server/TUI reference apps. **Go comes first**, using Bubble Tea and the Charm ecosystem; Rust uses Ratatui, and Bun uses TypeScript + React + public Ink with Bun.Terminal. The Go slice supplies a persistent background server, interactive shell and built-in Go ACP bridges around installed Claude/Codex CLIs, alongside fixture activity; [2026-09-22 validation](docs/research/go-acp-2026-09-22.md) distinguishes live HTTP results from terminal evidence. Broader agent, file, Git and terminal integrations remain incomplete; the root Bun entry point remains a bootstrap placeholder. See [current scope and launch instructions](docs/design/go-slice.md).
 
 ## Start here
 
@@ -11,9 +11,9 @@ records the accepted ACP/official-runtime direction, unified question contract,
 UCF reference findings, remaining adapter decisions and validation checklist.
 **Latest direction:** build our own Go ACP adapters, shipped with the application,
 around installed Claude/Codex CLIs. The user rejects separate npm/Node adapter
-installations. That replacement is not implemented yet; the handoff records
-the acceptance criteria and preserved prototype work.
-The current runtime still uses the prototype adapters; broader question and
+installations. The [built-in bridge checkpoint](docs/implementation/go-adapter-checkpoint.md)
+records the Go replacement, validation and remaining gaps; the historical
+prototype and its fixtures remain reference evidence. Broader question and
 provider parity remain incomplete. The
 [request-delivery continuation](docs/implementation/request-delivery-checkpoint.md)
 adds exact approval option IDs, truthful acceptance/recovery states and live

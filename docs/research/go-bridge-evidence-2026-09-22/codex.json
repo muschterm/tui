@@ -1,0 +1,53 @@
+{
+  "agent": "codex",
+  "checks": [
+    "adapter ready",
+    "explicit model is discovered",
+    "explicit effort is discovered",
+    "real pong turn completed",
+    "Resume sends no duplicate prompt",
+    "restart retains no dispatched queue copies"
+  ],
+  "result": "PASS",
+  "runtime_version": "codex-cli 0.155.1",
+  "adapter_version": "tui-go-codex 0.1.0",
+  "readiness": "ready",
+  "selected": {
+    "Model": "gpt-6-luna",
+    "Effort": "low",
+    "Permissions": "unavailable",
+    "Context": "unavailable",
+    "Speed": "unavailable"
+  },
+  "first_outcome": {
+    "state": "idle",
+    "error": "",
+    "queued": 0
+  },
+  "effective": {
+    "Model": "gpt-6-luna",
+    "Effort": "low",
+    "Permissions": "unavailable",
+    "Context": "unavailable",
+    "Speed": "unavailable"
+  },
+  "shutdown": "confirmed",
+  "runtime_launches": [
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    }
+  ],
+  "owned_processes_reaped": 3
+}
