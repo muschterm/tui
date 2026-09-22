@@ -21,23 +21,27 @@ Build the Go reference app first with Bubble Tea v2, Bubbles, and Lip Gloss, as 
 
 ## Subagents
 
-Use subagents when isolating context or parallelizing independent, bounded work saves effort. Prefer a direct tool call for trivial lookups; keep work with the parent when delegation would duplicate its reasoning or cost more than it saves.
+Delegate when a subagent isolates context or runs independent, bounded work in parallel for less total cost than doing it inline. Use a direct tool call for a single lookup, and keep work in the parent when the brief would have to restate most of the parent's reasoning.
 
-- **Selection:** use the model preferences below and choose sufficient capability upfront when complexity is evident.
-- **Scope:** give each subagent a clear objective, relevant context, acceptance criteria, and ownership of any files it may edit. Avoid overlapping edits and sending the full conversation when a focused brief suffices.
-- **Efficiency:** optimize total tokens across delegation, execution, verification, and retries. Request concise results with evidence or file references, completed checks, and unresolved issues. Avoid duplicating delegated work in the parent.
-- **Escalation:** if the task exceeds a subagent's capabilities, return findings, attempted approaches, and a recommended next step to the parent. Reuse completed work when increasing capability or effort.
-- **Ownership:** the parent owns prioritization, integration, appropriate verification, and the final response. User instructions override these guidelines.
+- **Brief:** give each subagent one objective, the context it needs, acceptance criteria and the files it owns. Never let two subagents edit the same file. Send a focused brief, not the whole conversation.
+- **Result:** ask for a concise report: evidence or `file:line` references, checks run with their outcomes, and open issues. Do not redo delegated work in the parent.
+- **Escalation:** a subagent that cannot finish returns what it found, what it tried and a recommended next step. Raise effort before changing tier, and hand completed work forward instead of restarting.
+- **Ownership:** the parent owns prioritization, integration, verification and the final response. User instructions override this section.
 
-### Model and effort preferences
+### Model and effort
 
-Use only models and effort controls exposed by the current harness, with its supported model identifiers. Respect explicit user selections. When both Astra and Fable are available, prefer the parent model's family; otherwise use the available preferred model. If neither is available, inherit the current model. If model or effort selection is unavailable, use the harness defaults.
+Subagents exist to do bounded work more cheaply than the parent. The parent's model (Opus 5.5 or GPT-6 Astra) orchestrates, owns architecture and difficult tradeoffs, and verifies consequential results; delegate to the cheapest tier that can finish the task, and upgrade only when it falls short.
 
-- **GPT-6 Astra (`gpt-6-astra`) / Fable 5.1:** default to low for well-scoped implementation, routine debugging, and focused analysis; medium for multi-step implementation, unclear causes, and research synthesis; high for architecture, difficult tradeoffs, and complex or ambiguous problems.
-- **GPT-6 Luna (`gpt-6-luna`) low / Haiku:** bounded data retrieval, extraction, file discovery, and mechanical transformations with easily checked results.
-- **GPT-6 Luna (`gpt-6-luna`) max / Sonnet low–medium:** small, self-contained tasks needing more interpretation or coding judgment, with clear acceptance criteria. Use an available option from the parent model's family when possible.
+Use only the models, identifiers and effort controls the current harness exposes, and respect explicit user selections. Prefer the parent model's family; inherit the parent model when the preferred one is unavailable, and use harness defaults when selection is unavailable. Where a harness fixes effort per agent definition rather than per call, use a defined agent type for the row you need instead of assuming the effort.
 
-Use low, medium, or high effort for Astra and Fable; reserve higher levels for explicit user requests. Never use Sonnet at high effort or above; escalate to Fable 5.1 instead. Prefer increasing Astra's effort over switching to GPT-6 Sol.
+| Work | Claude | OpenAI |
+| --- | --- | --- |
+| Bounded retrieval, extraction, file discovery and mechanical transforms | Sonnet 5 low | GPT-6 Luna (`gpt-6-luna`) low |
+| Well-scoped implementation, routine debugging, focused analysis and small self-contained tasks with clear acceptance criteria | Sonnet 5 low, then medium | GPT-6 Luna (`gpt-6-luna`) max |
+| Upgrade: multi-step implementation, unclear causes, research synthesis, or work the tier above fell short on | Opus 5.5 low–medium | GPT-6 Sol (`gpt-6-sol`) high, then xhigh |
+| Verification of consequential changes: data loss, duplicate writes, Git operations, queue/revision races, reconnect and recovery | Opus 5.5 medium | GPT-6 Astra (`gpt-6-astra`) medium |
+
+Keep architecture, difficult tradeoffs and integration in the parent rather than delegating them at high effort. Escalate Sonnet 5 past medium by switching to Opus 5.5, and GPT-6 Luna past max by switching to GPT-6 Sol. Do not use Haiku or Fable 5.1 for subagents unless the user asks: Haiku's misses cost more to catch in the parent than they save, and Fable costs more than the parent it would serve.
 
 ## Architectural boundaries
 
