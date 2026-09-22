@@ -72,8 +72,14 @@ func TestQueuedCapturesStayBoundedThroughDispatch(t *testing.T) {
 	if captures != accepted {
 		t.Fatalf("retained %d of %d accepted captures", captures, accepted)
 	}
-	if _, err := e.command(protocol.Command{Version: 1, ID: "after-dispatch", Kind: "thread.interrupt", ThreadID: "thread-shell"}); err != nil {
+	// A bounded snapshot still accepts a non-growing command against a thread
+	// that is actually working, and refuses Stop for a finished turn rather
+	// than demanding a Resume with nothing to resume.
+	if _, err := e.command(protocol.Command{Version: 1, ID: "after-dispatch", Kind: "thread.interrupt", ThreadID: "thread-review"}); err != nil {
 		t.Fatal("bounded snapshot rejected interrupt:", err)
+	}
+	if _, err := e.command(protocol.Command{Version: 1, ID: "idle-stop", Kind: "thread.interrupt", ThreadID: "thread-shell"}); !isCode(err, "not_active") {
+		t.Fatal("Stop accepted for a thread with no active turn:", err)
 	}
 }
 

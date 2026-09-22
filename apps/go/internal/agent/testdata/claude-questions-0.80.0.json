@@ -1,0 +1,343 @@
+{
+  "adapter": "@agentclientprotocol/claude-agent-acp 0.80.0",
+  "source": "dist/elicitation.js",
+  "sha256": "99897e1fdc6f89f671b5b14adc972d04beceaf5cb9f15e571fd01d36bf720822",
+  "evidence": "Executed pure adapter conversion functions only; no runtime or provider request.",
+  "samples": [
+    {
+      "name": "single",
+      "request": {
+        "mode": "form",
+        "sessionId": "fixture-session",
+        "toolCallId": "fixture-tool",
+        "message": "Which layout?",
+        "requestedSchema": {
+          "type": "object",
+          "properties": {
+            "question_0": {
+              "type": "string",
+              "title": "Layout",
+              "oneOf": [
+                {
+                  "const": "Compact",
+                  "title": "Compact",
+                  "description": "Keep content close."
+                },
+                {
+                  "const": "Roomy",
+                  "title": "Roomy",
+                  "description": "Use more spacing."
+                }
+              ]
+            },
+            "question_0_custom": {
+              "type": "string",
+              "title": "Other",
+              "description": "Type your own answer, or add a note to the option you chose above (optional).",
+              "_meta": {
+                "_askUserQuestionCustomAnswer": {
+                  "questionId": "question_0",
+                  "isCustomAnswer": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "answers": [
+        {
+          "Choices": [
+            "Compact"
+          ],
+          "Text": ""
+        }
+      ],
+      "response": {
+        "action": "accept",
+        "content": {
+          "question_0": "Compact"
+        }
+      },
+      "adapterResult": {
+        "action": "answered",
+        "updatedInput": {
+          "questions": [
+            {
+              "question": "Which layout?",
+              "header": "Layout",
+              "options": [
+                {
+                  "label": "Compact",
+                  "description": "Keep content close."
+                },
+                {
+                  "label": "Roomy",
+                  "description": "Use more spacing."
+                }
+              ],
+              "multiSelect": false
+            }
+          ],
+          "answers": {
+            "Which layout?": "Compact"
+          }
+        }
+      }
+    },
+    {
+      "name": "multiple-with-other",
+      "request": {
+        "mode": "form",
+        "sessionId": "fixture-session",
+        "toolCallId": "fixture-tool",
+        "message": "Please answer the following questions.",
+        "requestedSchema": {
+          "type": "object",
+          "properties": {
+            "question_0": {
+              "type": "string",
+              "title": "Layout",
+              "description": "Which layout?",
+              "oneOf": [
+                {
+                  "const": "Compact",
+                  "title": "Compact",
+                  "description": "Keep content close."
+                },
+                {
+                  "const": "Roomy",
+                  "title": "Roomy",
+                  "description": "Use more spacing."
+                }
+              ]
+            },
+            "question_0_custom": {
+              "type": "string",
+              "title": "Other",
+              "description": "Type your own answer, or add a note to the option you chose above (optional).",
+              "_meta": {
+                "_askUserQuestionCustomAnswer": {
+                  "questionId": "question_0",
+                  "isCustomAnswer": true
+                }
+              }
+            },
+            "question_1": {
+              "type": "array",
+              "title": "Tools",
+              "description": "Which tools?",
+              "items": {
+                "anyOf": [
+                  {
+                    "const": "Files",
+                    "title": "Files",
+                    "description": "Inspect files."
+                  },
+                  {
+                    "const": "Git",
+                    "title": "Git",
+                    "description": "Inspect changes."
+                  }
+                ]
+              }
+            },
+            "question_1_custom": {
+              "type": "string",
+              "title": "Other",
+              "description": "Type your own answer to add to your selection above (optional).",
+              "_meta": {
+                "_askUserQuestionCustomAnswer": {
+                  "questionId": "question_1",
+                  "isCustomAnswer": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "answers": [
+        {
+          "Choices": [],
+          "Text": "Custom layout"
+        },
+        {
+          "Choices": [
+            "Files",
+            "Git"
+          ],
+          "Text": "Notes, too"
+        }
+      ],
+      "response": {
+        "action": "accept",
+        "content": {
+          "question_0_custom": "Custom layout",
+          "question_1": [
+            "Files",
+            "Git"
+          ],
+          "question_1_custom": "Notes, too"
+        }
+      },
+      "adapterResult": {
+        "action": "answered",
+        "updatedInput": {
+          "questions": [
+            {
+              "question": "Which layout?",
+              "header": "Layout",
+              "options": [
+                {
+                  "label": "Compact",
+                  "description": "Keep content close."
+                },
+                {
+                  "label": "Roomy",
+                  "description": "Use more spacing."
+                }
+              ],
+              "multiSelect": false
+            },
+            {
+              "question": "Which tools?",
+              "header": "Tools",
+              "options": [
+                {
+                  "label": "Files",
+                  "description": "Inspect files."
+                },
+                {
+                  "label": "Git",
+                  "description": "Inspect changes."
+                }
+              ],
+              "multiSelect": true
+            }
+          ],
+          "answers": {
+            "Which layout?": "Custom layout",
+            "Which tools?": "Files, Git, \"Notes, too\""
+          }
+        }
+      }
+    },
+    {
+      "name": "optional-omission",
+      "request": {
+        "mode": "form",
+        "sessionId": "fixture-session",
+        "toolCallId": "fixture-tool",
+        "message": "Please answer the following questions.",
+        "requestedSchema": {
+          "type": "object",
+          "properties": {
+            "question_0": {
+              "type": "string",
+              "title": "Layout",
+              "description": "Which layout?",
+              "oneOf": [
+                {
+                  "const": "Compact",
+                  "title": "Compact",
+                  "description": "Keep content close."
+                },
+                {
+                  "const": "Roomy",
+                  "title": "Roomy",
+                  "description": "Use more spacing."
+                }
+              ]
+            },
+            "question_0_custom": {
+              "type": "string",
+              "title": "Other",
+              "description": "Type your own answer, or add a note to the option you chose above (optional).",
+              "_meta": {
+                "_askUserQuestionCustomAnswer": {
+                  "questionId": "question_0",
+                  "isCustomAnswer": true
+                }
+              }
+            },
+            "question_1": {
+              "type": "array",
+              "title": "Tools",
+              "description": "Which tools?",
+              "items": {
+                "anyOf": [
+                  {
+                    "const": "Files",
+                    "title": "Files",
+                    "description": "Inspect files."
+                  },
+                  {
+                    "const": "Git",
+                    "title": "Git",
+                    "description": "Inspect changes."
+                  }
+                ]
+              }
+            },
+            "question_1_custom": {
+              "type": "string",
+              "title": "Other",
+              "description": "Type your own answer to add to your selection above (optional).",
+              "_meta": {
+                "_askUserQuestionCustomAnswer": {
+                  "questionId": "question_1",
+                  "isCustomAnswer": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "answers": [
+        {},
+        {}
+      ],
+      "response": {
+        "action": "accept",
+        "content": {}
+      },
+      "adapterResult": {
+        "action": "answered",
+        "updatedInput": {
+          "questions": [
+            {
+              "question": "Which layout?",
+              "header": "Layout",
+              "options": [
+                {
+                  "label": "Compact",
+                  "description": "Keep content close."
+                },
+                {
+                  "label": "Roomy",
+                  "description": "Use more spacing."
+                }
+              ],
+              "multiSelect": false
+            },
+            {
+              "question": "Which tools?",
+              "header": "Tools",
+              "options": [
+                {
+                  "label": "Files",
+                  "description": "Inspect files."
+                },
+                {
+                  "label": "Git",
+                  "description": "Inspect changes."
+                }
+              ],
+              "multiSelect": true
+            }
+          ],
+          "answers": {}
+        }
+      }
+    }
+  ]
+}

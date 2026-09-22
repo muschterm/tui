@@ -1,0 +1,166 @@
+{
+  "prompt-pong": {
+    "elapsedSeconds": 5.124,
+    "permissionRequests": null,
+    "rawResult": {
+      "stopReason": "end_turn",
+      "usage": {
+        "totalTokens": 17138,
+        "inputTokens": 4205,
+        "cachedReadTokens": 12928,
+        "outputTokens": 5,
+        "thoughtTokens": 0
+      },
+      "_meta": {
+        "quota": {
+          "token_count": {
+            "totalTokens": 17138,
+            "inputTokens": 4205,
+            "cachedInputTokens": 12928,
+            "outputTokens": 5,
+            "reasoningOutputTokens": 0
+          },
+          "model_usage": [
+            {
+              "model": "gpt-6-astra",
+              "token_count": {
+                "totalTokens": 17138,
+                "inputTokens": 4205,
+                "cachedInputTokens": 12928,
+                "outputTokens": 5,
+                "reasoningOutputTokens": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "response": {
+      "_meta": {
+        "quota": {
+          "model_usage": [
+            {
+              "model": "gpt-6-astra",
+              "token_count": {
+                "cachedInputTokens": 12928,
+                "inputTokens": 4205,
+                "outputTokens": 5,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 17138
+              }
+            }
+          ],
+          "token_count": {
+            "cachedInputTokens": 12928,
+            "inputTokens": 4205,
+            "outputTokens": 5,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 17138
+          }
+        }
+      },
+      "stopReason": "end_turn",
+      "usage": {
+        "cachedReadTokens": 12928,
+        "inputTokens": 4205,
+        "outputTokens": 5,
+        "thoughtTokens": 0,
+        "totalTokens": 17138
+      }
+    },
+    "unsupportedCalledBy": null,
+    "updateKindCounts": {
+      "agent_message_chunk": 1,
+      "available_commands_update": 1,
+      "unknown": 4
+    }
+  },
+  "prompt-tool": {
+    "askModeId": "read-only",
+    "elapsedSeconds": 30.293,
+    "permissionRequests": null,
+    "response": {
+      "_meta": {
+        "quota": {
+          "model_usage": [
+            {
+              "model": "gpt-5.6-sol",
+              "token_count": {
+                "cachedInputTokens": 22528,
+                "inputTokens": 472,
+                "outputTokens": 40,
+                "reasoningOutputTokens": 33,
+                "totalTokens": 23040
+              }
+            }
+          ],
+          "token_count": {
+            "cachedInputTokens": 22528,
+            "inputTokens": 472,
+            "outputTokens": 40,
+            "reasoningOutputTokens": 33,
+            "totalTokens": 23040
+          }
+        }
+      },
+      "stopReason": "end_turn",
+      "usage": {
+        "cachedReadTokens": 22528,
+        "inputTokens": 472,
+        "outputTokens": 40,
+        "thoughtTokens": 33,
+        "totalTokens": 23040
+      }
+    },
+    "setSessionMode": "ok",
+    "unsupportedCalledByAgent": null,
+    "updateKindCounts": {
+      "agent_message_chunk": 13,
+      "agent_thought_chunk": 10,
+      "tool_call": 3,
+      "tool_call_update": 3,
+      "unknown": 8
+    }
+  },
+  "prompt-cancel": {
+    "cancelSentAfterSeconds": 2,
+    "permissionRequests": null,
+    "promptReturnedAfterSeconds": 2.025,
+    "response": {
+      "_meta": {
+        "quota": {
+          "model_usage": [
+            {
+              "model": "gpt-5.6-sol",
+              "token_count": {
+                "cachedInputTokens": 22528,
+                "inputTokens": 472,
+                "outputTokens": 40,
+                "reasoningOutputTokens": 33,
+                "totalTokens": 23040
+              }
+            }
+          ],
+          "token_count": {
+            "cachedInputTokens": 22528,
+            "inputTokens": 472,
+            "outputTokens": 40,
+            "reasoningOutputTokens": 33,
+            "totalTokens": 23040
+          }
+        }
+      },
+      "stopReason": "cancelled",
+      "usage": {
+        "cachedReadTokens": 22528,
+        "inputTokens": 472,
+        "outputTokens": 40,
+        "thoughtTokens": 33,
+        "totalTokens": 23040
+      }
+    },
+    "updateKindCounts": {
+      "unknown": 3
+    }
+  }
+}

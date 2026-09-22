@@ -10,7 +10,7 @@ func ThreadCloseBlocked(t Thread) string {
 		return "thread has queued prompts; remove or complete them before closing"
 	}
 	for _, request := range t.Requests {
-		if request.State == "pending" {
+		if request.State == "pending" || request.State == "submitted" {
 			return "thread has a pending request; resolve it before closing"
 		}
 	}

@@ -10,8 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
+
+// acpAgentID records the agent identity only for real connections. Fixture
+// threads keep an empty AgentID, exactly as every existing snapshot has it.
+func acpAgentID(a protocol.Agent) string {
+	if a.Kind == agent.KindACP {
+		return a.ID
+	}
+	return ""
+}
 
 func projectIdentity(scope, value string) string {
 	return fmt.Sprintf("project-%x", sha256.Sum256([]byte(scope+"\x00"+value)))
@@ -204,10 +214,23 @@ func applyProjectResolved(s *protocol.Snapshot, c protocol.Command, resolved *re
 		if len(title) > 256 {
 			return "", failure("invalid", "thread title exceeds 256 bytes")
 		}
+		// thread.create keeps its historical default so existing clients that
+		// create a thread without naming an agent still get the fixture.
+		requested := c.Agent
+		if requested == "" {
+			requested = agent.FixtureID
+		}
+		chosen, err := resolveAgent(s, requested)
+		if err != nil {
+			return "", err
+		}
 		settings := protocol.Settings{Model: "fixture-model", Effort: "medium", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}
+		if chosen.Kind == agent.KindACP {
+			settings = agent.DefaultSettings(*chosen)
+		}
 		if c.Settings != nil {
-			if !validSettings(*c.Settings) {
-				return "", failure("unsupported_settings", "only Demo fixture settings are available")
+			if err := validateSettings(s, acpAgentID(*chosen), *c.Settings); err != nil {
+				return "", err
 			}
 			settings = *c.Settings
 		}
@@ -221,7 +244,7 @@ func applyProjectResolved(s *protocol.Snapshot, c protocol.Command, resolved *re
 			}
 		}
 		project.Revision++
-		s.Threads = append(s.Threads, protocol.Thread{ID: id, ProjectID: project.ID, Project: project.Name, Title: title, Checkout: project.Path, Agent: "Fixture agent", State: "idle", Selected: settings, Effective: settings, QueueRevision: 1})
+		s.Threads = append(s.Threads, protocol.Thread{ID: id, ProjectID: project.ID, Project: project.Name, Title: title, Checkout: project.Path, Agent: chosen.Name, AgentID: acpAgentID(*chosen), State: "idle", Selected: settings, Effective: settings, QueueRevision: 1})
 		return id, nil
 	default:
 		return "", failure("invalid", "unsupported project command")

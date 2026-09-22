@@ -1,0 +1,28 @@
+{
+  "harness": "Isolated OS PTY; real filesystem reads; Demo execution",
+  "checks": [
+    "General saves project starting folder",
+    "New thread opens destination picker",
+    "relative typeahead begins at configured folder",
+    "Tab enters suggested folder without registering",
+    "browsing creates no project",
+    "add-from-New-thread continues to its local draft",
+    "destination selection creates no authoritative thread",
+    "@ searches project root",
+    "directory click browses files without Send",
+    "Enter inserts selected relative file reference",
+    "selected file is removable draft context",
+    "server captures real contents at Send, not selection",
+    "accepted capture survives later file changes",
+    "binary capture failure preserves text and selected file",
+    "rejected capture clears command uncertainty",
+    "directory completion quotes spaces",
+    "file completion preserves quoted path",
+    "@ popup remains usable at 47x22",
+    "Escape dismisses suggestions and keeps prompt",
+    "dismiss does not send",
+    "filtered project still opens destination picker",
+    "starting folder persists across isolated server restart",
+    "application did not modify project files"
+  ]
+}

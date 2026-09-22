@@ -191,7 +191,7 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 			cx := x
 			for i, choice := range req.Choices {
 				size := ansi.StringWidth(choice) + 4
-				f.compactButton(m, cx, y, size, choice, fmt.Sprint("approve:", i), action{Kind: "approve", Value: choice}, false, normalControl)
+				f.compactButton(m, cx, y, size, choice, fmt.Sprint("approve:", i), m.approvalAction(req, i), false, normalControl)
 				cx += size + 1
 			}
 		}

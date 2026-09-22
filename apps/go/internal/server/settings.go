@@ -1,10 +1,12 @@
 package server
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"unicode"
 
+	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
@@ -127,7 +129,9 @@ func applySettingsResolved(s *protocol.Snapshot, c protocol.Command, resolved *r
 // snapshots lack the marker, and manual Stop clears it. Requests always require
 // explicit revalidation and answers, even when continuation is enabled.
 func restartEligible(t *protocol.Thread) bool {
-	if t.Closed || t.Agent != "Fixture agent" || !validSettings(t.Effective) {
+	// An ACP turn cannot be reattached after a restart: its process is gone and
+	// no prompt is ever resent automatically.
+	if t.Closed || agent.IsACP(t.AgentID) || t.Agent != "Fixture agent" || !validSettings(t.Effective) {
 		return false
 	}
 	// A running thread can be between its completed turn and the next queued
@@ -156,6 +160,10 @@ func recoverThreads(s *protocol.Snapshot) {
 		t := &s.Threads[i]
 		resume := s.AppSettings.ContinueAfterRestart && restartEligible(t)
 		t.RestartEligible = false
+		if agent.IsACP(t.AgentID) {
+			recoverACPThread(t)
+			continue
+		}
 		if t.State != "idle" {
 			t.NeedsResume = true
 			t.State = "interrupted"
@@ -178,6 +186,68 @@ func recoverThreads(s *protocol.Snapshot) {
 					t.Children[j].State = "running"
 				}
 			}
+		}
+	}
+}
+
+// recoverACPThread restores an ACP thread after a restart. Its agent process is
+// gone, so a running or waiting turn becomes interrupted and needs an explicit
+// Resume; the queue, captures and transcript are preserved untouched.
+//
+// Pending calls belonged to the dead process and become undeliverable. Accepted
+// responses retain their snapshots with uncertain receipt, never blind replay.
+// A future approval requires a newly issued live call; Resume does not create one.
+func recoverACPThread(t *protocol.Thread) {
+	// Earlier versions requeued failed in-flight prompts. Only remove a queue
+	// copy when the retained user activity proves that exact capture crossed
+	// dispatch; preserve unmatched/edited captures as queued work.
+	dispatched := make(map[string]protocol.Prompt)
+	for _, activity := range t.Activity {
+		if activity.Role == "user" && activity.Prompt != nil && activity.TurnID == activity.Prompt.ID && (activity.State == "failed" || activity.State == "running" || activity.State == "interrupted") {
+			dispatched[activity.Prompt.ID] = *activity.Prompt
+		}
+	}
+	queue := t.Queue[:0]
+	for _, prompt := range t.Queue {
+		if captured, ok := dispatched[prompt.ID]; ok {
+			t.QueueRevision++
+			t.NeedsResume = true
+			if reflect.DeepEqual(captured, prompt) {
+				continue
+			}
+			// A user-edited legacy retry is new input. Preserve its capture,
+			// but never overwrite the original history or reuse its turn ID.
+			prompt.ID = "prompt-recovered-" + ID()
+		}
+		queue = append(queue, prompt)
+	}
+	t.Queue = queue
+	if t.State == "failed" {
+		t.NeedsResume = true
+	}
+	if t.State == "running" || t.State == "waiting" || t.State == "interrupted" {
+		t.State, t.NeedsResume = "interrupted", true
+	}
+	for j := range t.Children {
+		if t.Children[j].State == "running" {
+			t.Children[j].State = "interrupted"
+		}
+	}
+	for j := range t.Requests {
+		r := &t.Requests[j]
+		switch {
+		case r.Delivery == "acp-delivered" || r.Delivery == "acp-unconfirmed" || r.Delivery == "acp-accepted" || r.State == "submitted":
+			r.State, r.Delivery = "closed", "acp-uncertain"
+			r.Revision++
+		case r.State == "pending":
+			r.State, r.Delivery = "closed", "acp-undeliverable"
+			r.Revision++
+		}
+	}
+	// Streamed activity that was mid-flight cannot continue in this process.
+	for j := range t.Activity {
+		if t.Activity[j].State == "running" {
+			t.Activity[j].State = "interrupted"
 		}
 	}
 }

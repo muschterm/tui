@@ -1,0 +1,202 @@
+{
+  "note": "initialize with protocolVersion 99",
+  "summary": {
+    "elapsedSeconds": 0.14,
+    "requestedProtocolVersion": 99,
+    "response": {
+      "_meta": {
+        "goal": {
+          "actions": [
+            "set",
+            "pause",
+            "resume",
+            "clear"
+          ],
+          "controlMethod": "_session/goal",
+          "version": 1
+        },
+        "jetbrains": {
+          "air": {
+            "capabilities": [
+              "sessionFailure",
+              "agentFileChangeReport",
+              "nativeSubagentSessions",
+              "asyncTasks",
+              "recommendedValue"
+            ],
+            "version": 1
+          }
+        },
+        "steering": {
+          "supported": true
+        }
+      },
+      "agentCapabilities": {
+        "_meta": {
+          "authStatus": {}
+        },
+        "auth": {
+          "logout": {}
+        },
+        "loadSession": true,
+        "mcpCapabilities": {
+          "http": true
+        },
+        "promptCapabilities": {
+          "embeddedContext": true,
+          "image": true
+        },
+        "providers": {},
+        "sessionCapabilities": {
+          "additionalDirectories": {},
+          "close": {},
+          "delete": {},
+          "fork": {},
+          "list": {},
+          "resume": {}
+        }
+      },
+      "agentInfo": {
+        "name": "@agentclientprotocol/codex-acp",
+        "title": "Codex",
+        "version": "1.12.0"
+      },
+      "authMethods": [
+        {
+          "_meta": {
+            "api-key": {
+              "provider": "openai"
+            }
+          },
+          "description": "Use an API key to authenticate",
+          "id": "api-key",
+          "name": "API Key"
+        },
+        {
+          "description": "Use ChatGPT to authenticate",
+          "id": "chat-gpt",
+          "name": "ChatGPT"
+        }
+      ],
+      "protocolVersion": 1
+    },
+    "result": "ok",
+    "shutdown": {
+      "exitCode": 0,
+      "exitedAfterStdinClose": true,
+      "waitSeconds": 2.017
+    }
+  },
+  "wire": [
+    {
+      "t": "+0.007s",
+      "phase": "bad-version",
+      "dir": "send",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "clientCapabilities": {
+            "auth": {},
+            "fs": {}
+          },
+          "clientInfo": {
+            "name": "tui-acp-probe",
+            "version": "0.0.0"
+          },
+          "protocolVersion": 99
+        }
+      }
+    },
+    {
+      "t": "+0.145s",
+      "phase": "bad-version",
+      "dir": "recv",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": {
+            "name": "@agentclientprotocol/codex-acp",
+            "title": "Codex",
+            "version": "1.12.0"
+          },
+          "agentCapabilities": {
+            "auth": {
+              "logout": {}
+            },
+            "providers": {},
+            "loadSession": true,
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "resume": {},
+              "list": {},
+              "close": {},
+              "delete": {},
+              "fork": {},
+              "additionalDirectories": {},
+              "subagents": {}
+            },
+            "mcpCapabilities": {
+              "acp": false,
+              "http": true,
+              "sse": false
+            },
+            "_meta": {
+              "authStatus": {}
+            }
+          },
+          "authMethods": [
+            {
+              "id": "api-key",
+              "name": "API Key",
+              "description": "Use an API key to authenticate",
+              "_meta": {
+                "api-key": {
+                  "provider": "openai"
+                }
+              }
+            },
+            {
+              "id": "chat-gpt",
+              "name": "ChatGPT",
+              "description": "Use ChatGPT to authenticate"
+            }
+          ],
+          "_meta": {
+            "steering": {
+              "supported": true
+            },
+            "goal": {
+              "version": 1,
+              "controlMethod": "_session/goal",
+              "actions": [
+                "set",
+                "pause",
+                "resume",
+                "clear"
+              ]
+            },
+            "jetbrains": {
+              "air": {
+                "version": 1,
+                "capabilities": [
+                  "sessionFailure",
+                  "agentFileChangeReport",
+                  "nativeSubagentSessions",
+                  "asyncTasks",
+                  "recommendedValue"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

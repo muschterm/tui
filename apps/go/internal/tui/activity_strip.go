@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -108,6 +109,15 @@ func (m *Model) activityControls(width int) ([]activityControl, int) {
 		}
 		add("thinking", s)
 	}
+	// A failed turn keeps its reported reason visible above the composer while
+	// Send stays available for the next attempt.
+	if t.State == "failed" {
+		label := "Failed"
+		if detail := strings.TrimSpace(singleLine(t.Error)); detail != "" {
+			label += " · " + detail
+		}
+		add("failed", activitySummary{Label: label, State: "failed"})
+	}
 	if s := planSummary(t); s.Key != v.DismissedPlan {
 		add("plan", s)
 	}
@@ -172,6 +182,10 @@ func (m *Model) activityColor(s activitySummary) string {
 	return p.muted
 }
 
+// statusOnlyActivity reports a strip entry that reports state and opens
+// nothing: it stays plain text with its indicator, never a control.
+func statusOnlyActivity(kind string) bool { return kind == "thinking" || kind == "failed" }
+
 func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 	controls, height := m.activityControls(r.W)
 	p := m.colors()
@@ -184,7 +198,7 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 		if engaged && c.kind != "thinking" {
 			bg = m.hoverFill()
 		}
-		if c.kind != "thinking" {
+		if !statusOnlyActivity(c.kind) {
 			// The label always inspects history. The leading icon is a separate
 			// keyboard target only once successful completion permits dismissal.
 			labelX, labelWidth := x, w
@@ -210,7 +224,7 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 		if m.plainIcons {
 			circle = "o"
 		}
-		if s.Dismissible && w > 1 {
+		if s.Dismissible && w > 1 && !statusOnlyActivity(c.kind) {
 			if engaged {
 				circle = m.icon("close")
 			}

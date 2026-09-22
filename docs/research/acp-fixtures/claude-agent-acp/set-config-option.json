@@ -1,0 +1,352 @@
+{
+  "note": "session/set_config_option switching the advertised model select",
+  "summary": {
+    "advertisedSelectOptions": [
+      {
+        "ID": "mode",
+        "Current": "auto",
+        "Name": "Mode",
+        "Category": "mode",
+        "Values": [
+          "default",
+          "acceptEdits",
+          "plan",
+          "auto",
+          "bypassPermissions"
+        ]
+      },
+      {
+        "ID": "model",
+        "Current": "fable[1m]",
+        "Name": "Model",
+        "Category": "model",
+        "Values": [
+          "default",
+          "opus[1m]",
+          "fable[1m]",
+          "sonnet",
+          "haiku"
+        ]
+      },
+      {
+        "ID": "effort",
+        "Current": "high",
+        "Name": "Effort",
+        "Category": "thought_level",
+        "Values": [
+          "default",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    ],
+    "configId": "model",
+    "elapsedSeconds": 0.014,
+    "previousValue": "fable[1m]",
+    "rawResult": {
+      "configOptions": [
+        {
+          "id": "mode",
+          "name": "Mode",
+          "description": "Session permission mode",
+          "category": "mode",
+          "type": "select",
+          "currentValue": "auto",
+          "options": [
+            {
+              "value": "default",
+              "name": "Manual",
+              "description": "Always ask before making changes",
+              "_meta": {
+                "kind": "standard"
+              }
+            },
+            {
+              "value": "acceptEdits",
+              "name": "Accept edits",
+              "description": "Automatically accept all file edits",
+              "_meta": {
+                "kind": "standard"
+              }
+            },
+            {
+              "value": "plan",
+              "name": "Plan",
+              "description": "Create a plan before making changes",
+              "_meta": {
+                "kind": "plan"
+              }
+            },
+            {
+              "value": "auto",
+              "name": "Auto",
+              "description": "Claude handles permission decisions",
+              "_meta": {
+                "kind": "auto_review"
+              }
+            },
+            {
+              "value": "bypassPermissions",
+              "name": "Bypass permissions",
+              "description": "Accepts all permissions",
+              "_meta": {
+                "kind": "full_access"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model",
+          "name": "Model",
+          "description": "AI model to use",
+          "category": "model",
+          "type": "select",
+          "currentValue": "opus[1m]",
+          "options": [
+            {
+              "value": "default",
+              "name": "Default (recommended)",
+              "description": "Opus (1M context)"
+            },
+            {
+              "value": "opus[1m]",
+              "name": "Opus 5",
+              "description": "Opus 5 with 1M context · Best for everyday, complex tasks"
+            },
+            {
+              "value": "fable[1m]",
+              "name": "Fable 5.1",
+              "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks"
+            },
+            {
+              "value": "sonnet",
+              "name": "Sonnet 5",
+              "description": "Sonnet 5 · Efficient for routine tasks"
+            },
+            {
+              "value": "haiku",
+              "name": "Haiku 4.5",
+              "description": "Haiku 4.5 · Fastest for quick answers"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Available effort levels for this model",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "default",
+              "name": "Default"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Xhigh"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast mode",
+          "description": "Faster responses on supported models",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "off",
+          "options": [
+            {
+              "value": "on",
+              "name": "On"
+            },
+            {
+              "value": "off",
+              "name": "Off"
+            }
+          ]
+        }
+      ]
+    },
+    "requestedValue": "opus[1m]",
+    "responseOptionCount": 4
+  },
+  "call": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "method": "session/set_config_option",
+      "params": {
+        "configId": "model",
+        "sessionId": "cc8ae2ac-c33b-43cf-aa86-951a79a84057",
+        "value": "opus[1m]"
+      }
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "configOptions": [
+          {
+            "id": "mode",
+            "name": "Mode",
+            "description": "Session permission mode",
+            "category": "mode",
+            "type": "select",
+            "currentValue": "auto",
+            "options": [
+              {
+                "value": "default",
+                "name": "Manual",
+                "description": "Always ask before making changes",
+                "_meta": {
+                  "kind": "standard"
+                }
+              },
+              {
+                "value": "acceptEdits",
+                "name": "Accept edits",
+                "description": "Automatically accept all file edits",
+                "_meta": {
+                  "kind": "standard"
+                }
+              },
+              {
+                "value": "plan",
+                "name": "Plan",
+                "description": "Create a plan before making changes",
+                "_meta": {
+                  "kind": "plan"
+                }
+              },
+              {
+                "value": "auto",
+                "name": "Auto",
+                "description": "Claude handles permission decisions",
+                "_meta": {
+                  "kind": "auto_review"
+                }
+              },
+              {
+                "value": "bypassPermissions",
+                "name": "Bypass permissions",
+                "description": "Accepts all permissions",
+                "_meta": {
+                  "kind": "full_access"
+                }
+              }
+            ]
+          },
+          {
+            "id": "model",
+            "name": "Model",
+            "description": "AI model to use",
+            "category": "model",
+            "type": "select",
+            "currentValue": "opus[1m]",
+            "options": [
+              {
+                "value": "default",
+                "name": "Default (recommended)",
+                "description": "Opus (1M context)"
+              },
+              {
+                "value": "opus[1m]",
+                "name": "Opus 5",
+                "description": "Opus 5 with 1M context · Best for everyday, complex tasks"
+              },
+              {
+                "value": "fable[1m]",
+                "name": "Fable 5.1",
+                "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks"
+              },
+              {
+                "value": "sonnet",
+                "name": "Sonnet 5",
+                "description": "Sonnet 5 · Efficient for routine tasks"
+              },
+              {
+                "value": "haiku",
+                "name": "Haiku 4.5",
+                "description": "Haiku 4.5 · Fastest for quick answers"
+              }
+            ]
+          },
+          {
+            "id": "effort",
+            "name": "Effort",
+            "description": "Available effort levels for this model",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": "high",
+            "options": [
+              {
+                "value": "default",
+                "name": "Default"
+              },
+              {
+                "value": "low",
+                "name": "Low"
+              },
+              {
+                "value": "medium",
+                "name": "Medium"
+              },
+              {
+                "value": "high",
+                "name": "High"
+              },
+              {
+                "value": "xhigh",
+                "name": "Xhigh"
+              },
+              {
+                "value": "max",
+                "name": "Max"
+              }
+            ]
+          },
+          {
+            "id": "fast",
+            "name": "Fast mode",
+            "description": "Faster responses on supported models",
+            "category": "model_config",
+            "type": "select",
+            "currentValue": "off",
+            "options": [
+              {
+                "value": "on",
+                "name": "On"
+              },
+              {
+                "value": "off",
+                "name": "Off"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "requestAt": "+2.743s",
+    "responseAt": "+2.756s"
+  }
+}

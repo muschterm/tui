@@ -75,6 +75,40 @@ func permissionDisplayName(value string) string {
 	return safe(value)
 }
 
+// composerSettingDisplays labels the composer fields with the chosen agent's
+// own option value names, falling back to the display tables above. It never
+// renames a value the agent did not report.
+func (m *Model) composerSettingDisplays(t protocol.Thread, s protocol.Settings) []settingDisplay {
+	c, ok := m.threadConfig(t)
+	name := t.Agent
+	if ok {
+		name = c.agent.Name
+	}
+	items := composerSettings(name, s)
+	if !ok {
+		return items
+	}
+	for i := range items {
+		field := items[i].field
+		if field == "agent" {
+			continue
+		}
+		o, mapped := c.option(field)
+		if !mapped {
+			continue
+		}
+		label := optionValueName(o, settingValue(s, field))
+		if label == "" {
+			continue
+		}
+		if field == "context" {
+			label = "· " + label
+		}
+		items[i].label = safe(label)
+	}
+	return items
+}
+
 func optionalSetting(value string) bool {
 	return value != "" && value != "unavailable" && value != "unknown"
 }

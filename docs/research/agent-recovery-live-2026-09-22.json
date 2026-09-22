@@ -1,0 +1,284 @@
+{
+  "claude_native_waiting": {
+    "agent": "claude",
+    "checks": [
+      "adapter ready",
+      "native question is waiting",
+      "provider supplied requested bounded form",
+      "duplicate answer command returns original receipt",
+      "provider turn completed after answer",
+      "generic completion did not become an authoritative answer receipt",
+      "provider reply corroborates selected answer",
+      "Stop target is waiting on native question",
+      "late answer after Stop rejected",
+      "cancelled waiting question has no accepted answer",
+      "Resume sends no duplicate prompt",
+      "restart retains no dispatched queue copies",
+      "restart retains accepted answer as uncertain",
+      "restart retry returns receipt without replay"
+    ],
+    "result": "PASS",
+    "runtime_version": "2.1.280 (Claude Code)",
+    "adapter_version": "@agentclientprotocol/claude-agent-acp 0.80.0",
+    "readiness": "ready",
+    "selected": {
+      "Model": "fable[1m]",
+      "Effort": "high",
+      "Permissions": "default",
+      "Context": "unavailable",
+      "Speed": "unavailable"
+    },
+    "first_outcome": {
+      "state": "waiting",
+      "error": "",
+      "queued": 0
+    },
+    "native_question": {
+      "mode": "blocking",
+      "route": "native-response",
+      "questions": [
+        {
+          "ID": "question_0",
+          "Text": "Which color?\n\nBlue: A cool, calm color.\n\nGreen: A natural, fresh color.",
+          "Label": "Color",
+          "Kind": "single",
+          "AllowOther": true,
+          "Required": false,
+          "Options": [
+            "Blue",
+            "Green"
+          ]
+        }
+      ]
+    },
+    "request_delivery": "acp-unconfirmed",
+    "effective": {
+      "Model": "fable[1m]",
+      "Effort": "high",
+      "Permissions": "default",
+      "Context": "unavailable",
+      "Speed": "unavailable"
+    },
+    "shutdown": "confirmed",
+    "runtime_launches": [
+      {
+        "protocol_flags": [
+          "--output-format",
+          "--input-format"
+        ]
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": [
+          "--output-format",
+          "--input-format"
+        ]
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": []
+      }
+    ],
+    "owned_processes_reaped": 10
+  },
+  "claude_native_running_cancel": {
+    "agent": "claude",
+    "checks": [
+      "adapter ready",
+      "native question is waiting",
+      "provider supplied requested bounded form",
+      "duplicate answer command returns original receipt",
+      "provider turn completed after answer",
+      "generic completion did not become an authoritative answer receipt",
+      "provider reply corroborates selected answer",
+      "Resume sends no duplicate prompt",
+      "restart retains no dispatched queue copies",
+      "restart retains accepted answer as uncertain",
+      "restart retry returns receipt without replay"
+    ],
+    "result": "PASS",
+    "runtime_version": "2.1.280 (Claude Code)",
+    "adapter_version": "@agentclientprotocol/claude-agent-acp 0.80.0",
+    "readiness": "ready",
+    "selected": {
+      "Model": "fable[1m]",
+      "Effort": "high",
+      "Permissions": "default",
+      "Context": "unavailable",
+      "Speed": "unavailable"
+    },
+    "first_outcome": {
+      "state": "waiting",
+      "error": "",
+      "queued": 0
+    },
+    "request_delivery": "acp-unconfirmed",
+    "effective": {
+      "Model": "fable[1m]",
+      "Effort": "high",
+      "Permissions": "default",
+      "Context": "unavailable",
+      "Speed": "unavailable"
+    },
+    "shutdown": "confirmed",
+    "runtime_launches": [
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": [
+          "--output-format",
+          "--input-format"
+        ]
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": [
+          "--output-format",
+          "--input-format"
+        ]
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": []
+      },
+      {
+        "protocol_flags": []
+      }
+    ],
+    "owned_processes_reaped": 10
+  },
+  "codex_prompt": {
+    "agent": "codex",
+    "checks": [
+      "adapter ready",
+      "real pong turn completed",
+      "Resume sends no duplicate prompt",
+      "restart retains no dispatched queue copies"
+    ],
+    "result": "PASS",
+    "runtime_version": "codex-cli 0.155.1",
+    "adapter_version": "@agentclientprotocol/codex-acp 1.12.0",
+    "readiness": "ready",
+    "selected": {
+      "Model": "gpt-6-astra",
+      "Effort": "high",
+      "Permissions": "agent",
+      "Context": "unavailable",
+      "Speed": "off"
+    },
+    "first_outcome": {
+      "state": "idle",
+      "error": "",
+      "queued": 0
+    },
+    "effective": {
+      "Model": "gpt-6-astra",
+      "Effort": "high",
+      "Permissions": "agent",
+      "Context": "unavailable",
+      "Speed": "off"
+    },
+    "shutdown": "confirmed",
+    "runtime_launches": [
+      {
+        "protocol_flags": [
+          "app-server"
+        ]
+      },
+      {
+        "protocol_flags": [
+          "app-server"
+        ]
+      },
+      {
+        "protocol_flags": [
+          "app-server"
+        ]
+      }
+    ],
+    "owned_processes_reaped": 6
+  },
+  "preliminary_claude_harness_failure": {
+    "agent": "claude",
+    "checks": [
+      "adapter ready"
+    ],
+    "result": "FAIL",
+    "runtime_version": "2.1.280 (Claude Code)",
+    "adapter_version": "@agentclientprotocol/claude-agent-acp 0.80.0",
+    "readiness": "ready",
+    "selected": {
+      "Model": "fable[1m]",
+      "Effort": "high",
+      "Permissions": "default",
+      "Context": "unavailable",
+      "Speed": "unavailable"
+    },
+    "first_outcome": {
+      "state": "idle",
+      "error": "",
+      "queued": 1
+    },
+    "error": "'NoneType' object is not iterable",
+    "shutdown": "confirmed",
+    "runtime_launches": [
+      {
+        "protocol_flags": [
+          "--output-format",
+          "--input-format"
+        ]
+      },
+      {
+        "protocol_flags": []
+      }
+    ],
+    "shutdown_error": "owned adapter/runtime process survived stop"
+  },
+  "preliminary_codex_harness_failure": {
+    "agent": "codex",
+    "checks": [
+      "adapter ready"
+    ],
+    "result": "FAIL",
+    "runtime_version": "codex-cli 0.155.1",
+    "adapter_version": "@agentclientprotocol/codex-acp 1.12.0",
+    "readiness": "ready",
+    "selected": {
+      "Model": "gpt-6-astra",
+      "Effort": "high",
+      "Permissions": "agent",
+      "Context": "unavailable",
+      "Speed": "off"
+    },
+    "first_outcome": {
+      "state": "idle",
+      "error": "",
+      "queued": 1
+    },
+    "error": "'NoneType' object is not iterable",
+    "shutdown": "confirmed",
+    "runtime_launches": [
+      {
+        "protocol_flags": [
+          "app-server"
+        ]
+      }
+    ],
+    "shutdown_error": "owned adapter/runtime process survived stop"
+  }
+}

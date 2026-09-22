@@ -1,0 +1,13 @@
+{
+  "harness": "120x40 OS PTY; real ACP; isolated application home",
+  "agent": "claude",
+  "checks": [
+    "missing executable is shown as unavailable in agent menu"
+  ],
+  "frames": [
+    "120x40-lightfalse-01-draft",
+    "120x40-lightfalse-02-unavailable"
+  ],
+  "result": "PASS",
+  "shutdown": "confirmed"
+}

@@ -8,6 +8,9 @@ Terminology update: the user subsequently selected **thread** as the user-facing
 
 Method: ask each currently answerable decision in a round, with a recommendation. Research facts independently; do not ask the user to supply facts that can be looked up. Record answers as they arrive, then advance to decisions that depend on them. The requested deliverable is documentation; no application implementation is underway.
 
+Later implementation and follow-up decisions are recorded in dated entries;
+the introductory method describes the original interview phase.
+
 ## Settled from the initial request
 
 - This session is design and documentation work.
@@ -632,3 +635,63 @@ plus an expand/shrink control moving into the right panel while it is shown,
 with the bell staying in the center. Accepted. Open question: the ADE has no
 stored default project yet; the project filter stands in for it until decided.
 
+## Agent boundary and question normalization — 2026-09-22
+
+After continuation of the uncommitted ACP prototype, the user asked who supplied
+the Go protocol SDK and Claude/Codex adapters, initially preferring official
+headless CLIs (`claude -p`, `codex exec`) unless native ACP existed. Discussion
+clarified that the community Coder Go ACP library, third-party ACP adapters,
+Anthropic's Agent SDK and provider runtimes are distinct components.
+
+The user then reaffirmed ACP as the common integration point, with conversion
+for non-ACP providers behind it. The assistant clarified the existing boundary:
+frontends use the application server's contract; ACP connects that server to
+agents. The user favored official Codex App Server over `codex exec` and was
+open to Claude Agent SDK for richer integration if its use is permitted.
+The SDK launches a local Claude Code binary; both SDK and direct CLI ultimately
+use the configured inference service. This distinction alone does not settle
+subscription eligibility or billing. Exact Claude route and existing-versus-own
+adapter ownership were left for evidence-based comparison, not approved as an
+automatic rewrite or unconditional package adoption.
+
+The user provided `~/Developer/git/github.com/muschterm/ucf/server` as a working
+direct-CLI reference. Read-only source inspection found persistent Claude JSONL
+sessions and interruption, plus questions implemented as a prompted structured
+text block that ends the turn; the frontend sends the answer as the next user
+turn. This does not establish native approval/question delivery. The
+[research note](../research/agent-integration-options-2026-09-22.md) records
+the concrete source findings and limitations.
+
+The user asked whether the application could standardize questions so users
+would not encounter multiple answer mechanisms. The accepted recommendation is
+one app-owned question model, presentation and request-specific answer action,
+with server/adapter delivery routing: prefer native structured responses, allow
+an explicit turn-ending structured-text fallback, and support true asynchronous
+delivery only when verified. Keep waiting versus continuing work visible and
+preserve approvals as distinct authorization requests. The user replied:
+“Understood, and makes sense. Let's go with your recommendation.”
+
+The user then requested a write-up of the choices, remaining work and necessary
+ADRs for a new agent. [ADR 0014](../adr/0014-acp-boundary-official-agent-runtimes.md),
+[ADR 0015](../adr/0015-app-owned-question-contract.md) and the
+[handoff](../implementation/agent-integration-handoff.md) record that outcome.
+This follow-up is documentation only; it does not replace the existing runtime
+or establish previously untested provider capabilities.
+
+## Own Go adapters without separate installations — 2026-09-22
+
+After testing an empty `test-tui-go` project, the user found Claude and Codex
+unavailable. Read-only running-server diagnostics identified missing
+`claude-agent-acp` / `codex-acp` executables, while the official provider CLIs
+were installed. The user rejected installing extra adapter tooling and said:
+“I want to create our own in golang then. Add that to the handoff, I'll kick off
+a new agent.” No installation was performed during that troubleshooting.
+
+**Accepted:** own Go ACP adapters delivered with the application, using installed
+`claude -p` and `codex app-server` directly; no separate npm/Node adapter or
+Agent SDK sidecar installation. This supersedes the earlier reuse recommendation
+and open adapter-ownership choice. It does not change ACP at the server-agent
+boundary, the app-owned question contract, official-runtime authentication,
+fixture preservation or truthful delivery/recovery requirements. Exact Go
+packaging is left to implementation. The current turn records the decision only;
+the [handoff](../implementation/agent-integration-handoff.md) guides the new agent.

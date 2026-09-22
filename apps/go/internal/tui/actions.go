@@ -444,7 +444,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		c := protocol.Command{Kind: "prompt.send", Text: v.Draft, Settings: &settings, Attachments: captures}
 		if m.creatingThread() {
-			c.Kind, c.ProjectID, c.Agent = "thread.start", m.state.DraftProjectID, t.Agent
+			c.Kind, c.ProjectID, c.Agent = "thread.start", m.state.DraftProjectID, m.agentCommandID(t)
 		} else if t.Closed {
 			c.Kind, c.Revision = "prompt.reopen-send", t.LifecycleRevision
 		}
@@ -546,6 +546,15 @@ func (m *Model) activate(a action) tea.Cmd {
 			return m.showNotice("Settings are read-only during active work")
 		}
 		v.Settings.Effort = a.Value
+	case "setting-agent":
+		cmd = m.chooseAgent(a.Value)
+	case "setting-field":
+		cmd = m.chooseSetting(a.ID, a.Value)
+	case "agent-probe":
+		if agent, ok := m.agentByID(a.ID); ok && agent.Kind == "fixture" {
+			return m.showNotice(agent.Name + " has fixed options; nothing to probe")
+		}
+		return m.command(protocol.Command{Kind: "agent.probe", TargetID: a.ID, ProjectID: m.agentProjectID()}, a)
 	case "attach":
 		if m.state.Edit != nil {
 			m.status = "Queued attachment captures are preserved; finish this edit first"
@@ -634,17 +643,15 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "approval-options":
 		if r, ok := m.request(); ok && r.Kind == "approval" {
 			var items []menuItem
-			for _, choice := range r.Choices {
-				items = append(items, menuItem{choice, action{Kind: "approve", ID: r.ID, Value: choice, Revision: r.Revision}})
+			for i, choice := range r.Choices {
+				items = append(items, menuItem{choice, m.approvalAction(r, i)})
 			}
 			m.showMenu("Approval choices", items)
 		}
 	case "answer-submit":
 		return m.submitAnswers(a)
 	case "approve":
-		if r, ok := m.request(); ok && r.Kind == "approval" && slices.Contains(r.Choices, a.Value) {
-			return m.command(protocol.Command{Kind: "request.answer", TargetID: r.ID, Revision: r.Revision, Answers: []string{a.Value}}, a)
-		}
+		return m.submitApproval(a)
 	case "request-detail":
 		if r, ok := m.request(); ok {
 			m.openSurface("activity", r.ID)

@@ -254,7 +254,7 @@ func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
 	p := m.colors()
 	var lines []contentLine
 	for _, a := range items {
-		fg, bg := p.text, p.canvas
+		fg, bg, body := p.text, p.canvas, p.text
 		name := a.Title
 		if name == "" {
 			name = title(a.Role)
@@ -269,6 +269,14 @@ func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
 		}
 		if a.Role == "tool" || a.Role == "mcp" {
 			fg = p.cyan
+		}
+		// Reported thinking is context for the answer, not the answer: it keeps
+		// one muted label and muted text instead of a per-message header.
+		if a.Role == "thought" {
+			fg, body, name = p.muted, p.muted, "Thinking"
+			if a.Title != "" && a.Title != name {
+				name += "  ·  " + a.Title
+			}
 		}
 		header := name
 		if a.Role == "tool" || a.Role == "mcp" {
@@ -291,17 +299,54 @@ func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
 			wrapWidth -= min(12, w/6)
 		}
 		for _, line := range strings.Split(ansi.Wrap(safe(a.Text), max(1, wrapWidth), ""), "\n") {
-			lines = append(lines, contentLine{text: line, fg: p.text, bg: bg, action: act, rightAligned: a.Role == "user"})
+			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, rightAligned: a.Role == "user"})
 		}
 		lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
 	}
 	return lines
 }
 
+// transcriptLines are the thread's activity rows followed by the reported
+// outcome of its last turn.
+func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
+	lines := m.activityLines(t.Activity, w)
+	note := stopReasonNote(t)
+	if note == "" {
+		return lines
+	}
+	p := m.colors()
+	for _, line := range strings.Split(ansi.Wrap(safe(note), max(1, w-2), ""), "\n") {
+		lines = append(lines, contentLine{text: line, fg: p.gold, bg: p.canvas})
+	}
+	return lines
+}
+
+// stopReasonNote names a finished turn that ended for any reason other than a
+// normal completion. The reason is agent-reported and shown once, at the end of
+// that turn; an unfinished turn has no outcome yet.
+func stopReasonNote(t protocol.Thread) string {
+	if activeTurn(t) {
+		return ""
+	}
+	switch t.StopReason {
+	case "", "end_turn":
+		return ""
+	case "max_tokens":
+		return "Turn ended · the agent reached its output token limit"
+	case "max_turn_requests":
+		return "Turn ended · the agent reached its request limit for this turn"
+	case "refusal":
+		return "Turn ended · the agent refused this request"
+	case "cancelled":
+		return "Turn ended · cancelled"
+	}
+	return "Turn ended · " + safe(t.StopReason)
+}
+
 func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 	p := m.colors()
 	f.hits = append(f.hits, hit{Rect: r, Action: action{}, Label: "Transcript · wheel / arrows to scroll", Key: "transcript"})
-	lines := m.activityLines(m.thread().Activity, r.W)
+	lines := m.transcriptLines(m.thread(), r.W)
 	f.transcriptMax = max(0, len(lines)-r.H)
 	offset := min(max(0, m.viewState().Scroll), f.transcriptMax)
 	for i := 0; i < r.H && offset+i < len(lines); i++ {
@@ -459,7 +504,7 @@ func (m *Model) surfaceText(s shell.Surface) string {
 		}
 	case "activity":
 		if v.DetailID == "usage" {
-			return "USAGE\n\nContext occupancy: unavailable\nContext capacity: unavailable\nBilling mode: unknown\nSubscription windows: unavailable\nAPI cost: unavailable\n\nNo agent telemetry is connected.\n\nCapabilities\n" + strings.Join(m.snapshot.Capabilities, "\n") + "\n\n" + m.keyboard + "\n" + m.colorDiagnostics() + "\nGraphics: not probed; text fallback"
+			return "USAGE\n\n" + strings.Join(m.usageLines(), "\n") + "\n\nCapabilities\n" + strings.Join(m.snapshot.Capabilities, "\n") + "\n\n" + m.keyboard + "\n" + m.colorDiagnostics() + "\nGraphics: not probed; text fallback"
 		}
 		for _, a := range t.Activity {
 			if v.DetailID != "" && a.ID != v.DetailID {
@@ -471,7 +516,8 @@ func (m *Model) surfaceText(s shell.Surface) string {
 			if v.DetailID != "" && r.ID != v.DetailID {
 				continue
 			}
-			fmt.Fprintf(&b, "%s\n%s\nState: %s\nDelivery: %s\n\n", r.Title, r.Detail, r.State, r.Delivery)
+			delivery := requestDeliveryDescription(r.Delivery)
+			fmt.Fprintf(&b, "%s\n%s\nState: %s\nDelivery: %s\nChoices: %s\n\n", r.Title, r.Detail, r.State, delivery, strings.Join(r.Choices, ", "))
 		}
 		if b.Len() == 0 {
 			b.WriteString("No retained activity for this selection")

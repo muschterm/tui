@@ -1,0 +1,26 @@
+{
+  "harness": "120x40 OS PTY; real ACP; isolated application home",
+  "agent": "claude",
+  "no_color": true,
+  "checks": [
+    "selected adapter reports ready"
+  ],
+  "frames": [
+    "120x40-lightfalse-01-draft",
+    "120x40-lightfalse-02-agents",
+    "120x40-lightfalse-03-models",
+    "120x40-lightfalse-04-prompt",
+    "120x40-lightfalse-05-sent",
+    "120x40-lightfalse-06-reply",
+    "120x40-lightfalse-failure"
+  ],
+  "outcome": {
+    "state": "failed",
+    "error": "The turn failed: Internal error: You've hit your session limit \u00b7 resets 2pm (America/New_York)",
+    "queued": 1
+  },
+  "result": "FAIL",
+  "error": "pong turn did not complete: The turn failed: Internal error: You've hit your session limit \u00b7 resets 2pm (America/New_York)",
+  "shutdown": "confirmed",
+  "adapter_processes_reaped": 3
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
@@ -11,6 +12,34 @@ func failure(code, message string) error { return &protocol.Error{Code: code, Me
 
 func validSettings(s protocol.Settings) bool {
 	return s.Model == "fixture-model" && (s.Effort == "low" || s.Effort == "medium" || s.Effort == "high") && s.Permissions == "fixture-only" && s.Context == "unavailable" && s.Speed == "standard"
+}
+
+// validateSettings checks captured settings against the agent that will run
+// them. Settings are per-agent: the fixture has its fixed set, and an ACP agent
+// accepts only reported option value IDs, using the live thread catalogue
+// when available and the probe catalogue for a new session.
+func validateSettings(s *protocol.Snapshot, agentID string, set protocol.Settings, live ...[]protocol.ConfigOption) error {
+	if !agent.IsACP(agentID) {
+		if !validSettings(set) {
+			return failure("unsupported_settings", "fixture supports fixture-model, low/medium/high, fixture-only, unavailable context, standard speed")
+		}
+		return nil
+	}
+	a := agent.Find(s, agentID)
+	if a == nil {
+		return failure("unsupported_agent", "this thread's agent is no longer configured")
+	}
+	if a.State != agent.StateReady {
+		return failure("agent_unavailable", a.Name+" is not ready; probe it before sending. "+a.Detail)
+	}
+	record := *a
+	if len(live) > 0 && len(live[0]) > 0 {
+		record.Options, record.Fields = live[0], agent.Fields(live[0])
+	}
+	if err := agent.ValidateSettings(record, set); err != nil {
+		return failure("unsupported_settings", err.Error())
+	}
+	return nil
 }
 
 func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
@@ -38,8 +67,10 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 	if t == nil {
 		return "", failure("not_found", "thread does not exist")
 	}
-	if c.Settings != nil && !validSettings(*c.Settings) {
-		return "", failure("unsupported_settings", "fixture supports fixture-model, low/medium/high, fixture-only, unavailable context, standard speed")
+	if c.Settings != nil {
+		if err := validateSettings(s, t.AgentID, *c.Settings, t.Options); err != nil {
+			return "", err
+		}
 	}
 	switch c.Kind {
 	case "thread.close", "thread.reopen", "thread.delete":
@@ -115,7 +146,13 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		id := "prompt-" + c.ID
 		t.Queue = append(t.Queue, protocol.Prompt{ID: id, Text: c.Text, Revision: 1, Settings: set, Attachments: c.Attachments})
 		t.QueueRevision++
-		if t.State == "idle" && !t.NeedsResume {
+		if agent.IsACP(t.AgentID) {
+			// A pre-dispatch failure may retry unsent queue work on Send.
+			// Post-dispatch failures retain the warning and explicit Resume gate.
+			if t.State == "failed" && !t.NeedsResume {
+				t.State, t.Error, t.StopReason = "idle", "", ""
+			}
+		} else if t.State == "idle" && !t.NeedsResume {
 			startFixturePrompt(t)
 		}
 		return id, nil
@@ -192,7 +229,7 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		return "", failure("not_queued", "prompt is no longer queued")
 	case "request.answer":
 		if t.NeedsResume {
-			return "", failure("resume_required", "resume and revalidate this fixture request first")
+			return "", failure("resume_required", "resume and revalidate this request first")
 		}
 		for i := range t.Requests {
 			r := &t.Requests[i]
@@ -202,29 +239,41 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 			if r.State != "pending" || r.Revision != c.Revision {
 				return "", failure("stale_request", "request changed or was resolved elsewhere")
 			}
+			if agent.IsACP(t.AgentID) && (r.DeliveryRoute != "native-response" || (r.Kind != "approval" && (r.Kind != "question" || t.AgentID != "claude" || len(r.SourcePayload) == 0))) {
+				return "", failure("unsupported_request", "this agent request has no supported answer delivery route")
+			}
 			if r.Kind == "approval" {
-				if len(c.Answers) != 1 || c.QuestionAnswers != nil {
-					return "", failure("invalid", "choose one approval response")
+				choice, err := approvalChoice(*r, c)
+				if err != nil {
+					return "", err
 				}
-				valid := false
-				for _, v := range r.Choices {
-					valid = valid || v == c.Answers[0]
-				}
-				if !valid {
-					return "", failure("invalid", "unsupported approval choice")
+				r.Answers = []string{r.Choices[choice]}
+				if len(r.ChoiceIDs) == len(r.Choices) {
+					r.ApprovalChoiceID = r.ChoiceIDs[choice]
 				}
 			} else {
+				if c.ApprovalChoiceID != "" {
+					return "", failure("invalid", "an approval choice cannot answer a question")
+				}
 				answers, err := protocol.NormalizeQuestionAnswers(r.Questions, c.QuestionAnswers, c.Answers)
 				if err != nil {
 					return "", failure("invalid", err.Error())
 				}
-				r.QuestionAnswers = answers
+				r.QuestionAnswers, r.Answers = answers, c.Answers
+				if agent.IsACP(t.AgentID) {
+					// One authoritative answer representation; legacy input must
+					// not double the native request's reserved storage budget.
+					r.Answers = nil
+				}
 			}
-			r.Answers = c.Answers
-			r.State = "resolved"
-			r.Delivery = "fixture-confirmed"
+			if agent.IsACP(t.AgentID) {
+				r.State, r.Delivery = "submitted", "acp-accepted"
+				r.SubmissionID, r.SubmittedRevision = c.ID, c.Revision
+			} else {
+				r.State, r.Delivery = "resolved", "fixture-confirmed"
+			}
 			r.Revision++
-			if t.State == "waiting" {
+			if t.State == "waiting" && !agent.IsACP(t.AgentID) {
 				t.State = "running"
 				for _, pending := range t.Requests {
 					if pending.State == "pending" && pending.Mode == "blocking" {
@@ -236,10 +285,25 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		}
 		return "", failure("not_found", "request missing")
 	case "thread.resume":
+		if agent.IsACP(t.AgentID) && (t.State == "running" || t.State == "waiting") {
+			return "", failure("already_active", "this thread already has an active turn")
+		}
 		if t.Closed {
 			return "", failure("thread_closed", "reopen the thread before resuming work")
 		}
 		if t.State == "idle" && !t.NeedsResume {
+			return t.ID, nil
+		}
+		if agent.IsACP(t.AgentID) {
+			// Resume never resends: it clears the gate and lets the dispatcher
+			// start the queue head, restarting the process if it has ended.
+			t.NeedsResume, t.State, t.Error = false, "idle", ""
+			for i := range t.Requests {
+				if t.Requests[i].State == "pending" || t.Requests[i].State == "submitted" {
+					t.Requests[i].State, t.Requests[i].Delivery = "closed", "acp-undeliverable"
+					t.Requests[i].Revision++
+				}
+			}
 			return t.ID, nil
 		}
 		t.NeedsResume = false
@@ -260,6 +324,12 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		}
 		return t.ID, nil
 	case "thread.interrupt":
+		// Stop interrupts an active turn. Accepting it for a thread that is not
+		// working would mark finished work as interrupted and demand a Resume
+		// that has nothing to resume.
+		if t.State != "running" && t.State != "waiting" {
+			return "", failure("not_active", "this thread has no active turn to interrupt")
+		}
 		t.RestartEligible = false
 		t.State = "interrupted"
 		t.NeedsResume = true

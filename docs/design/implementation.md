@@ -1,6 +1,14 @@
 # Implementation sequence
 
-Status: the user asked the assistant to choose the easiest reference app to implement first. **Go is selected first.** The accepted blueprint is documented and a [first Go server/shell slice](go-slice.md) now implements a bounded subset of steps 1–3 with synthetic activity for later presentation work. It does not complete those steps or establish real provider/editor/Git/terminal integration. Deferred choices are resolved in their relevant prototype or implementation slice.
+Status: the user asked the assistant to choose the easiest reference app to implement first. **Go is selected first.** The accepted blueprint is documented and a [first Go server/shell slice](go-slice.md) now implements a bounded subset of steps 1–3 with synthetic activity for later presentation work. The 2026-09-22 [ACP slice](go-slice.md#acp-agents--2026-09-22) begins step 4 with pinned Claude/Codex adapters and live HTTP evidence; [validation](../research/go-acp-2026-09-22.md) records its limits separately from terminal checks. This does not complete steps 1–4 or establish collaborative-editor, Git or embedded-terminal integration. Deferred choices are resolved in their relevant prototype or implementation slice.
+
+For the next agent-integration work, start with the
+[2026-09-22 handoff](../implementation/agent-integration-handoff.md). ACP remains
+the boundary; official Claude runtime selection and Codex App Server adapter
+comparison precede expanding provider features. Implement the app-owned question
+lifecycle with native-first responses and an explicit turn-ending fallback;
+do not treat the current pinned packages or fixture questions as completed
+integration decisions/evidence.
 
 ## Why Go first
 

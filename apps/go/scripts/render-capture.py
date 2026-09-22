@@ -99,7 +99,7 @@ def cells(text, default_fg, default_bg):
         x += width
 
 
-def render(source, output, font_path):
+def render(source, output, font_path, title="Deterministic Go View output, rendered with fixed cells; not a terminal screenshot"):
     match = re.match(r"(\d+)x(\d+)-", source.name)
     if not match:
         raise ValueError(f"Capture filename must begin COLUMNSxROWS-: {source}")
@@ -132,7 +132,7 @@ def render(source, output, font_path):
     (output / f"{source.stem}.ansi.gz").write_bytes(gzip.compress(source.read_bytes(), mtime=0))
     image.save(output / f"{source.stem}.png")
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{cols*cw}" height="{rows*ch}" viewBox="0 0 {cols*cw} {rows*ch}">'
-           '<title>Deterministic Go View output, rendered with fixed cells; not a terminal screenshot</title>'
+           f'<title>{html.escape(title)}</title>'
            f'<rect width="100%" height="100%" fill="{bg}"/>' + "".join(rectangles)
            + f'<g font-family="{html.escape(font.getname()[0])},monospace" font-size="15" xml:space="preserve">' + "".join(texts) + '</g></svg>')
     (output / f"{source.stem}.svg").write_text(svg)
@@ -145,7 +145,8 @@ if __name__ == "__main__":
     parser.add_argument("output", type=Path)
     parser.add_argument("--name", action="append", help="Capture stem to render; repeatable; defaults to every .ansi")
     parser.add_argument("--font", type=Path, default=Path("/System/Library/Fonts/Menlo.ttc"))
+    parser.add_argument("--title", default="Deterministic Go View output, rendered with fixed cells; not a terminal screenshot")
     args = parser.parse_args()
     for source in sorted(args.input.glob("*.ansi")):
         if args.name is None or source.stem in args.name:
-            render(source, args.output, args.font)
+            render(source, args.output, args.font, args.title)

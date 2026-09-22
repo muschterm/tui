@@ -2,7 +2,29 @@
 
 Implementation evidence (2026-09-19): the [first Go slice](go-slice.md) now exercises a fixture-driven subset of this contract. See the [validation report](../research/go-slice-validation-2026-09-19.md) for executed checks and limitations; provider/editor/real-terminal behavior below is not implied by fixture results.
 
-Status: required by the user on **2026-09-19**. This specifies the shared UI and delivery contract; provider integration and terminal interaction are **NOT RUN**. See [source evidence](../research/agent-questions.md) for the distinction between awaiting an answer and continuing work while a later answer is delivered.
+Status: required by the user on **2026-09-19**, with normalization accepted **2026-09-22**. This specifies the shared UI and delivery contract. General native provider questions, turn-ending fallback delivery and true asynchronous answers remain unverified in this app. Existing fixture terminal checks and live approval observations are separate evidence; see [the ACP validation report](../research/go-acp-2026-09-22.md). See [source evidence](../research/agent-questions.md) for the distinction between awaiting an answer and continuing work while a later answer is delivered.
+
+## One application contract, multiple delivery mechanisms
+
+**Accepted 2026-09-22:** every frontend uses one question model, presentation and
+request-specific answer action. The server owns request identity, revision,
+origin and delivery route; adapters translate supported provider mechanisms.
+Users never choose a transport or format a provider-specific answer. Prefer
+native structured questions and correlated responses. See
+[ADR 0015](../adr/0015-app-owned-question-contract.md).
+
+An explicitly supported structured-text fallback may produce a question at the
+end of a turn and deliver its answer through a correlated new upstream turn.
+The application still records an answer to the original request, not an
+ordinary prompt submission. Preserve the same card, supported answer shapes,
+explicit Submit and history; show whether the agent is waiting or continuing
+work. Transport names do not belong in normal user flows.
+
+Enable that fallback only with a bounded schema/parser and a defined delivery
+contract. Partial, malformed, duplicate, quoted/example and tool-output blocks
+must not accidentally create actionable requests. Native response failure or
+uncertain receipt never silently selects fallback delivery. Approvals retain
+their separate authorization semantics and provider-supported scope/choices.
 
 ## Placement and navigation
 
@@ -37,7 +59,9 @@ Permission requests share this area through distinct [approval cards](activity.m
 response, replace the live question form with a compact, read-only **Answered**
 card in the chat conversation. This is shared behavior for all three reference
 apps. The response belongs to the original request and its thread/turn; it is
-neither a new prompt nor a queued or steered message.
+not an ordinary prompt, queued message or Steer action. For a declared
+turn-ending fallback, also retain its link to the upstream continuation turn
+without duplicating the user-visible answer in history.
 
 Use one rounded outlined container with a stable background, following the
 [component rule](components.md). Give it a quiet Answered header and a completion
@@ -92,16 +116,17 @@ accepted design requirement, not evidence that the history renderer exists.
 | --- | --- | --- |
 | Blocking | The requesting run waits at the input boundary. Its turn remains unfinished. Independently running work may continue; identify the actual scope. | Submit to that pending request. Continue through upstream resolution; an answer does not create a new turn. |
 | Asynchronous | The requesting agent continues eligible work while the request remains pending. | Submit later against the same live request identity. Preserve delivery/acceptance state; storing a draft does not mean the agent received it. |
+| Turn-ending fallback | The originating turn has ended and left an application-owned question pending. Do not depict a still-running blocked tool. | A request-specific answer may start a correlated upstream continuation turn under the declared adapter contract. This is not asynchronous or same-turn delivery. |
 
 Use concise states such as “Waiting for answer” or “Answer anytime” when supported by known execution semantics. Do not infer asynchronous behavior from an `async` SDK callback, a responsive UI, or an unrelated subagent still working. If the mode is unknown, show the pending question without asserting continued execution or a pause.
 
-Answers are separate commands from ordinary prompts. The prompt remains available: normal messages follow the prompt queue and explicit-interrupt rules; answers resolve their referenced question. Navigation and answers must not implicitly interrupt another run, advance the prompt queue, release a checkout writer lease, or authorize unrelated work. Permission approvals retain separate semantics even when sharing this presentation area.
+Answers are separate commands from ordinary prompts. The prompt remains available: normal messages follow the prompt queue and explicit-interrupt rules; answers resolve their referenced question. Navigation and answers must not implicitly interrupt another run, advance the ordinary prompt queue, release a checkout writer lease, or authorize unrelated work. For a declared turn-ending fallback, the server must coordinate the continuation with queued work, captured settings, checkout writer admission and Stop/Resume gates before dispatch. Exact scheduling and stale-answer rules must be settled before enabling that route. Permission approvals retain separate semantics even when sharing this presentation area.
 
-If the agent completes, withdraws the request, changes its question, or disconnects, reconcile actual state before accepting a late answer. Do not attach it to a newer turn or reinterpret it as a fresh prompt. Accept an answer after turn completion only if the integration explicitly keeps the request open. Preserve unsent text when delivery is no longer possible and show the reason.
+If the agent completes, withdraws the request, changes its question, or disconnects, reconcile actual state before accepting a late answer. Do not attach it to an unrelated newer turn or reinterpret it as a fresh ordinary prompt. Accept an answer after turn completion only if the integration explicitly keeps the request open, including the declared turn-ending fallback. Preserve unsent text when delivery is no longer possible and show the reason.
 
 ## Server authority and recovery
 
-The server owns request identity, originating thread/turn/child and upstream connection scope, question revision, execution mode, lifecycle and delivery state. Preserve pending requests and accepted answers in application-home storage. Per-client drafts and navigation remain distinct from the accepted shared response. A connection-bound request must not be routed to another connection merely because a session name matches.
+The server owns request identity, originating thread/turn/child and upstream connection scope, question revision, execution mode, delivery route, lifecycle and delivery state. Preserve pending requests and accepted question/answer snapshots in application-home storage. Per-client drafts and navigation remain distinct from the accepted shared response. A connection-bound request must not be routed to another connection merely because a session name matches. Stable question/option identities must survive duplicate display labels and provider payload translation.
 
 All attached clients see the same resolved state. Reconcile submission identity and request revision so competing clients cannot answer an already-resolved request twice. A losing or stale client sees the accepted outcome and retains any unsent draft; it must not overwrite that answer. Distinguish submitting, accepted for delivery, confirmed delivered/resolved, and failed or uncertain outcomes where supported. A local optimistic state is not provider receipt.
 
@@ -109,7 +134,7 @@ Reattaching to a running server restores current questions and drafts without an
 
 ## Integration requirements
 
-Represent structured questions, multi-question payloads, choice/free-text formats, blocking behavior, continued-work asynchronous behavior, and late-answer delivery as separate capabilities. Both modes are required product targets for the initial agent examples; unsupported adapters remain recorded integration gaps before claiming parity.
+Represent structured questions, multi-question payloads, choice/free-text formats, blocking behavior, continued-work asynchronous behavior, turn-ending fallback, and late-answer delivery as separate capabilities. Native blocking and true asynchronous behavior remain required product targets for the initial agent examples; the fallback does not satisfy them. Unsupported adapters remain recorded integration gaps before claiming parity.
 
 Current ACP v1 includes capability-gated form elicitation. A form can be presented as question pages while its underlying request remains intact. The method alone does not guarantee continued reasoning while a response is pending. URL elicitation concerns an external interaction, not a generic asynchronous-answer mechanism. Follow the negotiated schema and its sensitive-input boundaries. [ACP evidence](../research/agent-questions.md)
 
@@ -120,6 +145,12 @@ A true asynchronous adapter path must establish continued useful work, the pendi
 Shared scenarios cover one/several questions, mixed choices/free text, multiselect, required validation, Back/Next without submission, retained drafts, and explicit Submit/decline/cancel. Exercise simultaneous requests from root and child runs, blocking scope alongside other active work, real progress during async waiting, and acknowledged later answers.
 
 Test competing clients, stale revisions, withdrawal during editing, lost acknowledgment, provider timeout, late answers, reattach and restart/Resume. Inspect long questions, narrow/short layouts, surface maximization, transcript scrolling and preserved prompt drafts. Terminal checks and provider checks are separate; screenshots establish neither.
+
+Exercise the same UI against native, fallback and verified async routes. For
+fallback, verify bounded parsing, explicit adapter capability/configuration, original-request correlation,
+continuation settings, answer-versus-queue/Stop races and no duplicate dispatch
+after uncertain delivery. A local answer commit or successful pipe write alone
+must not become confirmed Answered history.
 
 For answered-history cards, verify exact single/multiple/free-text/Other answers
 and optional omissions, original question snapshots, source identity and response
@@ -174,3 +205,29 @@ already-running first-slice server can accept them. Explicitly typed requests
 keep structured QuestionAnswers, including multiple choices and Other text. The
 legacy encoding is chosen from the question schema before dispatch; do not blindly
 retry a potentially accepted command with a changed payload or identity.
+
+## Bounded Claude native-question implementation — 2026-09-22
+
+The Go app now handles the pinned Claude 0.80.0 `AskUserQuestion` form dialect
+through the existing UI and `request.answer`. This is a blocking native callback,
+not a fallback prompt or true asynchronous question. See the
+[checkpoint](../implementation/native-question-checkpoint.md) and
+[evidence](../research/native-questions-2026-09-22.md). Live provider question
+success and authoritative answer receipts remain unverified.
+
+This slice presents 1–4 questions with 2–4 unique choices, single/multiple
+selection, optional Other text and explicit optional omissions. Single choice
+plus a separate note is not supported; choose the option or Other. Multi-choice
+plus Other is additive. Previews, required/constraint-bearing alternate schemas,
+URL/MCP/general forms and child questions are rejected rather than weakened.
+The original question and option descriptions remain readable; original source
+bytes are retained privately. Labels are wire values in this pinned adapter, so
+duplicate values and repeated original question text are rejected as ambiguous.
+
+Submission durably records the response before callback handoff. The UI reports
+upstream confirmation unavailable and never creates an Answered history card
+from callback return, a pipe write, generic tool output or turn completion.
+Withdrawal/cancellation preserves any accepted response without replay; a new
+connection cannot revive the callback. Explicit Submit remains the only answer
+action in this slice; omission is represented in the accepted form, and Stop
+cancels the active turn. Separate per-request Decline/Cancel controls remain open.

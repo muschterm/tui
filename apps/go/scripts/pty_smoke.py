@@ -23,7 +23,7 @@ KEYS = {2: b'\x1bOQ', 3: b'\x1bOR', 4: b'\x1bOS', 5: b'\x1b[15~',
 
 
 class Terminal:
-    def __init__(self, binary, home, identity, artifacts, environment=None):
+    def __init__(self, binary, home, identity, artifacts, environment=None, columns=160, rows=50):
         self.identity = identity
         self.path = artifacts / (identity + '.pty')
         self.output = bytearray()
@@ -36,7 +36,7 @@ class Terminal:
                 else:
                     os.environ[key] = value
             os.execv('/bin/bash', ['bash', '--noprofile', '--norc', '-i'])
-        self.resize(160, 50)
+        self.resize(columns, rows)
         self.pump(.3)
         self.send((shlex.quote(str(binary)) + ' --client ' + identity + '\n').encode(), 2)
 

@@ -1,0 +1,20 @@
+{
+  "check": "installed runtime discovery with runtime overrides absent",
+  "agents": {
+    "claude": {
+      "state": "ready",
+      "adapter_version": "@agentclientprotocol/claude-agent-acp 0.80.0",
+      "matches_installed_PATH_executable": true,
+      "runtime_path": "<HOME>/.local/bin/claude"
+    },
+    "codex": {
+      "state": "ready",
+      "adapter_version": "@agentclientprotocol/codex-acp 1.12.0",
+      "matches_installed_PATH_executable": true,
+      "runtime_path": "<HOME>/.dotfiles.d/opt/codex/bin/codex"
+    }
+  },
+  "provider_prompts_sent": 0,
+  "result": "PASS",
+  "tracked_adapters_reaped": 2
+}

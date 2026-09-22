@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/muschterm/tui/apps/go/internal/protocol"
@@ -31,7 +30,7 @@ func (m *Model) beginThreadDraft(projectID string) {
 	}
 	m.state.Active, m.state.DraftProjectID = "", projectID
 	if m.state.DraftThreads[projectID] == nil {
-		m.state.DraftThreads[projectID] = &threadView{Agent: "Fixture agent", Settings: protocol.Settings{Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}}
+		m.state.DraftThreads[projectID] = m.newDraftView()
 	}
 	m.state.Layout.Right, m.state.Layout.Maximized = false, false
 	m.state.Layout.ClearReveal()
@@ -44,13 +43,20 @@ func (m *Model) beginThreadDraft(projectID string) {
 func (m *Model) composerSelection() protocol.Settings {
 	// An explicit queued edit retains that item's captured settings, even while
 	// another prompt is running. Ordinary Send uses the locked running values.
-	if m.state.Edit != nil && m.state.Edit.ThreadID == m.state.Active {
-		return m.viewState().Settings
+	settings := m.viewState().Settings
+	if (m.state.Edit == nil || m.state.Edit.ThreadID != m.state.Active) && activeTurn(m.thread()) {
+		settings = m.thread().Effective
 	}
-	if activeTurn(m.thread()) {
-		return m.thread().Effective
+	if c, ok := m.composerConfig(); ok && c.agent.Kind == "acp" {
+		// A replaced catalogue may withdraw fields. Capture their unavailable
+		// state without rewriting the saved preference or inventing a choice.
+		for _, field := range settingFieldOrder {
+			if _, offered := c.option(field); !offered {
+				setSettingValue(&settings, field, "unavailable")
+			}
+		}
 	}
-	return m.viewState().Settings
+	return settings
 }
 
 func (m *Model) configurationLocked() bool {
@@ -92,17 +98,43 @@ func (m *Model) sendBlocked() string {
 	if m.thread().Closed && !m.hasCapability("closed-thread-send") {
 		return "Update this server to send to a closed thread, or Reopen it first"
 	}
-	s := m.composerSelection()
-	if m.thread().Agent != "Fixture agent" || s.Model != "fixture-model" {
-		return "Choose the Demo Reference model; Codex and Claude are not connected yet"
-	}
-	if !slices.Contains([]string{"low", "medium", "high"}, s.Effort) || s.Permissions != "fixture-only" || s.Context != "unavailable" || s.Speed != "standard" {
-		return "Choose valid effort, permissions, context and speed settings"
+	if reason := m.agentSendBlocked(m.composerSelection()); reason != "" {
+		return reason
 	}
 	if strings.TrimSpace(m.prompt.Value()) == "" {
 		return "Write a prompt first"
 	}
 	return ""
+}
+
+// agentSendBlocked validates the captured selection against the chosen agent's
+// own options. Servers without agent records keep the fixture-only rule, and
+// the fixture agent keeps its fixed options either way.
+func (m *Model) agentSendBlocked(s protocol.Settings) string {
+	t := m.thread()
+	if !m.acpAgents() {
+		// A server that lists agents without the capability still only runs the
+		// fixture: accept its record as well as the legacy name.
+		agent, known := m.threadAgent(t)
+		if (t.Agent != fixtureAgentName && !(known && agent.Kind == "fixture")) || s.Model != "fixture-model" {
+			return "Choose the Demo Reference model; Codex and Claude are not connected yet"
+		}
+		return fixtureSettingsBlocked(s)
+	}
+	c, ok := m.threadConfig(t)
+	if !ok {
+		return "Choose an agent for this thread"
+	}
+	if reason := agentUnready(c.agent); reason != "" {
+		return reason
+	}
+	if c.agent.Kind == "fixture" {
+		if s.Model != "fixture-model" {
+			return "Choose the Demo Reference model"
+		}
+		return fixtureSettingsBlocked(s)
+	}
+	return c.blocked(s)
 }
 
 func (m *Model) reconcileStartedDraft() {

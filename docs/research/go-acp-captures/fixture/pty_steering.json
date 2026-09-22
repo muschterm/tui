@@ -1,0 +1,17 @@
+{
+  "harness": "OS PTY + isolated fixture server; SGR pointer and keyboard",
+  "checks": [
+    "pointer Steer removes only the selected queued message",
+    "steered conversation input retains its turn, settings and captured attachment",
+    "steering does not restart work or answer blocking requests",
+    "second client catches up with the steered conversation message",
+    "narrow queue keeps labelled Steer reachable",
+    "Enter on the queue menu steers the remaining message once",
+    "pointer and keyboard steering preserve the ordinary composer draft",
+    "detaching clients leaves the same server-owned turn waiting",
+    "restart retains each accepted input once and requires explicit Resume",
+    "Steer before Resume explains unavailability and retains the queued input",
+    "reconnect and unavailable steering preserve the restored draft"
+  ],
+  "result": "PASS"
+}

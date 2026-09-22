@@ -1,6 +1,12 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, 2026-09-19. The server, SQLite persistence and attachable client are real; agent activity, children, questions, approvals and terminal sessions are fixtures. This slice makes lifecycle and interaction reviewable without claiming working ACP, collaborative files, Git or embedded shells. It does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects pinned Claude/Codex adapters alongside the fixture runner. Live HTTP checks are recorded separately from terminal validation. Children, general questions and terminal sessions remain fixtures; collaborative files, Git workflows and embedded shells remain incomplete. This does not change the accepted product scope or settle later integration decisions.
+
+The [latest agent handoff](../implementation/agent-integration-handoff.md)
+records the accepted follow-up: preserve ACP, compare official Claude runtime
+routes and Codex App Server adapters, and implement one app-owned question
+contract. General native/fallback question delivery and confirmed Answered
+history remain work to do; the runtime has not been changed by that write-up.
 
 ## Run and preserve a view
 
@@ -54,7 +60,7 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 | Alt+Up / Alt+Down | Resize bottom panel |
 | Ctrl+Shift+C | Copy selected text through OSC clipboard |
 
-Pointer paths include visible controls, divider dragging, wheel scrolling and text selection. Terminal bracketed paste is supported; native Ctrl+V is disabled because its asynchronous widget path can split a grapheme at the input limit. Complex emoji pointer positioning and shortcut remapping remain prototype limitations. Clipboard and enhanced key delivery depend on the host terminal; their presence in the prototype is not evidence of every terminal/SSH/tmux path. The command menu exposes left-pane resizing as well. The shell supplies opened-surface tabs, singleton non-terminal surfaces, repeatable fixture terminals, attention, inspectors and fixed composer-adjacent activity. Usage remains unavailable, and rich graphics are not claimed.
+Pointer paths include visible controls, divider dragging, wheel scrolling and text selection. Terminal bracketed paste is supported; native Ctrl+V is disabled because its asynchronous widget path can split a grapheme at the input limit. Complex emoji pointer positioning and shortcut remapping remain prototype limitations. Clipboard and enhanced key delivery depend on the host terminal; their presence in the prototype is not evidence of every terminal/SSH/tmux path. The command menu exposes left-pane resizing as well. The shell supplies opened-surface tabs, singleton non-terminal surfaces, repeatable fixture terminals, attention, inspectors and fixed composer-adjacent activity. Fixture usage remains unavailable; ACP context usage appears only when reported. Rich graphics are not claimed.
 
 Controls use Nerd Font Codicons by default; configure a patched font in your terminal. Settings › Appearance › Symbols switches this client to the ASCII fallback and back without restarting; `TUI_GO_ICONS=ascii ./bin/tui-go` is the environment default for a client that has not saved a choice (2026-09-22). Pane glyphs reflect visible open/closed state. Tabs contain an icon and name; hovering a tab or focusing its icon reveals the close action. Only the icon slot closes it. The overflow control appears only when some tabs are hidden, with one row per surface and Delete as a keyboard close path.
 
@@ -138,9 +144,9 @@ Commands carry identity, kind and applicable thread/target/revision. Identical r
 
 SQLite schema version 1 is recorded in `PRAGMA user_version`. Opening a newer schema fails before schema or journal-setting mutations. An existing unversioned database is backed up with SQLite `VACUUM INTO` to a private `recovery-before-v1-*.sqlite` file; the backup and containing directory are synced before transactional migration. Legacy view documents receive revision 1. Fresh databases initialize directly. Tests verify the backup includes live WAL contents and retains the old schema, and that rejecting a future schema leaves its database bytes unchanged. These checks do not establish a general disaster-recovery workflow.
 
-Shutdown first persists interrupted fixture state, drains HTTP handling and closes SQLite. It then atomically publishes and syncs `shutdown-<instance>.json` with the combined outcome before discovery is removed. `server stop` requires a matching successful record; missing, mismatched or failed outcomes report uncertainty or failure rather than treating a vanished endpoint as success. This verifies fixture shutdown, not cancellation of real agents or shell processes.
+Shutdown closes HTTP admission, releases unfinished input and drains accepted handlers alongside owned-agent shutdown. It then persists interrupted state, closes SQLite, and atomically publishes and syncs `shutdown-<instance>.json` with the combined outcome before discovery is removed. Commands and view writes share the shutdown gate; failed HTTP drain closes remaining sockets and reports its stage. `server stop` requires a matching successful record; missing, mismatched or failed outcomes report uncertainty or failure rather than treating a vanished endpoint as success. See the [HTTP shutdown regression](../research/go-shutdown-2026-09-22.md) and the separate ACP lifecycle evidence below.
 
-Prompt submission captures the supplied settings and attachment content in its queued item. Queue text/settings edits preserve existing attachment captures. Current settings admit only the fixture model and permissions, low/medium/high effort, unavailable context and standard speed. Synthetic dispatch copies captured settings into its fixture effective state; it does not enforce a real model or permission mode. Request resolution reports fixture confirmation, not provider receipt or asynchronous-answer integration.
+Prompt submission captures the supplied settings and attachment content in its queued item. Queue text/settings edits preserve existing attachment captures. Fixture settings admit only the fixture model and permissions, low/medium/high effort, unavailable context and standard speed. Synthetic dispatch copies captured settings into its fixture effective state; it does not enforce a real model or permission mode. Request resolution reports fixture confirmation, not provider receipt or asynchronous-answer integration.
 
 Current bounds: 768 KiB command bodies; 16,384-byte prompts; 32 queued prompts per thread; eight attachments with at most 64 KiB content each; 4 MiB command-result snapshots; 128 KiB view bodies; 4,096-byte individual answers; 64 retained terminal fixtures; 32 children per thread, with older full child detail archived into activity; 128 activity items per thread, with a truncation notice. These are implementation limits, not approved product budgets. Commands/receipts, named views, migration backups and shutdown outcome records do not yet have retention policies; prolonged fixture use can grow storage.
 
@@ -148,7 +154,7 @@ Current bounds: 768 KiB command bodies; 16,384-byte prompts; 32 queued prompts p
 
 [go.mod](../../apps/go/go.mod) pins Go 1.27.1, Bubble Tea 2.0.9, Bubbles 2.2.1, Lip Gloss 2.0.6, modernc SQLite 1.59.0 and coder/websocket 1.8.15, with checked-in module sums. Tea/Bubbles/Lip Gloss supply input/rendering, composer widgets and styling but add terminal compatibility work. These maintained releases were verified through the public Go module proxy and their downloaded versioned source on 2026-09-19. The existing transitive `uniseg` 0.4.7 dependency is now direct for grapheme-safe editing; `x/ansi` 0.11.8 provides cell-aware clipping/sanitization, and `x/sys` 0.48.0 supplies Unix locks and terminal queries. Their cost is a pinned Unicode/terminal implementation surface that still needs compatibility checks. Pure-Go SQLite avoids a cgo deployment dependency at the cost of a larger dependency/binary footprint. WebSocket support supplies transport framing and connection handling; application authentication, versioning and catch-up remain this repository's responsibility. The POSIX lock/process implementation currently targets macOS/Linux; Windows remains outstanding. cobra 1.10.2 (with pflag 1.0.9 and the Windows-only mousetrap 1.1.0) supplies subcommand parsing, per-command help and shell completion for the command line; staticcheck 0.8.1 and govulncheck 1.8.0 are pinned as go.mod `tool` dependencies for `make lint` and `make vuln`, so they are reproducible without entering the binary. See [ADR 0012](../adr/0012-go-cli-framework.md).
 
-The fixture runner is intentionally bounded to synthetic work. Workspace file context capture is limited to the source-backed UTF-8 attachment path described below. There are no workspace file writes, Git mutations, real agent jobs or interactive terminal subprocesses. Application persistence is real. A displayed terminal's controller field is fixture state, not a verified PTY controller contract. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
+The fixture runner is intentionally bounded to synthetic work. Workspace file context capture is limited to the source-backed UTF-8 attachment path described below. The fixture runner performs no workspace file writes, Git mutations, real agent jobs or interactive terminal subprocesses; selected ACP agents can perform their own direct operations. Application persistence is real. A displayed terminal's controller field is fixture state, not a verified PTY controller contract. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
 
 ## Evidence and next slice
 
@@ -158,11 +164,11 @@ empty-host maximize changes with their tests and capture provenance. Reopening
 loads the new UI; an already running server must be restarted to load the finite
 demo lifecycle, after which unfinished work still requires explicit Resume.
 
-[Feasibility evidence](../research/go-feasibility-2026-09-19.md) records isolated Yjs, merge, Go VT, Bun/Ink and Bun PTY probes, including exact versions and limits. The [validation report](../research/go-slice-validation-2026-09-19.md) records passed build/race checks, cross-build scope, UI regression tests, render captures and practical PTY checks. Required terminal/SSH/tmux coverage and live provider checks remain pending.
+[Feasibility evidence](../research/go-feasibility-2026-09-19.md) records isolated Yjs, merge, Go VT, Bun/Ink and Bun PTY probes, including exact versions and limits. The [validation report](../research/go-slice-validation-2026-09-19.md) records passed build/race checks, cross-build scope, UI regression tests, render captures and practical PTY checks. Required terminal/SSH/tmux coverage remains incomplete; the dated ACP section below records the later live-provider evidence.
 
 Backend validation on 2026-09-19: `GOCACHE=/tmp/tui-go-build go test -race ./internal/server ./internal/storage ./internal/lifecycle` passed with loopback-listener permission. Checks cover authentication, lock contention, detached fixture progress, initial WebSocket catch-up, deduplication and stale revisions, restart Resume gating, view CAS and migration backup, and confirmed graceful stop. Storage/lifecycle tests were rerun after adding backup-directory syncing and passed. This evidence is limited to the tested Go fixture implementation.
 
-The next implementation slice is one pinned ACP adapter with initialization, capability negotiation, a real prompt, confirmed settings, activity streaming, cancellation and reconnect without resubmission; see the [validation report](../research/go-slice-validation-2026-09-19.md#next-implementation-slice). Use interactive review to refine geometry, focus and controls alongside that slice. Resolve native shared-document convergence/own-edit undo and autosave reconciliation before expanding the editor; validate pinned ACP capabilities, continued-work answers and full available child history before claiming integrations; connect server-owned PTYs to a bounded emulator before calling terminal surfaces functional. Rust and Bun reference applications remain required later work.
+The ACP work proposed in the [original validation report](../research/go-slice-validation-2026-09-19.md#next-implementation-slice) now has a first implementation, described below. Use interactive review to refine geometry, focus and controls alongside that slice. Resolve native shared-document convergence/own-edit undo and autosave reconciliation before expanding the editor; validate pinned ACP capabilities, continued-work answers and full available child history before claiming integrations; connect server-owned PTYs to a bounded emulator before calling terminal surfaces functional. Rust and Bun reference applications remain required later work.
 
 A final view-save failure exports a private JSON recovery file under the application home and reports its path; automatic import is deferred. Pending commands retain their identity for explicit Retry. Queued edits preserve the original composer draft; use Commands → Rebase queued edit after conflict before explicitly saving against a newer queue revision.
 
@@ -171,7 +177,7 @@ A final view-save failure exports a private JSON recovery file under the applica
 
 The current UI contract uses grouped Agents and Plan summaries in a shared tinted band, blue working circles, solid green all-completed circles, and explicit hover/focus dismissal only for completed summaries. Individual child inspection remains in Agents. Ordinary message roles use alignment and tint without repeated author headers. Thinking/Waiting follows reported execution state; Stop names the existing interruption action, including while waiting. Send, Stop, paperclip and the unknown context gauge follow the [footer contract](layout.md#controls-and-composer-refinement-2026-09-19). A visible empty right chooser supports maximize; a hidden host has no maximize control.
 
-Fixture footer display names are Demo / Reference / Medium / Simulated; these do not change captured settings or claim provider support. Context telemetry is absent. Real provider menus, effective settings enforcement and measured usage remain integration work.
+Fixture footer display names are Demo / Reference / Medium / Simulated; these do not change captured settings or claim provider support. Fixture context telemetry is absent. ACP menus, acknowledged effective settings and reported context usage are described below.
 
 Summary dismissal is frontend-local per thread. The fixture protocol has no run ID: keys use the latest accepted user activity identity and group/plan content, and observed unfinished/new active work resets dismissal. Unrelated ticks and streaming text do not reopen a dismissed summary. An identical run with no new accepted prompt identity or observed lifecycle transition cannot be distinguished; a real integration must supply stable run identity. This is a limitation, not a claim of durable provider-run tracking. Validation outcomes belong in the implementation's research report.
 
@@ -408,7 +414,7 @@ record the separation of project identity, project overrides and app settings.
 
 ## Draft-first creation and Closed composer
 
-New thread retains one draft per project in the attached client's saved view, including prompt, settings and attachments. It creates no authoritative thread until `thread.start` accepts the initial prompt and explicit agent/settings together. Invalid input leaves the draft intact. `thread.create` remains a legacy API and is not used by this UI. The fixture presets Demo Agent and offers only Reference model; selecting it fills supported defaults. Real Codex and Claude integrations remain implementation step 4.
+New thread retains one draft per project in the attached client's saved view, including prompt, settings and attachments. It creates no authoritative thread until `thread.start` accepts the initial prompt and explicit agent/settings together. Invalid input leaves the draft intact. `thread.create` remains a legacy API and is not used by this UI. The fixture presets Demo Agent and offers only Reference model; selecting it fills supported defaults. The ACP slice below begins the Codex and Claude integration work in step 4.
 
 During active work, including waiting, composer settings show the effective running values read-only and Send captures those values. The prior idle preference remains stored and becomes editable again when idle. Required options gate Send. Queued items retain their own accepted captures.
 
@@ -590,3 +596,151 @@ source <(./bin/tui-go completion zsh)   # bash: source <(./bin/tui-go completion
 without a process; `cmd/tui-go` is a signal-aware `main`. The OS-PTY harnesses in
 `apps/go/scripts/` ([README](../../apps/go/scripts/README.md)) drive this CLI and
 run through `make pty`. See the [CLI and standards review](../research/go-cli-review-2026-09-22.md).
+
+
+## ACP agents — 2026-09-22
+
+**Target setup changed:** the user now requires our own Go ACP adapters shipped
+with the app, using the installed provider CLIs and requiring no separate
+adapter installation. See the [latest handoff](../implementation/agent-integration-handoff.md).
+The commands below describe the existing external-adapter prototype; do not
+install those packages as the next implementation step. The Go replacement is
+not yet implemented, so a missing external adapter still shows unavailable.
+
+The server now connects stable ACP v1 through `github.com/coder/acp-go-sdk`
+v0.13.5 and user-owned adapter executables. The fixture remains available.
+Install the pinned adapters yourself; the application does not download them:
+
+```sh
+npm install -g @agentclientprotocol/claude-agent-acp@0.80.0 @agentclientprotocol/codex-acp@1.12.0
+```
+
+Put `claude-agent-acp` and `codex-acp` on the **server process's PATH**, or set
+`TUI_GO_AGENT_CLAUDE_COMMAND` and `TUI_GO_AGENT_CODEX_COMMAND` to their executable
+paths before starting it. There is no command-settings form or login flow yet:
+adapters use the user's existing CLI authentication. A missing executable shows
+an install hint; required authentication is reported as unauthenticated.
+
+The server automatically discovers the user's installed `claude` and `codex`
+on its PATH and passes their absolute paths to the adapters for both probes and
+thread sessions. It never selects bundled provider runtimes. No runtime-path
+variables are required for normal use. `CLAUDE_CODE_EXECUTABLE` / `CODEX_PATH`
+remain optional explicit local executable overrides; invalid overrides fail
+without fallback. Missing CLIs report unavailable with setup guidance. Probe
+details and server logs identify the selected local path. Shell aliases are not
+executables, and an already-running server keeps its inherited PATH/environment;
+restart the intended server after changing them. Native ACP agents are unaffected.
+
+After publishing discovery, startup probes run concurrently with a 30-second
+limit. Each initializes an adapter and creates then closes a provisional session
+in the project checkout (or Project starting folder). The composer agent menu
+lists Fixture agent, Claude and Codex with unprobed/probing/ready/unauthenticated/
+unavailable states and details. Select an agent in a New thread draft, then
+select a model from its reported options. Probe or Refresh options sends
+`agent.probe`; concurrent requests coalesce. Readiness is a probe result, not a
+guarantee that a later dispatch or account quota will succeed.
+
+Model, effort, permissions, context and speed choices come from reported option
+values. Missing fields retain agent defaults; unmapped options are displayed
+read-only under Agent defaults. Live session options supersede probe results and
+can change when a model changes. Send captures settings; dispatch applies mapped
+values with `session/set_config_option` before `session/prompt` and records the
+acknowledged state as effective settings. Active/waiting settings are read-only.
+Rejection leaves the prompt queued with a visible failure and requires explicit
+retry: the live HTTP check saw a model change reject the captured effort value.
+
+Streamed messages, reported thoughts, tools and plans feed the existing activity
+views. Unknown update kinds remain visible as activity; no hidden reasoning is
+inferred. Stream persistence/publication is coalesced to at most ten times per
+second, with commands and turn outcomes flushed immediately. Stop sends
+`session/cancel` only for active/waiting work. Confirmed cancellation preserves
+partial output and queued input, sets interrupted/NeedsResume, and holds the
+queue. Resume releases queued work; it does not resend the cancelled prompt.
+Reattaching a client catches up without resubmission.
+
+ACP permission calls become blocking approval cards with the agent's choices
+and supplied details. Answers target request identity/revision and the exact
+`ApprovalChoiceID` under the `approval-choice-ids` capability; legacy labels are
+accepted only if unambiguous. The server commits `submitted` / `acp-accepted`,
+then records response preparation as `closed` / `acp-unconfirmed`. Neither is
+upstream receipt evidence. The original connection generation, session, turn and
+pending callback must still match. The bounded Claude route below is supported;
+other ACP question dialects remain rejected. The Activity inspector distinguishes acceptance,
+uncertainty and cancellation, and legacy `acp-delivered` is never confirmed.
+See the [delivery checkpoint](../implementation/request-delivery-checkpoint.md).
+In the earlier [adapter probe](../research/acp-live-probe-2026-09-22.md),
+Claude requested approval for a file write while Codex wrote within its checkout
+without a request in its nominally cautious mode. Permission names do not prove
+sandboxing or matching approval boundaries. No `fs` or `terminal` client
+capabilities are advertised; adapters may still access files and processes
+directly. Per-checkout writer scheduling remains unimplemented; this slice
+does not establish safe concurrent write-capable turns in the same checkout.
+
+`usage_update` supplies context occupancy/capacity, source and freshness to the
+gauge and Usage inspector. Missing telemetry, subscription windows and cost are
+unavailable; the application fetches no external pricing/quota data and invents
+no measurements. ACP child-agent dialects and real-agent steering are not
+negotiated in this slice, so the Agents surface has no structured ACP children
+and Steer remains unavailable for these threads. MCP, images and general
+continued-work questions are not validated integrations.
+
+Processes belong to the background server, one per ACP thread session. TUI exit
+leaves them running; server stop closes them. A restarted server cannot reattach
+the old process: interrupted work requires explicit Resume. The next queued
+dispatch starts a new process and attempts `session/load` when advertised,
+otherwise starts a new
+session with a visible context-restoration notice. Pending approvals from a lost
+process become `closed` / `acp-undeliverable`; submitted answers and old
+`acp-delivered` records become `closed` / `acp-uncertain`. The accepted snapshot
+is preserved and never replayed. Stale answers cannot reach a new process.
+Real `session/load` recovery has not been exercised live, and ACP work is not
+eligible for automatic restart continuation.
+
+The [personal-prototype recovery continuation](../implementation/agent-recovery-checkpoint.md)
+commits dispatch before provider I/O. A post-dispatch failure keeps the full
+capture in history and requires Resume; it never puts that prompt back in the
+queue. Send preserves this failure warning/gate while adding new queued input.
+Pre-dispatch setup/settings failures retain unsent work. Current-turn captures
+survive long streams within the retention bound. Approval admission now saves
+before publication and reserves accepted-choice capacity, like native questions.
+[Fresh live checks](../research/agent-recovery-live-2026-09-22.md) cover the
+bounded Claude native question route, unconfirmed answer/restart states, and
+both providers' Stop/Resume. They do not establish authoritative Answered
+receipts, general question support or live session loading.
+
+The additive server capabilities are `acp-agents`, `agent-probe`,
+`acp-permissions`, `acp-cancel` and `approval-choice-ids`. Rebuild and restart the intended server to load
+them; relaunching only the client retains the old backend and its environment.
+From `apps/go`, after detaching the old client:
+
+```sh
+make build
+./bin/tui-go server stop
+./bin/tui-go --client desk
+```
+
+Use the same `TUI_GO_HOME` for all three commands and set adapter PATH/overrides
+before launch. For isolated checks, choose a separate absolute temporary home.
+Stopping interrupts owned work; restart follows the recovery rules above.
+
+The [handoff](../implementation/acp-live-validation-handoff.md) records live
+HTTP checks of both adapters' pong turns, startup/refresh probes, settings and
+usage, plus Claude cancel/resume and permission delivery. These are distinct
+from OS-PTY evidence in the [validation report](../research/go-acp-2026-09-22.md).
+The handoff also records shutdown defects and one unreproduced shutdown deadline
+failure; consult that report for subsequent fixes and checks. Evidence is limited
+to one macOS machine and operator accounts, with no SSH/tmux, live session-load,
+load-testing or multi-client ACP claim. See the [checkpoint](../implementation/acp-checkpoint.md)
+and [ADR 0013](../adr/0013-server-owned-acp-agent-processes.md) for the implementation
+contract and remaining limits.
+
+## Bounded native questions — 2026-09-22
+
+Pinned Claude adapter 0.80.0 now has a bounded blocking AskUserQuestion route
+through `elicitation/create` and the existing app `request.answer` command.
+It supports 1–4 questions, single/multiple choice, supported Other text and
+optional omissions. It preserves accepted snapshots without claiming delivery
+confirmation. Codex forms/steering, general MCP/URL forms, child questions,
+true asynchronous questions, fallback scheduling and Answered history remain
+unavailable. See the [implementation checkpoint](../implementation/native-question-checkpoint.md)
+for exact limits and [validation evidence](../research/native-questions-2026-09-22.md).

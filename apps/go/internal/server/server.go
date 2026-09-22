@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/fixture"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 	"github.com/muschterm/tui/apps/go/internal/storage"
@@ -41,6 +43,22 @@ type engine struct {
 	stopping    bool
 	// resolve replaces canonicalProjectPath in tests.
 	resolve func(string) (string, error)
+	// launch starts an agent connection; tests substitute an in-process agent.
+	launch agent.Launcher
+	log    *slog.Logger
+	// runctx bounds every agent child process the server owns.
+	runctx context.Context
+	// runs holds one live agent connection per ACP thread, and probes the
+	// agent IDs whose probe is in flight.
+	runs    map[string]*acpRun
+	probes  map[string]bool
+	probeWG sync.WaitGroup
+	// Streamed agent output persists and publishes at a bounded rate; commands
+	// and turn outcomes flush immediately.
+	dirty          bool
+	flushScheduled bool
+	lastFlush      time.Time
+	flushErr       error
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -50,15 +68,31 @@ func clone(s protocol.Snapshot) protocol.Snapshot {
 	return n
 }
 
+// clientSnapshot exposes the normalized contract, not provider form payloads
+// retained for recovery/diagnostics. This projection never mutates storage.
+func clientSnapshot(s protocol.Snapshot) protocol.Snapshot {
+	n := clone(s)
+	for i := range n.Threads {
+		for j := range n.Threads[i].Requests {
+			n.Threads[i].Requests[j].SourcePayload = nil
+		}
+	}
+	return n
+}
+
 func (e *engine) publish() {
 	for ch := range e.subscribers {
 		select {
-		case ch <- clone(e.snap):
+		case ch <- clientSnapshot(e.snap):
 		default:
 			close(ch)
 			delete(e.subscribers, ch)
 		}
 	}
+}
+
+func newEngine(snap protocol.Snapshot, st *storage.Store) *engine {
+	return &engine{snap: snap, store: st, subscribers: map[chan protocol.Snapshot]bool{}, runs: map[string]*acpRun{}, probes: map[string]bool{}}
 }
 
 func (e *engine) command(c protocol.Command) (protocol.Receipt, error) {
@@ -137,7 +171,7 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	}
 	defer e.mu.Unlock()
 	next := clone(e.snap)
-	target, err := applyResolved(&next, captured, resolved)
+	target, err := e.applyCommand(&next, captured, resolved)
 	if err != nil {
 		return protocol.Receipt{}, err
 	}
@@ -154,7 +188,9 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 		return protocol.Receipt{}, err
 	}
 	e.snap = next
+	e.lastFlush, e.dirty = time.Now(), false
 	e.publish()
+	e.afterCommit(c, target)
 	return r, nil
 }
 
@@ -165,7 +201,8 @@ func (e *engine) tick() error {
 	changed := false
 	for i := range next.Threads {
 		t := &next.Threads[i]
-		if t.NeedsResume || t.State != "running" {
+		// ACP threads advance through their dispatch runner, not fixture ticks.
+		if t.NeedsResume || t.State != "running" || agent.IsACP(t.AgentID) {
 			continue
 		}
 		changed = true
@@ -297,6 +334,14 @@ func projectedSize(s protocol.Snapshot) int {
 	encoded, _ := json.Marshal(s)
 	size := len(encoded)
 	for i := range s.Threads {
+		for _, request := range s.Threads[i].Requests {
+			if request.Kind == "approval" && request.DeliveryRoute == "native-response" && request.State == "pending" {
+				size += nativeApprovalAnswerReserve(request)
+			}
+			if request.Kind == "question" && request.DeliveryRoute == "native-response" && request.State == "pending" && len(request.SourcePayload) > 0 {
+				size += nativeAnswerReserve
+			}
+		}
 		for _, p := range s.Threads[i].Queue {
 			queued, _ := json.Marshal(p)
 			dispatched, _ := json.Marshal(fixturePromptActivity(&s.Threads[i], p))
@@ -454,16 +499,20 @@ func Serve(ctx context.Context, home string) error {
 	if !slices.Contains(snap.Capabilities, "thread-lifecycle") {
 		snap.Capabilities = append(snap.Capabilities, "thread-lifecycle")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info"} {
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
 	}
+	// Agent definitions are server-owned: an existing home gains the configured
+	// connections on start and a changed executable invalidates its probe.
+	agent.Ensure(&snap, os.Getenv)
 	snap.InstanceID = ID()
 	if err = st.Save(snap, nil, nil); err != nil {
 		return err
 	}
-	e := &engine{snap: snap, store: st, subscribers: map[chan protocol.Snapshot]bool{}}
+	e := newEngine(snap, st)
+	e.log = slog.Default()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -481,6 +530,17 @@ func Serve(ctx context.Context, home string) error {
 	defer os.Remove(filepath.Join(home, "discovery.json"))
 	runctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	e.mu.Lock()
+	e.runctx = runctx
+	e.mu.Unlock()
+	// Agent readiness is server-pushed: every configured connection is probed
+	// once now so models and settings are available without a user action. The
+	// explicit agent.probe command remains the refresh path and coalesces with
+	// a probe that is still running.
+	go e.probeConfiguredAgents()
+	// Every agent child process is killed before this function returns, even on
+	// a failing path, so no adapter outlives the server that owns it.
+	defer e.stopAgents()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/workspace", e.workspace)
 	mux.HandleFunc("GET /v1/browse", e.browse)
@@ -490,7 +550,7 @@ func Serve(ctx context.Context, home string) error {
 	}
 	mux.HandleFunc("GET /v1/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		e.mu.Lock()
-		s := clone(e.snap)
+		s := clientSnapshot(e.snap)
 		e.mu.Unlock()
 		respond(w, s)
 	})
@@ -523,7 +583,7 @@ func Serve(ctx context.Context, home string) error {
 		watchctx := conn.CloseRead(r.Context())
 		ch := make(chan protocol.Snapshot, 8)
 		e.mu.Lock()
-		ch <- clone(e.snap)
+		ch <- clientSnapshot(e.snap)
 		e.subscribers[ch] = true
 		e.mu.Unlock()
 		defer func() { e.mu.Lock(); delete(e.subscribers, ch); e.mu.Unlock() }()
@@ -563,7 +623,7 @@ func Serve(ctx context.Context, home string) error {
 			http.Error(w, "invalid view", 400)
 			return
 		}
-		saved, err := st.PutView(r.PathValue("id"), v.Data, v.Revision)
+		saved, err := e.putView(r.PathValue("id"), v)
 		if err != nil {
 			var pe *protocol.Error
 			if errors.As(err, &pe) {
@@ -600,7 +660,12 @@ func Serve(ctx context.Context, home string) error {
 		}
 		mux.ServeHTTP(w, r)
 	})
-	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	connections := &httpConnections{}
+	httpServer := &http.Server{
+		Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
+		BaseContext: func(net.Listener) context.Context { return runctx },
+		ConnState:   connections.changed,
+	}
 	errs := make(chan error, 1)
 	go func() { errs <- httpServer.Serve(listener) }()
 	ticker := time.NewTicker(time.Second)
@@ -617,6 +682,16 @@ loop:
 			}
 			break loop
 		case <-ticker.C:
+			e.mu.Lock()
+			flushErr := e.flushErr
+			if flushErr != nil {
+				e.stopping = true
+			}
+			e.mu.Unlock()
+			if flushErr != nil {
+				runErr = fmt.Errorf("persist streamed agent output: %w", flushErr)
+				break loop
+			}
 			if err := e.tick(); err != nil {
 				runErr = fmt.Errorf("persist fixture tick: %w", err)
 				break loop
@@ -626,10 +701,34 @@ loop:
 	cancel()
 	e.mu.Lock()
 	e.stopping = true
+	e.mu.Unlock()
+	// Stop admission and release stalled readers immediately. Drain accepted
+	// handlers before saving the final snapshot on a successful drain. A timed
+	// out handler cannot later mutate storage: commands and views are gated.
+	connections.drain()
+	httpDone := make(chan error, 1)
+	go func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		err := httpServer.Shutdown(stopCtx)
+		if err != nil {
+			// A timeout must not leave sockets alive against closed storage.
+			_ = httpServer.Close()
+		}
+		httpDone <- err
+	}()
+	// Owned agent work is cancelled and its processes ended before the final
+	// record is written, so the snapshot cannot claim work that no longer runs.
+	e.stopAgents()
+	stopErr := <-httpDone
+	e.mu.Lock()
 	final := clone(e.snap)
 	for i := range final.Threads {
 		t := &final.Threads[i]
 		t.RestartEligible = restartEligible(t)
+		if agent.IsACP(t.AgentID) {
+			t.RestartEligible = false
+		}
 		if t.State == "running" || t.State == "waiting" {
 			t.State = "interrupted"
 			t.NeedsResume = true
@@ -646,11 +745,8 @@ loop:
 	final.Revision++
 	saveErr := st.Save(final, nil, nil)
 	e.mu.Unlock()
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stopCancel()
-	stopErr := httpServer.Shutdown(stopCtx)
 	closeErr := st.Close()
-	outcomeErr := errors.Join(runErr, saveErr, stopErr, closeErr)
+	outcomeErr := errors.Join(runErr, shutdownStage("save final state", saveErr), shutdownStage("drain HTTP requests", stopErr), shutdownStage("close storage", closeErr))
 	outcome := protocol.ShutdownOutcome{InstanceID: discovery.InstanceID, Success: outcomeErr == nil}
 	if outcomeErr != nil {
 		outcome.Error = outcomeErr.Error()

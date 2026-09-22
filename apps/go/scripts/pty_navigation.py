@@ -136,7 +136,7 @@ def main():
             a.click_label('Choose model')
             # Outside click dismisses without activating underlying New thread.
             a.click(20, 2)
-            check('Demo model' not in '\n'.join(a.screen())
+            check('Settings · model' not in '\n'.join(a.screen())
                   and view('navigation-a')['DraftThreads'][selected['ID']]['Draft'] == 'Navigation start',
                   'outside click dismisses centered model modal without pass-through')
             a.click_label('Choose model')

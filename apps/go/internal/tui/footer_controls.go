@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muschterm/tui/apps/go/internal/protocol"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
@@ -33,7 +34,7 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 		return composerControl{width: ansi.StringWidth(label) + 2, label: label, key: key, help: help, tone: tone, action: a}
 	}
 	var settings, actions []composerControl
-	for _, s := range composerSettings(t.Agent, selected) {
+	for _, s := range m.composerSettingDisplays(t, selected) {
 		label, help, tone := s.label, title(s.field)+": "+s.label, "setting"
 		settings = append(settings, control(label, "settings:"+s.field, help, tone, action{Kind: "settings", Value: s.field}))
 		if m.configurationLocked() {
@@ -52,8 +53,9 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 	if t.NeedsResume {
 		settings = append(settings, control("Resume", "resume", "Resume saved work", "gold", action{Kind: "resume"}))
 	}
+	gauge, usageHelp := m.usageGauge()
 	actions = append(actions,
-		control(usageGauge(nil, nil)+"  Cost —", "usage", "Context usage / billing / cost · unavailable", "muted", action{Kind: "usage-summary"}),
+		control(gauge+"  Cost —", "usage", usageHelp, "muted", action{Kind: "usage-summary"}),
 		control(m.icon("attach"), "attach", "Attach context", "blue", action{Kind: "attach"}))
 	actions[1].icon = true
 	if activeTurn(t) {
@@ -86,12 +88,12 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 		}
 		return n
 	}
-	compactUsage := func(gauge bool) {
+	compactUsage := func(keep bool) {
 		// Usage owns its own overflow at the start of the right-hand group.
 		// Keep the same key/action so keyboard focus survives compaction.
-		actions[0].label, actions[0].icon = m.icon("more-vertical"), !gauge
-		if gauge {
-			actions[0].label += " " + usageGauge(nil, nil)
+		actions[0].label, actions[0].icon = m.icon("more-vertical"), !keep
+		if keep {
+			actions[0].label += " " + gauge
 		}
 		actions[0].width = ansi.StringWidth(actions[0].label) + 2
 	}
@@ -194,18 +196,65 @@ func (m *Model) openComposerOverflow() {
 	}
 }
 
-// Telemetry is not part of the fixture protocol. Keep all requested usage
-// fields explicit without deriving percentages or money from transcript text.
+// usageTelemetry is the selected thread's agent-supplied context measurement.
+// A missing or incoherent report stays unavailable rather than being repaired.
+func (m *Model) usageTelemetry() *protocol.Usage {
+	u := m.thread().Usage
+	if u == nil || u.Size <= 0 || u.Used < 0 {
+		return nil
+	}
+	return u
+}
+
+// usageGauge renders the context gauge and its help from reported telemetry.
+func (m *Model) usageGauge() (string, string) {
+	u := m.usageTelemetry()
+	if u == nil {
+		return usageGauge(nil, nil), "Context usage / billing / cost · unavailable"
+	}
+	source := safe(u.Source)
+	if source == "" {
+		source = "the agent"
+	}
+	return usageGauge(&u.Used, &u.Size), fmt.Sprintf("Context %d of %d reported by %s · billing and cost unavailable", u.Used, u.Size, source)
+}
+
+// usageLines are the requested usage fields. Occupancy comes only from agent
+// telemetry; percentages, money and quota windows are never derived here.
+func (m *Model) usageLines() []string {
+	u := m.usageTelemetry()
+	used, capacity, percentage := "unavailable", "unavailable", "unavailable"
+	source := "no agent telemetry reported"
+	if u != nil {
+		used, capacity = fmt.Sprint(u.Used), fmt.Sprint(u.Size)
+		percentage = fmt.Sprintf("%.0f%%", min(1.0, float64(u.Used)/float64(u.Size))*100)
+		source = safe(u.Source)
+		if source == "" {
+			source = "unnamed agent source"
+		}
+		if reported := safe(u.ReportedAt); reported != "" {
+			source += " · reported " + reported
+		}
+	}
+	return []string{
+		"Context used: " + used,
+		"Context capacity: " + capacity,
+		"Context percentage: " + percentage,
+		"Source: " + source,
+		"Billing mode: unknown",
+		"Subscription limits: unavailable",
+		"API cost: unavailable",
+	}
+}
+
+// Billing and quota telemetry is not supplied by this protocol. Keep every
+// requested field explicit without deriving money or windows from transcripts.
 func (m *Model) openUsageSummary() {
-	m.showMenu("Usage", []menuItem{
-		{"Context used: unavailable", action{Kind: "noop"}},
-		{"Context capacity: unavailable", action{Kind: "noop"}},
-		{"Context percentage: unavailable", action{Kind: "noop"}},
-		{"Billing mode: unknown", action{Kind: "noop"}},
-		{"Subscription limits: unavailable", action{Kind: "noop"}},
-		{"API cost: unavailable", action{Kind: "noop"}},
-		{"Usage details", action{Kind: "usage"}},
-	})
+	var items []menuItem
+	for _, line := range m.usageLines() {
+		items = append(items, menuItem{line, action{Kind: "noop"}})
+	}
+	m.showMenu("Usage", append(items, menuItem{"Usage details", action{Kind: "usage"}}))
 }
 
 func (m *Model) renderComposerControls(f *frame, r shell.Rect, y int) int {

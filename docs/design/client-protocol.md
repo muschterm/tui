@@ -40,10 +40,71 @@ Agent settings must expose requested, pending and acknowledged effective values 
 
 Expose the [question contract](questions.md) through server-owned request identity, revision, originating thread/turn/child and upstream connection scope, execution mode and delivery state. Keep question navigation and unsent drafts per client. Snapshot/update recovery includes pending, resolved, withdrawn and uncertain requests, with accepted answers distinct from drafts.
 
+All frontends use one question/answer contract. The server owns the adapter's
+delivery route and private upstream correlation; clients submit validated
+answers to the application request, never vendor payloads. Prefer native
+structured responses. A declared turn-ending fallback may deliver through a
+correlated upstream continuation turn while preserving application request
+identity, captured settings, queue/writer admission and explicit Resume gates.
+Advertise this separately from native blocking and true asynchronous delivery;
+never select it implicitly after a native response fails. Preserve original
+question/option identities and accepted snapshots, including duplicate labels.
+Approvals remain distinct authorization requests. See
+[ADR 0015](../adr/0015-app-owned-question-contract.md).
+
 Answer submission is a request-specific command, separate from normal prompt queuing. Reconcile competing answers and lost acknowledgments; reject a stale revision or already-resolved request without discarding unsent text. Server acceptance and confirmed provider delivery are separate outcomes. Advertise blocking and continued-work asynchronous delivery separately; a responsive client does not prove the requesting agent continues work. After restart, require explicit Resume and request revalidation rather than replying to old RPC identifiers.
+
+### Go approval delivery continuation — 2026-09-22
+
+Protocol v1 gains optional `Command.ApprovalChoiceID`, advertised by
+`approval-choice-ids`. Use the offered ID for identity-bearing approvals;
+legacy fixture approvals without IDs retain unambiguous label submission.
+Do not mix the ID with `Answers` or `QuestionAnswers`. A server rejects unknown,
+ambiguous, stale or unsupported answers before committing them.
+
+The request preserves its card plus `TurnID`, `DeliveryRoute` (currently
+`native-response`), `SubmissionID`, `SubmittedRevision`, and accepted
+`ApprovalChoiceID`/display answer. Connection generation, upstream session and
+pending callback remain server-private and must still match at handoff.
+`submitted` / `acp-accepted` is durable local acceptance;
+`closed` / `acp-unconfirmed` means the callback response was prepared, without
+write or receipt evidence. `acp-cancelled` and `acp-undeliverable` close calls
+without an answer reaching the response boundary. Restart converts accepted,
+unconfirmed and legacy `acp-delivered` records to `closed` / `acp-uncertain`,
+preserving accepted content without replay. Generic turn/tool completion cannot
+promote any of those values into confirmed delivery or Answered history.
+
+Fields are additive in snapshot JSON, so no SQLite schema change is needed.
+Absent legacy fields remain absent; no origin, receipt or accepted identity is
+invented. Fixture confirmation is unchanged. The subsequent bounded Claude
+question dialect is described below; confirmation extensions and fallback
+scheduling remain future work.
+See the [implementation checkpoint](../implementation/request-delivery-checkpoint.md).
 
 ## Authentication and verification boundary
 
 Loopback placement does not replace authentication. Discovery and credentials must select the intended application-home server; forwarding does not authorize other homes or users. The Go slice provisions a per-incarnation bearer token in private application-home discovery; remote and browser credential flows remain design work. A future browser client needs explicit Origin validation and CSRF protections appropriate to its authentication flow; these are security boundaries for future implementation, not authorization for direct network exposure.
 
 [Go backend tests](../../apps/go/internal/server/server_test.go) cover duplicate commands, bounded slow-subscriber disconnection, initial snapshot catch-up, restart awaiting Resume, competing fixture approvals, fixture-configuration rejection and unauthorized connections. [View tests](../../apps/go/internal/storage/storage_test.go) cover competing and delayed saves through revision checks. Incompatible peers, unsupported live-provider capabilities, transport-level lost acknowledgments, injected snapshot/live races, concurrent document edits and own-undo, external conflicts and real terminal ownership remain unverified. This slice replaces full snapshots rather than exposing replay cursors. Protocol fixtures and failure injection must verify behavior across all three implementations before claiming interoperability.
+
+### Go native-question continuation — 2026-09-22
+
+No second answer endpoint or provider payload enters frontend commands. The
+existing typed `Questions` and `QuestionAnswers` carry native answers; exact
+unique option values serve as identities for the pinned label-valued dialect.
+Ambiguous duplicate labels or duplicate original question text are rejected,
+not assigned misleading replacement identities. Client drafts remain local.
+
+The server retains a bounded original `SourcePayload` in stored request JSON,
+but removes it from HTTP snapshots, initial WebSocket state and updates.
+The normalized card, turn, revision, submission and accepted answer remain
+public. Source bytes are provenance only: recovery never recreates a callback
+from them. Live connection generation/session/RPC callback stay private.
+No SQLite schema migration is required; absent older fields remain absent.
+
+Claude 0.80.0 questions use the same accepted/unconfirmed/uncertain lifecycle
+as approvals. RPC cancellation, Stop, turn end and disconnect invalidate the
+callback; neither callback return nor generic turn completion confirms an answer.
+Each pending native question reserves bounded answer capacity in command
+admission. Initial source/question persistence must succeed before publication.
+See [exact dialect and limits](../implementation/native-question-checkpoint.md).

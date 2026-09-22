@@ -190,7 +190,7 @@ func (m *Model) acceptThreadOperation(msg commandMsg) bool {
 	case "thread.start":
 		m.state.StartedDraft = &startedDraft{ThreadID: msg.receipt.TargetID, Command: msg.command, Revision: msg.receipt.Revision}
 		m.reconcileThreadMembership()
-		m.status = "Initial prompt accepted · Demo"
+		m.status = "Initial prompt accepted"
 	case "thread.close":
 		if m.state.Active == msg.command.ThreadID {
 			m.selectThread(m.nextOpenThread(msg.command.ThreadID))

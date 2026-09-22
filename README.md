@@ -2,9 +2,38 @@
 
 A documented foundation for polished terminal applications in Go, Rust, and Bun. The visual target combines Codex’s workspace composition with the richer color, icons, images, and activity hierarchy of Omarchy and herdr, adapted to terminal cells: hideable navigation, a central workspace and prompt, a bottom panel inside the center column, and a right sidebar for files, Git, and activity inspectors.
 
-The deliverable is a shared behavior specification and three complete native server/TUI reference apps. **Go comes first**, using Bubble Tea and the Charm ecosystem; Rust uses Ratatui, and Bun uses TypeScript + React + public Ink with Bun.Terminal. The first Go slice now supplies a persistent background server and interactive shell with fixture activity. Agent, file, Git and terminal integrations remain incomplete; the root Bun entry point remains a bootstrap placeholder. See [current scope and launch instructions](docs/design/go-slice.md).
+The deliverable is a shared behavior specification and three complete native server/TUI reference apps. **Go comes first**, using Bubble Tea and the Charm ecosystem; Rust uses Ratatui, and Bun uses TypeScript + React + public Ink with Bun.Terminal. The Go slice supplies a persistent background server, interactive shell and a first ACP integration for pinned Claude/Codex adapters, alongside fixture activity; [2026-09-22 validation](docs/research/go-acp-2026-09-22.md) distinguishes live HTTP results from terminal evidence. Broader agent, file, Git and terminal integrations remain incomplete; the root Bun entry point remains a bootstrap placeholder. See [current scope and launch instructions](docs/design/go-slice.md).
 
 ## Start here
+
+**Next agent-integration task:** [implementation handoff](docs/implementation/agent-integration-handoff.md)
+records the accepted ACP/official-runtime direction, unified question contract,
+UCF reference findings, remaining adapter decisions and validation checklist.
+**Latest direction:** build our own Go ACP adapters, shipped with the application,
+around installed Claude/Codex CLIs. The user rejects separate npm/Node adapter
+installations. That replacement is not implemented yet; the handoff records
+the acceptance criteria and preserved prototype work.
+The current runtime still uses the prototype adapters; broader question and
+provider parity remain incomplete. The
+[request-delivery continuation](docs/implementation/request-delivery-checkpoint.md)
+adds exact approval option IDs, truthful acceptance/recovery states and live
+connection guards. The bounded [Claude native-question slice](docs/implementation/native-question-checkpoint.md)
+uses the same answer contract. The [latest personal-prototype continuation](docs/implementation/agent-recovery-checkpoint.md)
+adds durable dispatch, approval capacity guards and recovery without prompt
+replay. [Live evidence](docs/research/agent-recovery-live-2026-09-22.md) covers
+Claude native questions and Codex prompt/cancel/restart; authoritative answer
+receipts, other question dialects and fallback remain unavailable.
+The versioned [Claude](docs/research/claude-integration-matrix-2026-09-22.md) and
+[Codex](docs/research/codex-integration-matrix-2026-09-22.md) comparisons favor
+adapter reuse with targeted fixes as their earlier recommendation; the user's
+subsequent no-extra-install requirement selects our own Go adapters instead.
+Existing official-runtime login is used for
+the selected personal prototype; distributed Claude SDK product eligibility
+remains open.
+
+Claude and Codex use your installed CLIs, discovered automatically on the
+server's PATH. ACP adapters provide protocol translation; bundled provider
+runtimes are never used as a fallback. See [runtime setup](docs/design/go-slice.md#acp-agents--2026-09-22).
 
 1. Read [the design brief](docs/design/brief.md) for accepted requirements and [the glossary](CONTEXT.md) for terminology.
 2. Follow [AGENTS.md](AGENTS.md) and [the coding and verification contract](docs/design/quality.md).
@@ -45,6 +74,12 @@ Each application has its own identity. Executable names, home directories, and e
 
 - [Cell-native component state](docs/adr/0008-cell-native-component-state.md)
 - [Turn-bound queued-message steering](docs/adr/0009-turn-bound-steering.md)
+- [Environment settings and recovery](docs/adr/0010-environment-settings-and-recovery.md)
+- [First-Send thread creation](docs/adr/0011-first-send-thread-creation.md)
+- [Go CLI framework](docs/adr/0012-go-cli-framework.md)
+- [Server-owned ACP agent processes](docs/adr/0013-server-owned-acp-agent-processes.md)
+- [ACP boundary and official agent runtimes](docs/adr/0014-acp-boundary-official-agent-runtimes.md)
+- [Application-owned question contract](docs/adr/0015-app-owned-question-contract.md)
 
 The accepted [component construction and interaction states](docs/design/components.md)
 specify variants, selection, hover and keyboard focus.

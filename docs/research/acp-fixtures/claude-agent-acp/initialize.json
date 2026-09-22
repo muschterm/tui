@@ -1,0 +1,92 @@
+{
+  "note": "session/initialize with clientCapabilities fs=false, terminal=false",
+  "call": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "clientCapabilities": {
+          "auth": {},
+          "fs": {}
+        },
+        "clientInfo": {
+          "name": "tui-acp-probe",
+          "version": "0.0.0"
+        },
+        "protocolVersion": 1
+      }
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "_meta": {
+            "claudeCode": {
+              "promptQueueing": true
+            },
+            "authStatus": {}
+          },
+          "promptCapabilities": {
+            "image": true,
+            "embeddedContext": true
+          },
+          "mcpCapabilities": {
+            "http": true,
+            "sse": true
+          },
+          "auth": {
+            "logout": {}
+          },
+          "providers": {},
+          "loadSession": true,
+          "sessionCapabilities": {
+            "additionalDirectories": {},
+            "close": {},
+            "delete": {},
+            "fork": {},
+            "list": {},
+            "resume": {},
+            "subagents": {}
+          }
+        },
+        "agentInfo": {
+          "name": "@agentclientprotocol/claude-agent-acp",
+          "title": "Claude Agent",
+          "version": "0.80.0"
+        },
+        "authMethods": [],
+        "_meta": {
+          "jetbrains": {
+            "air": {
+              "version": 1,
+              "capabilities": [
+                "sessionFailure",
+                "agentFileChangeReport",
+                "nativeSubagentSessions",
+                "asyncTasks",
+                "recommendedValue"
+              ]
+            }
+          },
+          "steering": {
+            "supported": true
+          },
+          "goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": [
+              "set",
+              "clear"
+            ]
+          }
+        }
+      }
+    },
+    "requestAt": "+0.005s",
+    "responseAt": "+0.153s"
+  },
+  "timing": 0.149
+}

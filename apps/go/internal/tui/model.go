@@ -63,9 +63,10 @@ type savedView struct {
 }
 
 type action struct {
-	Kind, ID, Value string
-	Index           int
-	Revision        int64
+	Kind, ID, Value  string
+	ApprovalChoiceID string
+	Index            int
+	Revision         int64
 }
 
 type menuItem struct {
@@ -275,7 +276,7 @@ func (m *Model) thread() protocol.Thread {
 func (m *Model) viewState() *threadView {
 	if m.creatingThread() {
 		if m.state.DraftThreads[m.state.DraftProjectID] == nil {
-			m.state.DraftThreads[m.state.DraftProjectID] = &threadView{Agent: "Fixture agent"}
+			m.state.DraftThreads[m.state.DraftProjectID] = m.newDraftView()
 		}
 		return m.state.DraftThreads[m.state.DraftProjectID]
 	}
@@ -545,6 +546,9 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	if c.Kind == "prompt.reopen-send" {
 		capability = "closed-thread-send"
 	}
+	if c.Kind == "agent.probe" {
+		capability = "agent-probe"
+	}
 	if !slices.Contains(m.snapshot.Capabilities, capability) {
 		m.status = "Server capability unavailable: " + capability
 		return nil
@@ -556,7 +560,7 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	}
 	c.Version = protocol.Version
 	c.ID = identity()
-	global := capability == "project-management" || capability == "project-settings" || capability == "app-settings" || capability == "thread-start"
+	global := capability == "project-management" || capability == "project-settings" || capability == "app-settings" || capability == "thread-start" || capability == "agent-probe"
 	if c.ThreadID == "" && !global {
 		c.ThreadID = m.state.Active
 	}
@@ -789,6 +793,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.command.Kind == "request.answer" {
 			m.clearRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, false)
+			m.status = "Answer accepted by server · upstream confirmation unavailable"
+			cmd = m.showNotice(m.status)
 		}
 		if m.acceptThreadOperation(msg) {
 			return m, m.nextActivityTick()

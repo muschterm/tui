@@ -124,6 +124,14 @@ _Avoid_: Paused thread when unrelated delegated work can still proceed
 A question that stays open for a later answer while its requesting agent continues work.
 _Avoid_: Asynchronous callback when describing whether agent execution continues
 
+**Turn-ending question**:
+A question left for the user after the requesting agent ends its turn; its answer informs a subsequent turn.
+_Avoid_: Blocking tool call, asynchronous question
+
+**Approval request**:
+An identified request for authorization to perform an action with a stated scope and supported decisions.
+_Avoid_: Question when the response grants permission to act
+
 **Subagent run**:
 Work delegated by an agent to a child agent, with its own identity, activity, and available transcript beneath the parent thread.
 _Avoid_: Handoff when the parent agent retains the original thread

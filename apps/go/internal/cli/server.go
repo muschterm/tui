@@ -85,7 +85,7 @@ back.`,
 					return err
 				}
 				if err := lifecycle.Stop(cmd.Context(), home); err != nil {
-					return describeUnreachable(home, err)
+					return describeStopError(home, err)
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), "Server stopped.")
 				return nil
@@ -145,4 +145,11 @@ func describeUnreachable(home string, err error) error {
 		return fmt.Errorf("no server is running for %s", home)
 	}
 	return fmt.Errorf("server for %s is not reachable (stale discovery or shutting down): %w", home, err)
+}
+
+func describeStopError(home string, err error) error {
+	if errors.Is(err, client.ErrNoServer) {
+		return describeUnreachable(home, err)
+	}
+	return fmt.Errorf("could not stop server for %s: %w", home, err)
 }

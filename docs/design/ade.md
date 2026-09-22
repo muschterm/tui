@@ -1,6 +1,6 @@
 # ADE and agent integration
 
-Status: headless Codex/Claude, ACP v1, one chosen agent per thread, background-server ownership, and application-home SQLite persistence are accepted. Exact adapters, wire messages, and remaining recovery details need implementation design. This is a design specification in progress, not a working integration.
+Status: headless Codex/Claude, ACP v1, one chosen agent per thread, background-server ownership, and application-home SQLite persistence are accepted. The [first ACP slice](go-slice.md#acp-agents--2026-09-22) has bounded live evidence. The 2026-09-22 [official-runtime decision](../adr/0014-acp-boundary-official-agent-runtimes.md) and [question normalization](../adr/0015-app-owned-question-contract.md) guide the next slice; exact adapters and remaining wire/recovery details need implementation work.
 
 The application server owns the live ADE and ACP connections. The TUI is an attachable frontend; closing it leaves work running, and reopening catches up. A future web frontend uses the same application boundary. [Server design](server.md)
 
@@ -24,7 +24,21 @@ Each reference app includes its own native server and TUI, implementing this bou
 
 ## Integration direction
 
-Codex and Claude are the initial required agent examples. Copilot is a researched native ACP example. Current maintained adapters already exist for Codex and Claude; reuse them where they meet the agreed contract instead of automatically building translations. Exact distributions, versions, installation ownership, and authentication UX remain decisions. [Agent and adapter research](../research/acp-agents.md)
+Codex and Claude are the initial required agent examples. Use official local
+Claude Code and official `codex app-server` behind ACP. Compare direct
+`claude -p` with the Agent SDK, which runs a local Claude Code binary; verify
+permitted authentication/use before selecting the SDK. SDK-versus-CLI choice
+does not determine billing. Keep login with the official runtime and do not
+silently switch subscription users to API credentials.
+
+Existing adapters remain candidates; reuse them where they meet the agreed
+contract rather than automatically building translations. Exact ownership and
+Claude's route remain open. The current Go prototype uses user-installed,
+pinned external adapters under [ADR 0013](../adr/0013-server-owned-acp-agent-processes.md).
+Compare those with the UCF reference implementation; see the
+[evidence note](../research/agent-integration-options-2026-09-22.md) and
+[implementation handoff](../implementation/agent-integration-handoff.md).
+Copilot remains a researched native ACP example, not verified integration here.
 
 Stable ACP v1 is the accepted baseline. Stdio is the recommended initial transport; v2 and standardized HTTP transport remain drafts in the source research. Provider-specific transports or negotiated extensions must be identified as such. Running the whole TUI remotely over SSH is a separate scenario from running the TUI locally with a remote agent endpoint. [Protocol research](../research/acp-protocol.md)
 
@@ -44,6 +58,7 @@ Prompts submitted while a turn is active enter the thread's visible prompt queue
 - Allow the user to choose an available agent for an agent-assisted Git conflict-resolution job; show the selected agent throughout the job.
 - Present agent permission requests and pending interactions without losing the current editor or Git context. Translate only what the negotiated protocol and adapter support.
 - Present [blocking and asynchronous questions](questions.md) above the prompt, with question tabs and Back/Next navigation for batches. Keep the composer available. Both modes are required integration targets; report capability gaps until continued work and correlated later-answer delivery are verified.
+- Use one application-owned question/answer contract across frontends. Prefer native structured responses; a declared turn-ending fallback may deliver a request-specific answer through a correlated new upstream turn. Preserve actual execution semantics and keep approvals distinct. A fallback does not satisfy the native blocking or true asynchronous integration targets.
 - Preserve a distinct identity for the thread/turn and for the repository state being reviewed. Record a start/end comparison labelled changes observed during this turn; it may include external edits. Provider-reported edits and current/staged/branch diffs remain separately identified. Automatic rollback is deferred.
 - Provide a consistently available [usage display](usage.md) for context occupancy/capacity, applicable subscription quotas, and reported API cost. Values come from the agent stream or adapter-forwarded telemetry; missing data is not zero and must not be filled by external lookups.
 - Include optional inline graphics in the design. Terminal image rendering and an agent's image-input support are separate capabilities; one does not establish the other.
@@ -60,7 +75,7 @@ Client-mediated file access can interact with unsaved buffers; direct agent writ
 ## Remaining decisions
 
 - Policy for optional extensions and minimum capabilities for an agent to count as fully supported; ACP v1 itself is settled.
-- Reuse of existing adapters, user-owned versus managed installation, authentication, and tolerance for preview upstream interfaces.
+- Final adapter ownership, Claude SDK-versus-direct-CLI selection, verified authentication eligibility and supported upstream versions. Codex App Server is selected; the current prototype's user-owned installation policy remains in force pending an explicit change.
 - Prompt queue advancement after interruption and session restoration for a thread's chosen agent. Editing, removing and reordering waiting prompts until execution starts are accepted; dispatch/race mechanics require implementation design. Turn definition and queue-first behavior are settled; handoffs are deferred.
 - Detailed writer scheduling/fairness, optional worktree lifecycle, file access mediation, and permissions/execution boundaries.
 - Detailed server recovery, durable command acceptance, and coherent catch-up implementation. Background ownership, graceful cancellation on explicit stop, application-home SQLite, multiple clients, and loopback HTTP/WebSocket with SSH forwarding are settled.
@@ -68,4 +83,6 @@ Client-mediated file access can interact with unsaved buffers; direct agent writ
 - Conflict-job cancellation/recovery and exact context delivery. The corrected Q10 requires stopping for user review after edits and before staging/continuation.
 - Usage-display placement, telemetry field mappings, and any negotiated adapter extensions; keep separate resolution-job usage identifiable. Required measurements and source restrictions are settled in [usage display](usage.md).
 
-The [interview](interview.md) records decisions as they are made. Runtime and conformance validation have not been performed.
+The [interview](interview.md) records decisions as they are made. The
+[ACP validation report](../research/go-acp-2026-09-22.md) records bounded runtime
+checks; it does not establish full capability or cross-language conformance.

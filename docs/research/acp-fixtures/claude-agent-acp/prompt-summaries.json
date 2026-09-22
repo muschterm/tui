@@ -1,0 +1,236 @@
+{
+  "prompt-pong": {
+    "elapsedSeconds": 2.021,
+    "permissionRequests": null,
+    "rawResult": {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 2,
+        "outputTokens": 4,
+        "cachedReadTokens": 20924,
+        "cachedWriteTokens": 0,
+        "totalTokens": 20930
+      },
+      "_meta": {
+        "quota": {
+          "token_count": {
+            "totalTokens": 20930,
+            "inputTokens": 2,
+            "cachedInputTokens": 20924,
+            "cachedWriteTokens": 0,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 0
+          },
+          "model_usage": [
+            {
+              "model": "claude-haiku-4-5-20251001",
+              "token_count": {
+                "totalTokens": 915,
+                "inputTokens": 903,
+                "cachedInputTokens": 0,
+                "cachedWriteTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 0
+              }
+            },
+            {
+              "model": "claude-fable-5-1",
+              "token_count": {
+                "totalTokens": 20930,
+                "inputTokens": 2,
+                "cachedInputTokens": 20924,
+                "cachedWriteTokens": 0,
+                "outputTokens": 4,
+                "reasoningOutputTokens": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "response": {
+      "_meta": {
+        "quota": {
+          "model_usage": [
+            {
+              "model": "claude-haiku-4-5-20251001",
+              "token_count": {
+                "cachedInputTokens": 0,
+                "cachedWriteTokens": 0,
+                "inputTokens": 903,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 915
+              }
+            },
+            {
+              "model": "claude-fable-5-1",
+              "token_count": {
+                "cachedInputTokens": 20924,
+                "cachedWriteTokens": 0,
+                "inputTokens": 2,
+                "outputTokens": 4,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20930
+              }
+            }
+          ],
+          "token_count": {
+            "cachedInputTokens": 20924,
+            "cachedWriteTokens": 0,
+            "inputTokens": 2,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 20930
+          }
+        }
+      },
+      "stopReason": "end_turn",
+      "usage": {
+        "cachedReadTokens": 20924,
+        "cachedWriteTokens": 0,
+        "inputTokens": 2,
+        "outputTokens": 4,
+        "totalTokens": 20930
+      }
+    },
+    "unsupportedCalledBy": null,
+    "updateKindCounts": {
+      "agent_message_chunk": 2,
+      "available_commands_update": 2,
+      "unknown": 4
+    }
+  },
+  "prompt-tool": {
+    "askModeId": "default",
+    "elapsedSeconds": 4.54,
+    "permissionRequests": [
+      {
+        "_meta": {
+          "permission": {
+            "title": "Write probe.txt",
+            "version": 1
+          }
+        },
+        "options": [
+          {
+            "kind": "allow_once",
+            "name": "Yes",
+            "optionId": "allow-once"
+          },
+          {
+            "kind": "allow_always",
+            "name": "Yes, allow all edits during this session",
+            "optionId": "allow-with-updates"
+          },
+          {
+            "kind": "reject_once",
+            "name": "No",
+            "optionId": "reject"
+          }
+        ],
+        "selected": {
+          "kind": "allow_once",
+          "name": "Yes",
+          "optionId": "allow-once"
+        },
+        "toolCall": {
+          "content": [
+            {
+              "newText": "hi\n",
+              "path": "<SESSION_CWD>/probe.txt",
+              "type": "diff"
+            }
+          ],
+          "kind": "edit",
+          "locations": [
+            {
+              "path": "<SESSION_CWD>/probe.txt"
+            }
+          ],
+          "rawInput": {
+            "content": "hi\n",
+            "file_path": "<SESSION_CWD>/probe.txt"
+          },
+          "status": "pending",
+          "title": "Write probe.txt",
+          "toolCallId": "toolu_01Kdf8K3YKySsBrt7X4wZvdQ"
+        }
+      }
+    ],
+    "response": {
+      "_meta": {
+        "quota": {
+          "model_usage": [
+            {
+              "model": "claude-opus-5[1m]",
+              "token_count": {
+                "cachedInputTokens": 44322,
+                "cachedWriteTokens": 2855,
+                "inputTokens": 4,
+                "outputTokens": 252,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 47433
+              }
+            }
+          ],
+          "token_count": {
+            "cachedInputTokens": 44322,
+            "cachedWriteTokens": 2855,
+            "inputTokens": 4,
+            "outputTokens": 252,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 47433
+          }
+        }
+      },
+      "stopReason": "end_turn",
+      "usage": {
+        "cachedReadTokens": 44322,
+        "cachedWriteTokens": 2855,
+        "inputTokens": 4,
+        "outputTokens": 252,
+        "totalTokens": 47433
+      }
+    },
+    "setSessionMode": "ok",
+    "unsupportedCalledByAgent": null,
+    "updateKindCounts": {
+      "agent_message_chunk": 1,
+      "tool_call": 1,
+      "tool_call_update": 4,
+      "unknown": 5
+    }
+  },
+  "prompt-cancel": {
+    "cancelSentAfterSeconds": 2,
+    "permissionRequests": null,
+    "promptReturnedAfterSeconds": 2.005,
+    "response": {
+      "_meta": {
+        "quota": {
+          "model_usage": [],
+          "token_count": {
+            "cachedInputTokens": 0,
+            "cachedWriteTokens": 0,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 0
+          }
+        }
+      },
+      "stopReason": "cancelled",
+      "usage": {
+        "cachedReadTokens": 0,
+        "cachedWriteTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0
+      }
+    },
+    "updateKindCounts": {
+      "unknown": 2
+    }
+  }
+}

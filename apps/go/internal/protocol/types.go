@@ -16,6 +16,52 @@ type Snapshot struct {
 	InstanceID   string      `json:"instance_id"`
 	Threads      []Thread    `json:"threads"`
 	Terminals    []Terminal  `json:"terminals"`
+	// Agents lists every configured agent connection with its last probed
+	// state. The fixture agent is always present.
+	Agents []Agent `json:"agents,omitempty"`
+}
+
+// Agent is one configured agent connection. Kind is "fixture" or "acp". For
+// acp, Command/Args launch a user-owned ACP stdio executable; State reports the
+// last probe: unprobed, probing, ready, unauthenticated or unavailable, with
+// Detail explaining unavailability or listing authentication methods. Options
+// are the config options advertised by a provisional session; Fields records
+// which option ID feeds each Settings field (empty means that field is not
+// selectable for this agent and the fixed display value applies).
+type Agent struct {
+	ID, Name, Kind string
+	Command        string   `json:"Command,omitempty"`
+	Args           []string `json:"Args,omitempty"`
+	State, Detail  string
+	Version        string `json:"Version,omitempty"`
+	ProbedAt       string `json:"ProbedAt,omitempty"`
+	Revision       int64
+	Options        []ConfigOption `json:"Options,omitempty"`
+	Fields         SettingFields  `json:"Fields,omitempty"`
+	// Capabilities are agent-reported facts from initialize: "load-session",
+	// "image-prompt", "embedded-context", "audio-prompt", "session-close".
+	// Absence means the agent did not report it, never an assumption.
+	Capabilities []string `json:"Capabilities,omitempty"`
+}
+
+// SettingFields maps composer settings fields to the option IDs that supply
+// their values. Settings values are option value IDs, never display names.
+type SettingFields struct{ Model, Effort, Permissions, Context, Speed string }
+
+// ConfigOption mirrors one ACP session config option. Type is "select" or
+// "boolean" (Values then holds "true"/"false"); other types are retained with
+// Current only and are not selectable.
+type ConfigOption struct {
+	ID, Name, Category, Type string
+	Description              string `json:"Description,omitempty"`
+	Current                  string
+	Values                   []ConfigValue `json:"Values,omitempty"`
+}
+
+// ConfigValue is one selectable option value.
+type ConfigValue struct {
+	Value, Name string
+	Description string `json:"Description,omitempty"`
 }
 
 // Settings are the execution settings selected for a prompt or reported as
@@ -25,7 +71,18 @@ type Settings struct{ Model, Effort, Permissions, Context, Speed string }
 // Thread is one conversation with its chosen agent, queue, requests and
 // lifecycle state.
 type Thread struct {
-	ProjectID                                  string `json:"ProjectID,omitempty"`
+	ProjectID  string `json:"ProjectID,omitempty"`
+	AgentID    string `json:"AgentID,omitempty"`
+	SessionID  string `json:"SessionID,omitempty"`
+	StopReason string `json:"StopReason,omitempty"`
+	Error      string `json:"Error,omitempty"`
+	// Options is the live session's current config option catalogue, replaced
+	// whole from every set_config_option response or config_option_update; it
+	// supersedes the probed Agent.Options while the session exists.
+	Options []ConfigOption `json:"Options,omitempty"`
+	// Usage is the latest agent-supplied context telemetry; nil when never
+	// reported. Amounts are as supplied, not computed.
+	Usage                                      *Usage `json:"Usage,omitempty"`
 	Closed                                     bool   `json:"Closed,omitempty"`
 	LifecycleRevision                          int64  `json:"LifecycleRevision,omitempty"`
 	ID, Project, Title, Checkout, Agent, State string
@@ -48,6 +105,13 @@ type Activity struct {
 	ID, Role, Title, Text, State, Detail string
 	TurnID                               string  `json:"TurnID,omitempty"`
 	Prompt                               *Prompt `json:"Prompt,omitempty"`
+}
+
+// Usage is agent-reported context occupancy: Used tokens of Size capacity,
+// with Source naming the reporting notification kind and ReportedAt RFC3339.
+type Usage struct {
+	Used, Size         int64
+	Source, ReportedAt string
 }
 
 // PlanStep is one entry of an agent-reported plan.
@@ -75,15 +139,24 @@ type Answer struct {
 	Text    string
 }
 
-// Request is a pending or resolved question or approval raised by an agent.
+// Request retains a question or approval and its local delivery lifecycle.
+// Closed ACP callbacks are not evidence of upstream resolution.
 type Request struct {
 	ID, Kind, Mode, State, Title, Detail, Origin string
 	Revision                                     int64
 	Questions                                    []Question
 	Choices                                      []string
+	ChoiceIDs                                    []string `json:"ChoiceIDs,omitempty"`
 	Answers                                      []string
 	QuestionAnswers                              []Answer `json:"QuestionAnswers,omitempty"`
 	Delivery                                     string
+	TurnID                                       string `json:"TurnID,omitempty"`
+	DeliveryRoute                                string `json:"DeliveryRoute,omitempty"`
+	SubmissionID                                 string `json:"SubmissionID,omitempty"`
+	SubmittedRevision                            int64  `json:"SubmittedRevision,omitempty"`
+	ApprovalChoiceID                             string `json:"ApprovalChoiceID,omitempty"`
+	// SourcePayload retains bounded source provenance, never a replayable route.
+	SourcePayload json.RawMessage `json:"SourcePayload,omitempty"`
 }
 
 // Attachment kind workspace-file is a Send-time capture request: Source is a
@@ -109,6 +182,7 @@ type Terminal struct {
 // Command is a client request to change server state. ID identifies it across
 // retries; Kind selects the operation and which fields it reads.
 type Command struct {
+	ApprovalChoiceID                             string           `json:"ApprovalChoiceID,omitempty"`
 	Agent                                        string           `json:"Agent,omitempty"`
 	AppSettings                                  *AppSettings     `json:"AppSettings,omitempty"`
 	ProjectSettings                              *ProjectSettings `json:"ProjectSettings,omitempty"`

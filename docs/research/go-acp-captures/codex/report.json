@@ -1,0 +1,40 @@
+{
+  "harness": "120x40 OS PTY; real ACP; isolated application home",
+  "agent": "codex",
+  "no_color": true,
+  "checks": [
+    "selected adapter reports ready",
+    "pong turn completed",
+    "real agent reply is pong",
+    "pong appears in TUI transcript",
+    "no stale disconnected-provider copy",
+    "real-agent acceptance has no fixture label",
+    "Resume sends no duplicate prompt"
+  ],
+  "frames": [
+    "120x40-lightfalse-01-draft",
+    "120x40-lightfalse-02-agents",
+    "120x40-lightfalse-03-models",
+    "120x40-lightfalse-04-prompt",
+    "120x40-lightfalse-05-sent",
+    "120x40-lightfalse-06-reply",
+    "120x40-lightfalse-07-cancelled",
+    "120x40-lightfalse-08-resumed"
+  ],
+  "effective": {
+    "Model": "gpt-6-astra",
+    "Effort": "high",
+    "Permissions": "agent",
+    "Context": "unavailable",
+    "Speed": "off"
+  },
+  "usage": {
+    "Used": 16751,
+    "Size": 258400,
+    "Source": "usage_update",
+    "ReportedAt": "2026-09-22T15:40:57Z"
+  },
+  "result": "PASS",
+  "shutdown": "confirmed",
+  "adapter_processes_reaped": 3
+}

@@ -1,0 +1,6 @@
+{
+  "exitCode": 0,
+  "exitedAfterStdinClose": true,
+  "stderr": "[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=validate-cwd durationMs=0 totalMs=0\n[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=settings durationMs=23 totalMs=24\n[session/query] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 resume=none apiType=native baseUrl=native\n[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=prepare-query durationMs=2 totalMs=26\n[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=sdk-initialize durationMs=536 totalMs=562\n[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=models durationMs=1 totalMs=563\n[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=modes durationMs=0 totalMs=563\n[session/create] sessionId=cc8ae2ac-c33b-43cf-aa86-951a79a84057 phase=register durationMs=0 totalMs=563\n",
+  "waitSeconds": 0.025
+}
