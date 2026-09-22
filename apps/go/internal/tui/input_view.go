@@ -16,8 +16,11 @@ type inputPresentation struct {
 	rows   []string
 }
 
+// Reset returns to native scrolling that follows the insertion cursor.
 func (p *inputPresentation) Reset() { *p = inputPresentation{} }
 
+// ScrollTo moves the reading offset independently of the cursor when the
+// content overflows the visible rows.
 func (p *inputPresentation) ScrollTo(a *textarea.Model, total, offset int) {
 	if total <= a.Height() {
 		p.Reset()
@@ -40,6 +43,7 @@ func (p *inputPresentation) Refresh(a *textarea.Model, total int) {
 	p.offset = max(0, min(p.offset, len(p.rows)-a.Height()))
 }
 
+// Metrics substitutes the reading offset into the native scroll metrics.
 func (p inputPresentation) Metrics(native inputScroll) inputScroll {
 	if p.manual {
 		native.Offset = p.offset
@@ -56,6 +60,7 @@ func (p inputPresentation) RelativeY(a *textarea.Model, y int) int {
 	return y
 }
 
+// View renders the native textarea or the cached rows at the reading offset.
 func (p inputPresentation) View(a *textarea.Model) string {
 	if !p.manual {
 		return a.View()

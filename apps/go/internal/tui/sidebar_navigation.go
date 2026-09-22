@@ -19,11 +19,11 @@ func (m *Model) navigationSections() (open, closed []navigationRow) {
 		if m.state.ProjectFilter != "" && t.ProjectID != m.state.ProjectFilter || query != "" && !strings.Contains(strings.ToLower(t.Title), query) {
 			continue
 		}
-		rows := []navigationRow{{"card-top", t}, {"thread", t}, {"state", t}, {"card-bottom", t}, {kind: "gap"}}
+		// Closed cards keep one content row; state and project stay in help.
 		if t.Closed {
-			closed = append(closed, rows...)
+			closed = append(closed, navigationRow{"card-top", t}, navigationRow{"thread", t}, navigationRow{"card-bottom", t}, navigationRow{kind: "gap"})
 		} else {
-			open = append(open, rows...)
+			open = append(open, navigationRow{"card-top", t}, navigationRow{"thread", t}, navigationRow{"state", t}, navigationRow{"card-bottom", t}, navigationRow{kind: "gap"})
 		}
 	}
 	if len(open) > 0 {
@@ -36,8 +36,6 @@ func (m *Model) navigationSections() (open, closed []navigationRow) {
 	}
 	return
 }
-
-func (m *Model) navigationRows() []navigationRow { open, _ := m.navigationSections(); return open }
 
 func threadSearchRect(r shell.Rect) shell.Rect {
 	return shell.Rect{X: r.X + 2, Y: r.Y + 1, W: max(1, r.W-14), H: 1}
@@ -78,19 +76,19 @@ func (m *Model) renderNav(f *frame, r shell.Rect) {
 	x, w := r.X+2, max(1, r.W-4)
 	input := threadSearchRect(r)
 	f.put(input, m.threadSearch.View())
-	f.hits = append(f.hits, hit{input, action{Kind: "focus", ID: "thread-search"}, "Search thread titles", "thread-search"})
+	f.hits = append(f.hits, hit{Rect: input, Action: action{Kind: "focus", ID: "thread-search"}, Label: "Search thread titles", Key: "thread-search"})
 	controls := x + w - 9
-	f.button(m, controls, r.Y+1, 3, centered(m.icon("folder"), 3), "projects", action{Kind: "projects"}, p.muted, p.nav)
+	f.iconButton(m, controls, r.Y+1, 3, centered(m.icon("folder"), 3), "projects", action{Kind: "projects"}, p.muted, p.nav)
 	f.hits[len(f.hits)-1].Label = "Filter projects · All projects"
 	for _, project := range m.snapshot.Projects {
 		if project.ID == m.state.ProjectFilter {
-			m.renderProjectBadge(f, controls, r.Y+1, project)
+			m.renderProjectBadge(f, controls, r.Y+1, project, p.nav)
 			f.hits[len(f.hits)-1].Label = "Filter projects · " + project.Name
 		}
 	}
-	f.button(m, controls+3, r.Y+1, 3, centered(m.icon("project-add"), 3), "project-add", action{Kind: "project-add"}, p.blue, p.nav)
+	f.iconButton(m, controls+3, r.Y+1, 3, centered(m.icon("project-add"), 3), "project-add", action{Kind: "project-add"}, p.blue, p.nav)
 	f.hits[len(f.hits)-1].Label = "Add an existing project folder"
-	f.button(m, controls+6, r.Y+1, 3, centered(m.icon("compose"), 3), "thread-create", action{Kind: "thread-create"}, p.blue, p.nav)
+	f.iconButton(m, controls+6, r.Y+1, 3, centered(m.icon("compose"), 3), "thread-create", action{Kind: "thread-create"}, p.blue, p.nav)
 	f.hits[len(f.hits)-1].Label = "New thread · also in Commands (F4)"
 	open, closed := m.navigationSections()
 	var heading int
@@ -101,7 +99,7 @@ func (m *Model) renderNav(f *frame, r shell.Rect) {
 	if f.closedNavigation.H > 0 {
 		m.renderNavigationRows(f, f.closedNavigation, closed, m.closedScroll, "closed-navigation")
 	}
-	count := (len(closed) + 1) / 5
+	count := (len(closed) + 1) / 4
 	label := fmt.Sprintf("Closed (%d)", count)
 	caret := m.icon("caret-down")
 	a := action{Kind: "recents-collapse"}
@@ -118,13 +116,13 @@ func (m *Model) renderNav(f *frame, r shell.Rect) {
 		rule = "-"
 	}
 	label += " " + strings.Repeat(rule, max(0, w-ansi.StringWidth(label)-ansi.StringWidth(caret)-2)) + " " + caret
-	headingStyle := m.componentStyle(squareFill, m.controlState(false, "recents"), p.muted, p.nav)
+	headingStyle := m.componentStyle(squareFill, m.controlState(false, "recents"), m.dimmed(), p.nav)
 	headingStyle.bold = true
 	f.styledButton(x, heading, w, label, "recents", a, headingStyle)
 	// Use the existing gap above app actions; keep Closed and its viewport
 	// fixed, and leave the separator outside all interactive hit rectangles.
 	f.text(x, r.Y+r.H-3, w, strings.Repeat(rule, w), p.line, p.nav)
-	f.button(m, x, r.Y+r.H-2, 3, centered(m.icon("settings"), 3), "app-settings", action{Kind: "app-settings"}, p.muted, p.nav)
+	f.iconButton(m, x, r.Y+r.H-2, 3, centered(m.icon("settings"), 3), "app-settings", action{Kind: "app-settings"}, p.muted, p.nav)
 	f.hits[len(f.hits)-1].Label = "Settings"
 }
 
@@ -133,7 +131,7 @@ func (m *Model) renderNavigationRows(f *frame, r shell.Rect, rows []navigationRo
 		return
 	}
 	p := m.colors()
-	f.hits = append(f.hits, hit{r, action{}, "Threads · wheel / arrows to scroll", key})
+	f.hits = append(f.hits, hit{Rect: r, Action: action{}, Label: "Threads · wheel / arrows to scroll", Key: key})
 	offset := min(max(0, scroll), max(0, len(rows)-r.H))
 	x, w := r.X+1, max(1, r.W-2)
 	for i := 0; i < r.H && offset+i < len(rows); i++ {
@@ -197,7 +195,9 @@ func projectBadgeColorName(project protocol.Project) string {
 	return names[h.Sum32()%uint32(len(names))]
 }
 
-func (m *Model) projectBadgeStyle(project protocol.Project) componentVisual {
+// projectBadgeStyle resolves the badge over the surrounding background bg,
+// which only shows through in the no-color profile.
+func (m *Model) projectBadgeStyle(project protocol.Project, bg string) componentVisual {
 	p := m.colors()
 	color := projectBadgeColorName(project)
 	// A small saturated ground and a related pale ink keep dark-mode badges
@@ -212,7 +212,7 @@ func (m *Model) projectBadgeStyle(project protocol.Project) componentVisual {
 		"green": {"#305e35", "#dcedd5"}, "orange": {"#75491f", "#f8e3c9"},
 		"pink": {"#7b355c", "#f5dce9"}, "teal": {"#205c57", "#d3eeea"},
 	}
-	v := componentVisual{foreground: p.text, background: p.nav, bold: true}
+	v := componentVisual{foreground: p.text, background: bg, bold: true}
 	if m.colorProfile == colorprofile.TrueColor {
 		pair := dark[color]
 		if m.state.Light {
@@ -226,16 +226,18 @@ func (m *Model) projectBadgeStyle(project protocol.Project) componentVisual {
 		// ANSI palettes; no-color keeps the monogram and bold identity intact.
 		accents := map[string]string{"purple": p.violet, "blue": p.blue, "green": p.green, "orange": p.gold, "pink": p.pink, "teal": p.cyan}
 		if accent := accents[color]; accent != "" {
-			v.foreground, v.background = p.nav, accent
+			v.foreground, v.background = bg, accent
 		}
 	}
 	return v
 }
 
-func (m *Model) renderProjectBadge(f *frame, x, y int, project protocol.Project) {
+// The badge is the project's identity everywhere it appears: the chosen icon,
+// else the colored first-and-last-letter monogram, in two cells.
+func (m *Model) renderProjectBadge(f *frame, x, y int, project protocol.Project, bg string) {
 	label := projectMonogram(project.Name)
 	if project.Icon != "" {
 		label = centered(m.icon(project.Icon), 2)
 	}
-	f.componentText(x, y, 2, label, m.projectBadgeStyle(project))
+	f.componentText(x, y, 2, label, m.projectBadgeStyle(project, bg))
 }

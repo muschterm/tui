@@ -1,3 +1,5 @@
+// Package client speaks application protocol v1 to a discovered background
+// server over authenticated loopback HTTP and WebSocket connections.
 package client
 
 import (
@@ -6,8 +8,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,11 +23,18 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
+// ErrNoServer reports that the application home holds no server discovery
+// record, which is how a stopped or never-started server presents.
+var ErrNoServer = errors.New("no server discovery for this application home")
+
+// Client talks to one discovered server incarnation. Every call verifies the
+// server's protocol version and instance identity.
 type Client struct {
 	Discovery protocol.Discovery
 	HTTP      *http.Client
 }
 
+// ID returns a fresh random identity for a client or a command.
 func ID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -31,12 +42,21 @@ func ID() string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// New returns a client for the discovered server with a bounded request timeout.
 func New(d protocol.Discovery) *Client {
 	return &Client{Discovery: d, HTTP: &http.Client{Timeout: 5 * time.Second}}
 }
+
+// Discover reads the home's discovery record and rejects one that belongs to
+// another home, another protocol version or a non-loopback address. A missing
+// record is reported as ErrNoServer.
 func Discover(home string) (protocol.Discovery, error) {
 	var d protocol.Discovery
 	b, err := os.ReadFile(filepath.Join(home, "discovery.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return d, fmt.Errorf("%w: %w", ErrNoServer, err)
+	}
 	if err != nil {
 		return d, err
 	}
@@ -53,6 +73,7 @@ func Discover(home string) (protocol.Discovery, error) {
 	}
 	return d, nil
 }
+
 func (c *Client) request(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -74,7 +95,7 @@ func (c *Client) request(ctx context.Context, method, path string, in, out any) 
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		var pe protocol.Error
 		if json.NewDecoder(resp.Body).Decode(&pe) == nil && pe.Code != "" {
 			return &pe
@@ -86,14 +107,19 @@ func (c *Client) request(ctx context.Context, method, path string, in, out any) 
 	}
 	return nil
 }
+
+// Snapshot fetches the authoritative state snapshot.
 func (c *Client) Snapshot(ctx context.Context) (protocol.Snapshot, error) {
 	var s protocol.Snapshot
-	err := c.request(ctx, "GET", "/v1/snapshot", nil, &s)
+	err := c.request(ctx, http.MethodGet, "/v1/snapshot", nil, &s)
 	if err == nil && (s.Version != protocol.Version || s.InstanceID != c.Discovery.InstanceID) {
 		err = fmt.Errorf("server identity or protocol mismatch")
 	}
 	return s, err
 }
+
+// Command submits an application command. The caller assigns cmd.ID once and
+// reuses it across retries so the server can deduplicate.
 func (c *Client) Command(ctx context.Context, cmd protocol.Command) (protocol.Receipt, error) {
 	var r protocol.Receipt
 	if cmd.ID == "" {
@@ -102,9 +128,13 @@ func (c *Client) Command(ctx context.Context, cmd protocol.Command) (protocol.Re
 	if cmd.Version == 0 {
 		cmd.Version = protocol.Version
 	}
-	err := c.request(ctx, "POST", "/v1/command", cmd, &r)
+	err := c.request(ctx, http.MethodPost, "/v1/command", cmd, &r)
 	return r, err
 }
+
+// Watch streams snapshots until ctx ends or the stream fails, calling receive
+// for each one. It returns an error if the server identity, protocol version
+// or revision order breaks.
 func (c *Client) Watch(ctx context.Context, receive func(protocol.Snapshot)) error {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+c.Discovery.Token)
@@ -135,20 +165,29 @@ func (c *Client) Watch(ctx context.Context, receive func(protocol.Snapshot)) err
 		receive(s)
 	}
 }
+
+// LoadView fetches a client view document with its revision.
 func (c *Client) LoadView(ctx context.Context, id string) (protocol.View, error) {
 	var v protocol.View
-	err := c.request(ctx, "GET", "/v1/views/"+url.PathEscape(id), nil, &v)
+	err := c.request(ctx, http.MethodGet, "/v1/views/"+url.PathEscape(id), nil, &v)
 	return v, err
 }
+
+// PutView stores a client view document if its stored revision still equals
+// expectedRevision.
 func (c *Client) PutView(ctx context.Context, id string, data json.RawMessage, expectedRevision int64) (protocol.View, error) {
 	var v protocol.View
-	err := c.request(ctx, "PUT", "/v1/views/"+url.PathEscape(id), protocol.View{Data: data, Revision: expectedRevision}, &v)
+	err := c.request(ctx, http.MethodPut, "/v1/views/"+url.PathEscape(id), protocol.View{Data: data, Revision: expectedRevision}, &v)
 	return v, err
 }
+
+// View fetches a client view document's data without its revision.
 func (c *Client) View(ctx context.Context, id string) (json.RawMessage, error) {
 	v, err := c.LoadView(ctx, id)
 	return v.Data, err
 }
+
+// SaveView loads the current revision and stores data against it.
 func (c *Client) SaveView(ctx context.Context, id string, data json.RawMessage) error {
 	v, err := c.LoadView(ctx, id)
 	if err != nil {
@@ -157,4 +196,8 @@ func (c *Client) SaveView(ctx context.Context, id string, data json.RawMessage) 
 	_, err = c.PutView(ctx, id, data, v.Revision)
 	return err
 }
-func (c *Client) Stop(ctx context.Context) error { return c.request(ctx, "POST", "/v1/stop", nil, nil) }
+
+// Stop asks the server to shut down gracefully.
+func (c *Client) Stop(ctx context.Context) error {
+	return c.request(ctx, http.MethodPost, "/v1/stop", nil, nil)
+}

@@ -6,11 +6,15 @@ package protocol
 type BrowseRequest struct {
 	Scope, ProjectID, ThreadID, Query string
 }
+
+// BrowseResult lists one directory's entries for a BrowseRequest.
 type BrowseResult struct {
 	Root, Directory string
 	Entries         []PathEntry
 	Truncated       bool
 }
+
+// PathEntry is one browsable file or directory.
 type PathEntry struct {
 	Name, Path string
 	IsDir      bool

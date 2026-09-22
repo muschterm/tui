@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ func testEngine(t *testing.T) *engine {
 	}
 	return &engine{snap: s, store: st, subscribers: map[chan protocol.Snapshot]bool{}}
 }
+
 func TestDurableCommandIdentityAndQueueRevision(t *testing.T) {
 	e := testEngine(t)
 	c := protocol.Command{Version: 1, ID: "send", Kind: "prompt.send", ThreadID: "thread-shell", Text: "keep snapshot", Attachments: []protocol.Attachment{{Name: "file", Content: "captured content"}}}
@@ -61,6 +63,7 @@ func TestDurableCommandIdentityAndQueueRevision(t *testing.T) {
 		t.Fatal("state not durable", err)
 	}
 }
+
 func TestCompetingAnswersAndResumeGate(t *testing.T) {
 	e := testEngine(t)
 	c := protocol.Command{Version: 1, ID: "answer", Kind: "request.answer", ThreadID: "thread-review", TargetID: "approval-review", Revision: 1, Answers: []string{"Allow once"}}
@@ -77,6 +80,7 @@ func TestCompetingAnswersAndResumeGate(t *testing.T) {
 		t.Fatal("second answer accepted")
 	}
 }
+
 func TestSlowSubscriberIsExplicitlyDisconnected(t *testing.T) {
 	e := testEngine(t)
 	ch := make(chan protocol.Snapshot, 1)
@@ -91,6 +95,7 @@ func TestSlowSubscriberIsExplicitlyDisconnected(t *testing.T) {
 		t.Fatal("overflow channel not closed")
 	}
 }
+
 func startTestServer(t *testing.T, home string) (*client.Client, func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,6 +127,7 @@ func startTestServer(t *testing.T, home string) (*client.Client, func()) {
 	t.Fatal("server failed to start")
 	return nil, nil
 }
+
 func TestAuthenticationCatchupRestartAndViews(t *testing.T) {
 	home := t.TempDir()
 	c, stop := startTestServer(t, home)
@@ -293,9 +299,10 @@ func TestFiniteFixtureTurnsPreserveQueuedCaptures(t *testing.T) {
 	}
 	var captured protocol.Prompt
 	for _, activity := range thread.Activity {
-		if activity.ID == r.TargetID {
-			if err := json.Unmarshal([]byte(activity.Detail), &captured); err != nil {
-				t.Fatal(err)
+		if activity.ID == r.TargetID && activity.Prompt != nil {
+			captured = *activity.Prompt
+			if strings.Contains(activity.Detail, "accepted content") {
+				t.Fatal("detail duplicated the attachment capture")
 			}
 		}
 	}

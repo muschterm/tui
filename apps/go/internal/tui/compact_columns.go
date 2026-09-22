@@ -18,10 +18,25 @@ func (m *Model) workspaceGeometry(footer int) shell.Geometry {
 		return shell.ColumnGeometry(m.width, m.height-1, footer, m.viewState().CompactColumn)
 	}
 	layout := m.state.Layout
-	if m.state.Active == "" {
+	// Only the no-thread empty state hides the panes; a draft is a workspace.
+	if !m.hasComposer() {
 		layout.Bottom, layout.Right, layout.Maximized = false, false, false
 	}
 	return layout.Compute(m.width, m.height-1, footer)
+}
+
+// True while a maximized or forced full-width right host occupies the center.
+func (m *Model) surfaceFillsCenter() bool {
+	return !m.singleColumn() && m.settingsPage == "" && m.hasComposer() &&
+		m.state.Layout.Compute(m.width, m.height-1, 0).Maximized
+}
+
+// Pointer and keyboard resizing share the limits of the effective geometry.
+func (m *Model) resizePane(divider shell.Divider, delta int) {
+	if m.terminalTooSmall() || m.singleColumn() || m.settingsPage != "" || m.state.Active == "" && divider != shell.LeftDivider {
+		return
+	}
+	m.state.Layout.ResizeWithin(divider, delta, m.width, m.height-1, m.footerHeight())
 }
 
 func columnName(region shell.Region) string {

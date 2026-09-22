@@ -15,7 +15,7 @@ Local **darwin/arm64**, Go **1.27.1**, Bun **1.4.2**, Node **26.8.2**, Git **2.5
 | Bun PTY | Initial 42×9 dimensions, resize to 51×12, input/output, process completion, explicit PTY close pass | Process-tree teardown, background persistence and hidden-pane lifecycle **NOT RUN** |
 | ACP adapters | Versioned source inspection below | Initialization, replay fixtures against installed adapters and live provider runs **NOT RUN** |
 
-Scripts: [Bun/Yjs/Ink/merge/PTY probe](../../apps/go/internal/probe/bun-feasibility.mjs), [Go emulator probe](../../apps/go/internal/probe/vt-feasibility.go). The latter has a build-ignore constraint so candidate dependencies do not enter the application module.
+Scripts: [Bun/Yjs/Ink/merge/PTY probe](go-feasibility-probes/bun-feasibility.mjs), [Go emulator probe](go-feasibility-probes/vt-feasibility.go). Both moved from `apps/go/internal/probe` to this directory on 2026-09-22 so the Go module holds only application code; the Go probe keeps its build-ignore constraint, so candidate dependencies never enter the application module.
 
 ## Reproduction
 
@@ -24,7 +24,7 @@ The successful execution used `/tmp/tui-feasibility-20260919`; substitute a fres
 ```sh
 mkdir -p /tmp/tui-feasibility-20260919
 BUN_INSTALL_CACHE_DIR=/tmp/tui-feasibility-20260919/cache bun add --cwd /tmp/tui-feasibility-20260919 --ignore-scripts --exact ink@7.1.1 react@19.3.0 yjs@13.6.32
-bun apps/go/internal/probe/bun-feasibility.mjs /tmp/tui-feasibility-20260919
+bun docs/research/go-feasibility-probes/bun-feasibility.mjs /tmp/tui-feasibility-20260919
 ```
 
 All four grouped assertions passed. Git only reads/writes the probe's temporary files; it does not operate on the checkout or invoke a remote.
@@ -34,7 +34,7 @@ From the temporary directory, initialize a separate module and run the Go probe 
 ```sh
 go mod init feasibility-vt
 GOMODCACHE=/tmp/tui-feasibility-20260919/gomod GOCACHE=/tmp/tui-feasibility-20260919/gocache go get github.com/charmbracelet/x/vt@v0.0.0-20260913004009-c615ff2f7805
-GOMODCACHE=/tmp/tui-feasibility-20260919/gomod GOCACHE=/tmp/tui-feasibility-20260919/gocache go run /Users/muschterm/Developer/git/github.com/muschterm/tui/apps/go/internal/probe/vt-feasibility.go
+GOMODCACHE=/tmp/tui-feasibility-20260919/gomod GOCACHE=/tmp/tui-feasibility-20260919/gocache go run /path/to/tui/docs/research/go-feasibility-probes/vt-feasibility.go
 ```
 
 Result: `PASS x/vt: split UTF-8/escape parsing, erase/home, alternate-screen restoration, bounded resize`. `gofmt` was applied to the Go probe. None of these checks establishes an interactive terminal compatibility matrix.

@@ -34,7 +34,12 @@ SQLite state and are shared by clients attached to it. Each command compares the
 settings revision; stale changes are rejected instead of replacing another
 client's edits. A future environment selector must apply them only to explicitly
 selected environments. This slice has one environment per connection and no
-multi-environment selection UI. Theme remains a per-client appearance preference.
+multi-environment selection UI. Theme remains a per-client appearance preference,
+as does the **Symbols** choice added on 2026-09-22: Appearance offers Nerd Font
+(default) or ASCII control glyphs, saved in the client view, for terminals whose
+font renders the patched glyphs as boxes or misaligned cells. An unsaved choice
+follows the `TUI_GO_ICONS` environment variable; once saved, the setting wins and
+the variable is only a default. Project scope cannot change it.
 App Keybindings documents current controls; rebinding is not implemented. Project
 Keybindings explains that bindings are inherited from the app and project
 overrides are unavailable; it does not display the global binding list as a

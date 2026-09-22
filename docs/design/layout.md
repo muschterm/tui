@@ -27,7 +27,7 @@ Application content is illustrative. Projects and threads can populate the navig
 
 ## Persistent controls and navigation
 
-Keep a show/hide-left icon at the application's top-left. At top-right, the controls are exactly, from left to right: maximize/restore the right host's active surface, show/hide the center-bottom panel, and show/hide the right host. This supersedes the earlier two-icon top-right arrangement. Maximize belongs in this application chrome, not the right surface header. Show maximize/restore only while the right host is actually visible, including a deliberately opened empty chooser; a host hidden by a toggle or responsive geometry has no maximize control. All have keyboard equivalents, with exact bindings deferred under Q24. Hiding a region must not hide its restoration control.
+The top bar is not a separate strip: each pane's first row continues that pane's background (navigation, center, right host) and the vertical dividers run through it, as T3's columns carry their own headers. Keep a show/hide-left icon at the application's top-left, followed by the left-justified application title while navigation is open; hiding navigation hides the title and the breadcrumb then follows the toggle. The title is a control: it starts a new thread in the selected project filter, or opens the New thread project chooser when no project is filtered (a server-owned default project is not modeled; see the 2026-09-21 refinement below). The center pane's top row carries a breadcrumb of the project's two-cell badge (its chosen icon, else the colored first-and-last-letter monogram, exactly as navigation and the project picker show it; 2026-09-22 correction of an earlier generic folder glyph) and name, a `/` separator and the thread title, left-justified at the pane's inset and truncating the title before the project; the project part is one hover/focus target that starts a new thread in that project, as T3's breadcrumb does. At the far right, the controls are exactly, from left to right: maximize/restore the right host's active surface, show/hide the center-bottom panel, and show/hide the right host. While the right host is visible these controls belong to its span of the top bar and the attention bell stays at the center pane's right edge; while it is hidden they sit at the top-right of the center pane with the bell one control pitch left of them (glyph to glyph, the same six cells that separate the controls). This supersedes the earlier two-icon top-right arrangement and the 2026-09-20 packed bell. Maximize belongs in this application chrome, not the right surface header. Show maximize/restore only while the right host is actually visible, including a deliberately opened empty chooser; a host hidden by a toggle or responsive geometry has no maximize control. All have keyboard equivalents, with exact bindings deferred under Q24. Hiding a region must not hide its restoration control.
 
 The ADE has no global content search. The 2026-09-20 review adds thread-title search, a searchable project selector and existing-folder Add project action; [thread/project filtering](projects.md) stays local to each client. File search remains part of the file workflow. Closed replaces Recents and stays pinned above the bottom-left settings gear. Collapse shows its count; expand hides the count and uses a separate bounded list. The heading always remains reachable. A legacy hide preference collapses content while preserving that restoration control. Neither action deletes its items. [Close/Reopen and permanent Delete](threads.md) have separate row actions.
 
@@ -41,7 +41,9 @@ The accepted [component rule](components.md) uses one-row square fills for surfa
 and question tabs and compact actions. Prompt, thread, request and dialog
 containers keep rounded outlines over stable backgrounds. Hover strengthens a
 neutral border/fill; selection retains its accent and bold label independently
-of pointer movement. Keyboard focus adds an underline to control labels.
+of pointer movement. Keyboard focus paints an accent mark in the cell before the
+control (2026-09-22; see [components](components.md#state-feedback)) so focus never
+moves an icon or label; only controls without such a cell keep an underline.
 
 Center close glyphs within their cell hit areas, including modal headers and tab
 menus. Give the typing area a complete, clearly visible outline, with the
@@ -101,7 +103,7 @@ Show Thinking while the reported turn is actively running; clear it when the tur
 
 ## Background attention
 
-Questions, approval requests and failures in other threads appear as thread badges plus a clickable attention indicator in the top bar. Keep it available when the left navigation is hidden and while a surface is maximized. Explicit activation opens the relevant item; incoming events never steal focus or change the selected thread. This indicator is separate from the three ordered pane controls. Exact artwork and presentation for multiple items remain prototype details.
+Questions, approval requests and failures in other threads appear as thread badges plus a clickable attention indicator in the top bar. Keep it available when the left navigation is hidden and while a surface is maximized. Explicit activation opens the relevant item; incoming events never steal focus or change the selected thread. This indicator is separate from the three ordered pane controls and stays with the center pane: it is not part of the right host's control group, and only a maximized host, which leaves no center span, places it directly left of those controls. Exact artwork and presentation for multiple items remain prototype details.
 
 ## Right sidebar surface lifecycle
 
@@ -135,12 +137,15 @@ The user rejected the proposal that a terminal tab's close button merely detache
 | --- | --- |
 | Right Terminal tab × | End that terminal session and close its tab. Other terminal sessions remain intact. |
 | Top-right right-panel toggle | Hide/show the host and preserve all its terminal sessions. |
-| Top-right center-bottom toggle | Hide/show the bottom panel and preserve its terminal sessions. |
-| Bottom terminal's own close control | End that terminal session. This is separate from the panel toggle. |
+| Top-right center-bottom toggle | Hide/show the bottom panel and preserve its terminal sessions. Showing the wide panel while the thread has no bottom session opens one immediately (2026-09-22). |
+| Bottom terminal tab × | End that terminal session and remove its tab; other bottom sessions stay. Closing the last one hides the panel. This is separate from the panel toggle. |
+| Bottom panel + | Open another independently identified bottom terminal. |
 
 Close addresses the stable server terminal identity and stops its PTY/shell work; it is not a command sent to whichever terminal happens to be selected later. Other clients observing that session receive its ended state and cannot keep sending input or resize events. Unrelated terminals and agent runs continue. Closing a terminal does not roll back its filesystem changes.
 
 Expose closing, ended and failed/uncertain shutdown honestly; removing a tab or receiving a request acknowledgment does not prove the process exited. Retain enough information to reconcile a failed close. A newly opened terminal starts a new session; showing a hidden panel reuses surviving sessions and must not silently resurrect a closed one. Explicitly opening the bottom terminal after its last session was closed creates a fresh session; replaying stale view state does not. Saved output and attachment captures follow storage retention independently of process lifetime.
+
+The 2026-09-22 user review replaced the bottom panel's “Terminal” title row and New terminal button with the same tab row the right host uses: each of the thread's bottom sessions is a Terminal tab (icon slot closes, name selects, overflow lists hidden tabs) followed by an add control, and the output body starts directly below. Showing the wide panel is the explicit request for a terminal, so an empty panel opens its first session at once; the add control opens further sessions. The panel toggle otherwise only hides and shows. T3's drawer likewise shows terminal tabs with plus and per-terminal close actions and no heading; its empty state and split views are not adopted.
 
 Exact confirmation presentation, shutdown escalation and close authority across clients remain implementation/prototype details. The distinction between close and hide is settled, and both actions require keyboard and pointer access.
 
@@ -177,9 +182,11 @@ A top-left hamburger opens **Conversation**, **Projects & threads**, **Surfaces*
 **Terminal**, and Commands. F2 opens the same picker; Tab/arrows and Enter select
 an entry. F3 selects Surfaces and F5 selects Terminal. The selected column fills
 the available width above the composer. Surfaces retains its existing tabs and
-empty chooser; Terminal shows the existing bottom session or explicit New terminal.
-Choosing a column only changes presentation, never opens or closes a terminal
-session. Selecting a thread returns to Conversation.
+empty chooser; Terminal shows the thread's bottom terminal tabs, or the empty tab
+row whose add control opens the first session. Choosing a column only changes
+presentation, never opens or closes a terminal session; the wide panel toggle's
+immediate first session does not apply here. Selecting a thread returns to
+Conversation.
 
 Keep the prompt, context attachments, settings/usage overflow and Send/Stop in
 every active thread's column. Outside Conversation, cap the prompt viewport at

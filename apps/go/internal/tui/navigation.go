@@ -13,7 +13,7 @@ type navigationRow struct {
 }
 
 func (m *Model) threadCardState(t protocol.Thread) componentState {
-	return m.controlState(t.ID == m.state.Active, "thread:"+t.ID, "thread-status:"+t.ID, "thread-quick:"+t.ID, "thread-menu:"+t.ID)
+	return m.controlState(t.ID == m.state.Active, "thread:"+t.ID, "thread-status:"+t.ID, "thread-quick:"+t.ID, "thread-menu:"+t.ID, "thread-reopen:"+t.ID)
 }
 
 // A rounded surface contains title and metadata, with one blank row between
@@ -40,14 +40,18 @@ func (m *Model) renderThreadCardBackground(f *frame, r shell.Rect, t protocol.Th
 		f.text(r.X+r.W-1, r.Y, 1, edge, ink, p.nav)
 	}
 	a := action{Kind: "thread", ID: t.ID}
-	f.hits = append(f.hits, hit{r, a, t.Title + " · " + t.Project, "thread:" + t.ID})
+	f.hits = append(f.hits, hit{Rect: r, Action: a, Label: t.Title + " · " + t.Project, Key: "thread:" + t.ID})
 }
 
 func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 	p := m.colors()
 	key, quick, more := "thread:"+t.ID, "thread-quick:"+t.ID, "thread-menu:"+t.ID
 	interaction := m.threadCardState(t)
-	visual := m.componentStyle(roundedOutline, interaction, p.text, p.nav)
+	ink := p.text
+	if t.Closed {
+		ink = m.dimmed()
+	}
+	visual := m.componentStyle(roundedOutline, interaction, ink, p.nav)
 	bg, engaged := visual.background, interaction.Hovered || interaction.Focused
 	a := action{Kind: "thread", ID: t.ID}
 	labelWidth := max(1, r.W-8)
@@ -70,8 +74,12 @@ func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 	if !m.connected {
 		help = "Disconnected · last known " + t.State
 	}
+	// Closed rows recede as a group; errors and attention keep their color.
+	if t.Closed && (state == threadFinished || state == threadWorking) {
+		fg = m.dimmed()
+	}
 	status := "thread-status:" + t.ID
-	f.styledButton(r.X, r.Y, 2, glyph, status, a, m.componentStyle(roundedOutline, m.controlState(false, status), fg, bg))
+	f.iconButton(m, r.X, r.Y, 2, glyph, status, a, fg, bg)
 	f.hits[len(f.hits)-1].Label = help + " · " + t.Title
 	kind, quickGlyph, quickHelp := "", "", ""
 	if t.Closed {
@@ -83,10 +91,21 @@ func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 		if !engaged {
 			quickGlyph = ""
 		}
-		f.styledButton(r.X+r.W-6, r.Y, 3, centered(quickGlyph, 3), quick, action{Kind: kind, ID: t.ID}, m.componentStyle(roundedOutline, m.controlState(false, quick), fg, bg))
+		f.iconButton(m, r.X+r.W-6, r.Y, 3, centered(quickGlyph, 3), quick, action{Kind: kind, ID: t.ID}, fg, bg)
 		f.hits[len(f.hits)-1].Label = quickHelp + " · " + t.Title
 	}
-	f.styledButton(r.X+r.W-3, r.Y, 3, " "+m.icon("more-vertical")+" ", more, action{Kind: "thread-menu", ID: t.ID}, m.componentStyle(roundedOutline, m.controlState(false, more), p.muted, bg))
+	if t.Closed {
+		// Reopen replaces the menu, whose only other item is the adjacent Delete.
+		// Like trash, it appears only while the card is hovered or focused.
+		reopen, glyph := "thread-reopen:"+t.ID, ""
+		if engaged {
+			glyph = m.icon("reopen")
+		}
+		f.iconButton(m, r.X+r.W-3, r.Y, 3, centered(glyph, 3), reopen, action{Kind: "thread-reopen", ID: t.ID}, p.muted, bg)
+		f.hits[len(f.hits)-1].Label = "Reopen thread · " + t.Title
+		return
+	}
+	f.iconButton(m, r.X+r.W-3, r.Y, 3, " "+m.icon("more-vertical")+" ", more, action{Kind: "thread-menu", ID: t.ID}, p.muted, bg)
 	f.hits[len(f.hits)-1].Label = "Thread options · " + t.Title
 }
 
@@ -113,6 +132,11 @@ func (m *Model) selectThread(id string) {
 	if !ok && id != "" {
 		return
 	}
+	// The prompt holds the queued item's text; only its own thread may load it.
+	if m.state.Edit != nil && id != "" && id != m.state.Edit.ThreadID {
+		m.status = "Save or cancel the queued edit first"
+		return
+	}
 	if m.hasComposer() {
 		v := m.viewState()
 		v.Draft = m.prompt.Value()
@@ -121,6 +145,7 @@ func (m *Model) selectThread(id string) {
 	m.state.Active, m.state.DraftProjectID = id, ""
 	m.state.Layout.Right = id != "" && m.viewState().RightVisible
 	m.state.Layout.Maximized = false
+	m.state.Layout.ClearReveal()
 	if id == "" {
 		m.prompt.SetValue("")
 		m.answer.SetValue("")
@@ -172,12 +197,17 @@ func (m *Model) reconcileThreadMembership() {
 		// Do not save the deleted thread's input into its replacement.
 		m.state.Active = ""
 		m.prompt.SetValue("")
-		m.selectThread(m.nextOpenThread(""))
+		next := m.nextOpenThread("")
+		if m.state.Edit != nil {
+			next = m.state.Edit.ThreadID
+		}
+		m.selectThread(next)
 		m.status = "Thread deleted"
 		m.markDirty()
 	}
 	if m.pendingThreadSelection != "" {
 		if _, ok := m.threadByID(m.pendingThreadSelection); ok {
+			// Blocked during a queued edit; the thread stays reachable in navigation.
 			m.selectThread(m.pendingThreadSelection)
 			m.pendingThreadSelection = ""
 			m.markDirty()

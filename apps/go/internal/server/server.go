@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ID returns a fresh random identity for a server incarnation or record.
 func ID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -38,6 +39,8 @@ type engine struct {
 	store       *storage.Store
 	subscribers map[chan protocol.Snapshot]bool
 	stopping    bool
+	// resolve replaces canonicalProjectPath in tests.
+	resolve func(string) (string, error)
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -46,6 +49,7 @@ func clone(s protocol.Snapshot) protocol.Snapshot {
 	_ = json.Unmarshal(b, &n)
 	return n
 }
+
 func (e *engine) publish() {
 	for ch := range e.subscribers {
 		select {
@@ -56,9 +60,11 @@ func (e *engine) publish() {
 		}
 	}
 }
+
 func (e *engine) command(c protocol.Command) (protocol.Receipt, error) {
 	return e.commandContext(context.Background(), c)
 }
+
 func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protocol.Receipt, error) {
 	if c.Version != protocol.Version {
 		return protocol.Receipt{}, failure("version_mismatch", "protocol version 1 required")
@@ -77,6 +83,25 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	if e.stopping {
 		e.mu.Unlock()
 		return protocol.Receipt{}, failure("stopping", "server is shutting down")
+	}
+	// A client-supplied path can sit on a hung mount; like file capture, it is
+	// resolved without the lock and any competing retry is reconciled after.
+	resolved := &resolvedPath{}
+	if input, needed := pathToResolve(e.snap, c); needed {
+		e.mu.Unlock()
+		resolved = e.resolvePath(ctx, input)
+		e.mu.Lock()
+		if r, err := e.store.Lookup(c); err != nil {
+			e.mu.Unlock()
+			return protocol.Receipt{}, err
+		} else if r != nil {
+			e.mu.Unlock()
+			return *r, nil
+		}
+		if e.stopping {
+			e.mu.Unlock()
+			return protocol.Receipt{}, failure("stopping", "server is shutting down")
+		}
 	}
 	captured := c
 	if usesWorkspaceFiles(c) {
@@ -112,16 +137,13 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	}
 	defer e.mu.Unlock()
 	next := clone(e.snap)
-	target, err := apply(&next, captured)
+	target, err := applyResolved(&next, captured, resolved)
 	if err != nil {
 		return protocol.Receipt{}, err
 	}
 	next.Revision++
-	encoded, err := json.Marshal(next)
-	if err != nil {
-		return protocol.Receipt{}, err
-	}
-	if len(encoded) > 4<<20 {
+	// Commands that do not grow state stay available to an over-limit home.
+	if size := projectedSize(next); size > snapshotLimit && size > projectedSize(e.snap)+capacitySlack {
 		return protocol.Receipt{}, failure("capacity", "fixture snapshot exceeds 4 MiB; remove queued content before submitting")
 	}
 	r := protocol.Receipt{ID: c.ID, State: "accepted", Revision: next.Revision, TargetID: target}
@@ -135,6 +157,7 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	e.publish()
 	return r, nil
 }
+
 func (e *engine) tick() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -258,9 +281,73 @@ func fixtureTurnID(t *protocol.Thread) string {
 	return t.ID + "-initial"
 }
 
+const snapshotLimit = 4 << 20
+
+// Interrupt, resume and similar state changes re-encode a few longer words.
+const capacitySlack = 256
+
+// Dispatch adds a child, result, plan and archive record per queued prompt,
+// each repeating the prompt identity.
+const dispatchOverhead = 2048
+
+// projectedSize is the encoded snapshot after every queued prompt dispatches,
+// so ticks cannot push accepted work past the bound. Revision is excluded.
+func projectedSize(s protocol.Snapshot) int {
+	s.Revision = 0
+	encoded, _ := json.Marshal(s)
+	size := len(encoded)
+	for i := range s.Threads {
+		for _, p := range s.Threads[i].Queue {
+			queued, _ := json.Marshal(p)
+			dispatched, _ := json.Marshal(fixturePromptActivity(&s.Threads[i], p))
+			id, _ := json.Marshal(p.ID)
+			size += max(0, len(dispatched)-len(queued)) + dispatchOverhead + 12*len(id)
+		}
+	}
+	return size
+}
+
+// Activity.Prompt retains the complete capture; Detail only summarizes it.
+func promptSummary(p protocol.Prompt) string {
+	type attachment struct {
+		Kind, Name, Source string
+		Size               int
+	}
+	summary := struct {
+		ID, Text    string
+		Revision    int64
+		Settings    protocol.Settings
+		Attachments []attachment
+	}{ID: p.ID, Text: p.Text, Revision: p.Revision, Settings: p.Settings}
+	for _, a := range p.Attachments {
+		summary.Attachments = append(summary.Attachments, attachment{a.Kind, a.Name, a.Source, len(a.Content)})
+	}
+	b, _ := json.Marshal(summary)
+	return string(b)
+}
+
+func fixturePromptActivity(t *protocol.Thread, p protocol.Prompt) protocol.Activity {
+	return protocol.Activity{ID: p.ID, TurnID: t.TurnID, Prompt: &p, Role: "user", Text: p.Text, State: "running", Detail: promptSummary(p)}
+}
+
 func appendFixturePrompt(t *protocol.Thread, p protocol.Prompt) {
-	capture, _ := json.Marshal(p)
-	t.Activity = append(t.Activity, protocol.Activity{ID: p.ID, TurnID: t.TurnID, Prompt: &p, Role: "user", Text: p.Text, State: "running", Detail: string(capture)})
+	t.Activity = append(t.Activity, fixturePromptActivity(t, p))
+}
+
+// Older homes stored the whole capture again in Detail. Compact only exact
+// duplicates of the retained Prompt.
+func compactPromptDetails(s *protocol.Snapshot) {
+	for i := range s.Threads {
+		for j := range s.Threads[i].Activity {
+			a := &s.Threads[i].Activity[j]
+			if a.Prompt == nil {
+				continue
+			}
+			if duplicate, _ := json.Marshal(a.Prompt); a.Detail == string(duplicate) {
+				a.Detail = promptSummary(*a.Prompt)
+			}
+		}
+	}
 }
 
 func startFixturePrompt(t *protocol.Thread) {
@@ -295,6 +382,8 @@ func trimFixtureActivity(t *protocol.Thread) {
 	t.Activity = append([]protocol.Activity{notice}, t.Activity[len(t.Activity)-127:]...)
 }
 
+// Serve runs the server for home until ctx ends or a stop is requested. It
+// takes the home's exclusive lock, opens its database and publishes discovery.
 func Serve(ctx context.Context, home string) error {
 	abs, err := filepath.Abs(home)
 	if err != nil {
@@ -341,6 +430,7 @@ func Serve(ctx context.Context, home string) error {
 		snap = fixture.Initial()
 	} else {
 		recoverThreads(&snap)
+		compactPromptDetails(&snap)
 		for i := range snap.Terminals {
 			snap.Terminals[i].State = "ended"
 			snap.Terminals[i].Revision++
@@ -496,16 +586,16 @@ func Serve(ctx context.Context, home string) error {
 	})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "" {
-			http.Error(w, "browser origins unsupported", 403)
+			http.Error(w, "browser origins unsupported", http.StatusForbidden)
 			return
 		}
 		want := "Bearer " + discovery.Token
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(want)) != 1 {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		if r.Header.Get("X-TUI-Protocol") != "1" {
-			http.Error(w, "protocol version 1 required", 426)
+			http.Error(w, "protocol version 1 required", http.StatusUpgradeRequired)
 			return
 		}
 		mux.ServeHTTP(w, r)

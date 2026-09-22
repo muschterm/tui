@@ -10,7 +10,7 @@ import (
 
 func (m *Model) queueVisibleRows() int {
 	limit := 2
-	if m.compact() {
+	if m.compact() || m.surfaceFillsCenter() {
 		limit = 1
 	}
 	return min(limit, len(m.thread().Queue))

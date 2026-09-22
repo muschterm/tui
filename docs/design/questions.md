@@ -9,8 +9,9 @@ Status: required by the user on **2026-09-19**. This specifies the shared UI and
 The question/approval card shares the prompt's rounded outline and stable interior
 background. Question tabs, Back/Next arrows, overflow, submission/approval buttons
 and the inline Requests selector use single-row square fills. Rest is neutral,
-hover stronger neutral, and selection accent plus bold. Keyboard focus adds an
-underline independently. Selected tabs keep their treatment when a neighbor is
+hover stronger neutral, and selection accent plus bold. Keyboard focus adds its
+mark in the leading cap independently (2026-09-22; previously an underline).
+Selected tabs keep their treatment when a neighbor is
 hovered. Reserved bracket end cells preserve compact controls in monochrome.
 The Go card remains bounded to 12 rows, with scrollable content; plain and
 limited-color modes preserve geometry and hit regions. See the accepted

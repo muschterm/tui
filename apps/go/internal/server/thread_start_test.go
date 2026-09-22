@@ -13,6 +13,7 @@ func initialSend(s protocol.Snapshot) protocol.Command {
 	settings.Effort = "high"
 	return protocol.Command{Version: 1, ID: "first-send", Kind: "thread.start", ProjectID: s.Projects[0].ID, Agent: "Fixture agent", Text: "first captured prompt", Settings: &settings, Attachments: []protocol.Attachment{{Name: "capture", Content: "original"}}}
 }
+
 func TestInitialSendRejectsWithoutCreatingThread(t *testing.T) {
 	for name, change := range map[string]func(*protocol.Command){
 		"empty":                func(c *protocol.Command) { c.Text = " \n" },
@@ -42,6 +43,7 @@ func TestInitialSendRejectsWithoutCreatingThread(t *testing.T) {
 		})
 	}
 }
+
 func TestInitialSendRestartRetryAndDeletion(t *testing.T) {
 	home := t.TempDir()
 	client, stop := startTestServer(t, home)
@@ -100,6 +102,7 @@ func TestInitialSendRestartRetryAndDeletion(t *testing.T) {
 		t.Fatal("changed tombstoned command accepted")
 	}
 }
+
 func TestReopenSendValidatesBeforeReopening(t *testing.T) {
 	for name, change := range map[string]func(*protocol.Command){
 		"stale":                func(c *protocol.Command) { c.Revision-- },
@@ -125,6 +128,7 @@ func TestReopenSendValidatesBeforeReopening(t *testing.T) {
 		})
 	}
 }
+
 func TestReopenSendRetryAndConcurrentLifecycle(t *testing.T) {
 	e := testEngine(t)
 	thread := &e.snap.Threads[1]

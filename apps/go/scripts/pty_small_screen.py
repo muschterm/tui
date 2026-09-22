@@ -106,12 +106,12 @@ def main():
                     check('Submit' not in '\n'.join(term.screen()),
                           f'{width}x22: navigation uses available space without question card')
                     column('Surfaces', 2, 'Add surface')
-                    column('Terminal', 3, 'New terminal')
+                    column('Terminal', 3, 'No terminal sessions')
                     resize(160, 50)
                     check(get('views/' + identity)['data']['Layout'] == layout,
                           f'{width}x22: wide resize restores original pane preferences')
                     resize(width, 22)
-                    check(state()['CompactColumn'] == 3 and 'New terminal' in '\n'.join(term.screen()),
+                    check(state()['CompactColumn'] == 3 and 'No terminal sessions' in '\n'.join(term.screen()),
                           f'{width}x22: narrowing resumes selected Terminal column')
                     column('Conversation', 0, 'Submit')
                     if width == 47:

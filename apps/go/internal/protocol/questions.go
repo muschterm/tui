@@ -17,8 +17,10 @@ func QuestionKind(q Question) string {
 	return "text"
 }
 
+// QuestionRequired reports whether q needs an answer; unset means required.
 func QuestionRequired(q Question) bool { return q.Required == nil || *q.Required }
 
+// QuestionAllowsOther reports whether a choice question also accepts free text.
 func QuestionAllowsOther(q Question) bool {
 	return q.AllowOther || (q.Kind == "" && len(q.Options) != 0)
 }

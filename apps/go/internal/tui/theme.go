@@ -51,7 +51,9 @@ func safe(s string) string {
 		if r == '\n' || r == '\t' {
 			return r
 		}
-		if unicode.IsControl(r) || r == '\u202e' || r == '\u202d' || (r >= '\u2066' && r <= '\u2069') {
+		// Bidi_Control and the Zl/Zp separators can reorder or break a row.
+		// ZWJ, ZWNJ and variation selectors stay so emoji sequences survive.
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029' {
 			return -1
 		}
 		return r

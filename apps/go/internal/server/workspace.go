@@ -123,6 +123,7 @@ func inspectWorkspace(parent context.Context, path string) protocol.WorkspaceInf
 // Bound output even for malformed repository metadata.
 type workspaceOutput struct{ text strings.Builder }
 
+// Write keeps the first 8 KiB and reports the rest as consumed.
 func (b *workspaceOutput) Write(p []byte) (int, error) {
 	n := len(p)
 	remaining := 8192 - b.text.Len()

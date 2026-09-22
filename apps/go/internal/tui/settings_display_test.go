@@ -27,6 +27,7 @@ func TestSettingsPresentationPreservesProtocolValues(t *testing.T) {
 		}
 	}
 }
+
 func TestSettingsKeepSuppliedSpeedContextAndReasoningIndependent(t *testing.T) {
 	s := protocol.Settings{Model: "claude-opus-5", Effort: "high", Context: "1M", Speed: "fast", Permissions: "ask"}
 	items := composerSettings("claude", s)

@@ -97,3 +97,117 @@ approved confirmed project-plus-thread removal, and requested per-environment
 restart continuation off by default. These are source observations and recorded
 choices; they are not evidence that this terminal app supports T3's providers,
 assets, worktrees or recovery integrations. See [settings](../design/settings.md).
+
+## Narrow right panel, maximize and request height — 2026-09-21
+
+Re-read the same local checkout, clean HEAD
+`1ba471a37cd6b0f18820795f4505206f4723a0e3`, to inform two behavior choices in the
+Go code-review fixes. Source reading only; no runtime check, pull, push, source
+mutation or asset copying. Paths are under `apps/web/src`.
+
+- `rightPanelLayout.ts:1` sets the inline/sheet breakpoint at `(max-width: 980px)`;
+  `components/ChatView.tsx` around 1749 reads it through a media-query hook and
+  renders either inline `RightPanelTabs` or a right-side modal sheet. The choice
+  is derived at render time. No stored open/width state is rewritten because the
+  viewport is narrow: `hooks/useResizableWidth.ts` clamps on read and persists
+  only at drag end. Widening returns to side-by-side with the stored per-thread
+  width. Dismissing the sheet does close the panel, which is a user action.
+- The maximize control (`components/chat/PanelLayoutControls.tsx:102-133`) renders
+  only in the inline layout. Its flag is unpersisted component state and is
+  masked, not cleared, while the sheet presentation applies.
+- A maximized panel collapses the chat column to zero width, hiding the timeline,
+  composer and pending approval/question UI. Nothing restores it when a request
+  arrives. **We do not adopt this:** our accepted contract keeps chrome, prompt,
+  Send and the settings/usage footer visible while maximized.
+- Height budgeting sits on the composer side only: `ComposerBanner.Scroll` and
+  `ComposerBannerStack` cap pending request content at
+  `min(24rem, 40dvh)` with internal scrolling; approval detail is `max-h-20`.
+  The panel has no minimum height and the timeline yields.
+
+Translation in the Go slice: a right host that cannot fit beside the conversation
+is *presented* full width without changing the stored `Maximized` preference, and
+the maximize/restore control is absent while that presentation is forced. While
+a surface occupies the center, the pending request card is capped near 40% of the
+body height (never above its existing 12-row maximum) so the surface keeps usable
+rows. These are terminal-cell adaptations under [layout](../design/layout.md);
+whether T3's sheet is truly modal at runtime was not determined.
+
+## Archived rows and Unarchive — inspected 2026-09-21
+
+Read-only inspection of the local checkout at `1ba471a37`.
+
+- Sidebar thread rows are single-line truncated titles (`components/Sidebar.tsx`
+  around 1479-1489) with muted ink that rises to foreground on hover/focus.
+- Archived threads are listed in Settings, not the sidebar
+  (`components/settings/SettingsPanels.tsx` around 3388-3458). Each row has a
+  title, an “Archived … · Created …” description and an outline **Unarchive**
+  button using lucide `ArchiveX`; Delete is in the context menu.
+
+- Settled sidebar rows reveal an **Un-settle thread** action using lucide `Undo2`,
+  a turning-left arrow (`components/Sidebar.tsx` around 1693-1711). The user
+  identified this, not `ArchiveX`, as the re-open icon to follow.
+
+Translation in the Go slice: Closed sidebar cards use one content row and dimmed
+ink, and the trailing slot shows a Reopen icon instead of the ellipsis, using
+Nerd Font `md-arrow_u_left_top` (U+F17B3) as the turning-left arrow matching
+`Undo2`, revealed on hover/focus as T3's row action is. T3's
+separate archive page and its description line are not adopted.
+
+## Header breadcrumb and panel controls — inspected 2026-09-21
+
+Read-only inspection at `1ba471a37`.
+
+- `components/chat/ChatHeader.tsx` around 403-436: the breadcrumb leads with
+  the project favicon and name as one button labelled “New thread in
+  <project>” (`text-muted-foreground hover:text-foreground`), then a `/`
+  separator, then the thread title.
+- `components/chat/PanelLayoutControls.tsx`: bottom and right toggles use
+  lucide `PanelBottomIcon`/`PanelRightIcon`; maximize/restore uses
+  `Maximize2Icon`/`Minimize2Icon` (diagonal double arrows).
+- `components/ChatView.tsx` around 9540-9585 and 10365-10375: the toggle
+  cluster is one element that renders in the header while the right panel is
+  closed and is passed to `RightPanelTabs` as `layoutControls` while it is open;
+  the maximize control is shown only while the panel is open.
+
+Translation in the Go slice: title and breadcrumb in the top bar, toggles over
+the right host's top-bar span while it is visible, Nerd Font
+`fa-up_right_and_down_left_from_center`/`fa-down_left_and_up_right_to_center`
+for maximize/restore. T3 has no application-title control and no attention bell;
+those remain this project's decisions.
+
+## Terminal drawer tabs, tab insets and focus rings — inspected 2026-09-22
+
+Read-only inspection of the same local checkout; `git rev-parse HEAD` returned
+`1ba471a37cd6b0f18820795f4505206f4723a0e3` (2026-09-20), a newer HEAD than the
+earlier sections record. No checkout changes, remote Git operations or asset
+copying were performed.
+
+- `components/ThreadTerminalDrawer.tsx` around 1421-1490 and 1640-1700: the
+  drawer has no title row. Its chrome is an action cluster (split, `Plus` for a
+  new terminal, `Trash2` to close the active terminal) and, once several
+  terminals exist, a tab list where each row is `PanelTabCloseButton` (icon that
+  swaps to `X` on hover/focus) plus the terminal label; the active row uses
+  `bg-accent`. Around 1411 an empty drawer shows “No terminal sessions for this
+  thread yet.” with a New terminal button rather than opening one.
+- `components/RightPanelTabs.tsx` around 1152-1165: tabs are
+  `h-6 max-w-36 rounded-md pr-2 pl-1.5 gap-0.5 text-xs`, i.e. roughly one
+  character of inset on each side and the icon nearly touching the label.
+- `components/ui/button.tsx`: keyboard focus is `focus-visible:ring-2
+  ring-ring ring-offset-1` (or `outline-2`), a ring outside the element that
+  never moves its content.
+
+Translation in the Go slice: tab insets shrink to one cap cell each side with the
+glyph left-aligned in its slot; the focus ring becomes an accent mark in the cell
+before the control; the bottom panel becomes a terminal tab row with an add
+control. The user's request that showing the wide panel opens a session at once
+departs from T3's empty state; T3's split views and close-active-terminal action
+are not adopted.
+
+## Command-line surface — inspected 2026-09-22
+
+HEAD `1ba471a37`, read-only. T3 Code is an Electron desktop application with a
+web build; the checkout has no end-user CLI, `bin` entry, completion script or
+`--help` surface (`apps/*` and `packages/*` expose only build and test scripts,
+and the `effect-acp` package is a protocol library). Nothing there informs the
+Go reference's command line, which follows Go CLI conventions instead
+([ADR 0012](../adr/0012-go-cli-framework.md)).

@@ -195,6 +195,13 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 			if labelWidth > 0 {
 				f.button(m, labelX, y, labelWidth, label, c.kind, action{Kind: "open", Value: c.kind}, p.text, bg)
 				f.hits[len(f.hits)-1].Label = fmt.Sprintf("Open %s · %s · %d/%d completed · %d working", title(c.kind), s.State, s.Completed, s.Total, s.WorkingCount)
+				if s.Dismissible {
+					// The cell left of the dismiss slot belongs to the label target.
+					lead := f.hits[len(f.hits)-1]
+					lead.Rect = shell.Rect{X: x, Y: y, W: 1, H: 1}
+					f.text(x, y, 1, " ", p.text, bg)
+					f.hits = append(f.hits, lead)
+				}
 			}
 		} else {
 			f.text(x, y, w, "   "+s.Label, p.text, bg)
@@ -207,7 +214,7 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 			if engaged {
 				circle = m.icon("close")
 			}
-			f.button(m, x+1, y, 1, centered(circle, 1), closeKey, action{Kind: closeKey, ID: s.Key}, m.activityColor(s), bg)
+			f.iconButton(m, x+1, y, 1, centered(circle, 1), closeKey, action{Kind: closeKey, ID: s.Key}, m.activityColor(s), bg)
 			f.hits[len(f.hits)-1].Label = "Dismiss completed " + c.kind + " summary · history is preserved"
 			// Keep the completion color when the generic button adds focus styling.
 			f.text(x+1, y, 1, circle, m.activityColor(s), bg)

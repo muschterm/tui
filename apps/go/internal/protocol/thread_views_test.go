@@ -35,7 +35,7 @@ func TestPruneThreadViewUnchangedAndMalformed(t *testing.T) {
 	if err != nil || !bytes.Equal(input, out) {
 		t.Fatal("live view changed", err)
 	}
-	for _, input := range []string{`[]`, `null`, `{"Threads":[]}`, `{"Edit":"oops"}`, `{"Active":42}`} {
+	for _, input := range []string{`[]`, `null`, `{"Threads":[]}`, `{"Edit":"oops"}`, `{"Active":42}`, `{"StartedDraft":{"ThreadID":"live"},"DraftThreads":5}`, `{"DraftThreads":{"p":{"Draft":1}}}`, `{"DraftProjectID":{}}`} {
 		if _, err := PruneThreadView([]byte(input), nil); err == nil {
 			t.Fatalf("accepted %s", input)
 		}

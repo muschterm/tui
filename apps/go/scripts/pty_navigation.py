@@ -39,8 +39,10 @@ def main():
         raise AssertionError('New thread navigation row missing')
 
     def quick_action(term, row):
-        # Both hover actions are centered in the slot immediately left of ⋮.
-        menu_x = term.screen()[row].index('\ueb10')
+        # Both hover actions are centered in the slot immediately left of the
+        # trailing ⋮ (open) or Reopen (closed) icon.
+        line = term.screen()[row]
+        menu_x = next(line.index(g) for g in ('\ueb10', '\U000f17b3') if g in line)
         quick_x = menu_x - 3
         term.send(f'\x1b[<35;{quick_x+1};{row+1}M'.encode())
         assert term.screen()[row][quick_x] in ('\ueab2', '\uea81'), 'quick icon missing beside menu'
@@ -77,17 +79,20 @@ def main():
             original = view('navigation-a')['Active']
             # Default 24-cell sidebar has a single search/filter/add/new header.
             a.click(17, 2)
-            paste(a, str(marker))
-            a.click_label('Add folder as project')
+            paste(a, str(marker) + '/')
             a.pump(1.1)
             capture(a, '01-invalid-folder')
             screen = '\n'.join(a.screen())
-            check('existing directory' in screen and str(marker) in screen,
-                  'regular-file rejection retains folder input and visible error')
+            # Folder typeahead offers registration only for a listed directory.
+            check('Add this folder' not in screen and marker.name in screen,
+                  'regular file offers no registration and retains folder input')
+            check(len(snapshot()['projects']) == 1, 'regular file registers no project')
             a.send(b'\x1b')
             a.click(17, 2)
-            paste(a, str(project))
-            a.send(b'\r', 1.2)
+            paste(a, str(project) + '/')
+            a.pump(.8)
+            a.click_label('Add this folder')
+            a.pump(1.2)
             projects = snapshot()['projects']
             selected = next(p for p in projects if p['Name'] == 'Navigation project')
             check(view('navigation-a')['ProjectFilter'] == selected['ID'] and view('navigation-a')['Active'] == original,
@@ -101,7 +106,9 @@ def main():
             a.send(b'\r', .8)
             # Compose icon at the right of the inline search header.
             a.click(20, 2)
-            a.pump(1.2)
+            # New thread always asks for its destination project first.
+            paste(a, 'Navigation project')
+            a.send(b'\r', 1.2)
             draft_view = view('navigation-a')
             check(draft_view['Active'] == '' and draft_view['DraftProjectID'] == selected['ID']
                   and not any(t.get('ProjectID') == selected['ID'] for t in snapshot()['threads']),
@@ -117,7 +124,8 @@ def main():
             paste(a, 'Navigation project')
             a.send(b'\r', .8)
             a.click(20, 2)
-            a.pump(.8)
+            paste(a, 'Navigation project')
+            a.send(b'\r', 1.2)
             check(view('navigation-a')['DraftThreads'][selected['ID']]['Draft'] == 'Navigation start'
                   and 'Navigation start' in '\n'.join(a.screen()),
                   'returning to new thread restores its project-local draft')

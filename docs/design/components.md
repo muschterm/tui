@@ -50,9 +50,36 @@ the missing feature of this text renderer.
 | Rest | Quiet visible neutral border | Quiet neutral fill | Normal label |
 | Hover, unselected | Stronger neutral border | Stronger neutral fill | Existing hover action may appear |
 | Selected | Accent border | Accent-tinted fill with readable text | Bold label |
-| Keyboard focus, unselected | Stronger neutral border | Stronger neutral fill | Underlined label |
+| Keyboard focus, unselected | Stronger neutral border | Stronger neutral fill | Focus mark in the leading cell |
 | Selected and hovered | Keep selected treatment | Keep selected treatment | Keep bold label |
-| Selected and keyboard-focused | Keep selected treatment | Keep selected treatment | Bold and underlined label |
+| Selected and keyboard-focused | Keep selected treatment | Keep selected treatment | Bold label plus the focus mark |
+
+Glyph-only icon controls (pane toggles, the attention bell, sidebar header
+actions, the settings gear, tab add/overflow, dialog close, composer paperclip,
+Stop, Send and ellipses, and thread row status/quick/reopen/menu glyphs) are a
+trial exception accepted on 2026-09-21: they have no fill in any state. Hover and
+keyboard focus embolden the glyph and lift its ink toward text: muted becomes
+text, accents move halfway toward text (brighter in dark themes, deeper in
+light) in true color and become text in low-color profiles. Focus paints the
+mark in the padding cell before the glyph; selection uses accent ink plus bold.
+The glyph is centered in a reserved slot that keeps chrome spacing stable, but
+only the glyph's cell and the one trailing cell it can draw into hover or
+activate; leading padding is inert or, inside a tab, selects the tab. A tab's
+glyph sits at the start of its three-cell slot, followed by its spill cell and
+one gap cell, so tabs keep one end-cap cell of inset on each side (2026-09-22).
+
+**Focus mark (2026-09-22).** Keyboard focus does not underline. It paints an
+accent `•` (`>` in the plain-symbol fallback) in the one cell before the focused
+control that the control does not use for content: a filled control's or tab's
+leading end cap, an icon control's padding cell inside its reserved slot, or the
+blank gutter a container leaves before a text row. No cell of the control itself
+changes, so focusing never moves an icon or label. Only a control with no such
+cell (a one-cell icon slot, or a text row flush against neighbouring content)
+keeps the underline as its fallback cue.
+Nerd Font symbol outlines are identical in Bold faces, so the ink lift, not the
+weight, is the reliable cue there. Filled text controls and tabs keep the table
+above. Pointer-shape changes (xterm/kitty `OSC 22`) are not used; they remain an
+unnegotiated terminal capability.
 
 Selection is persistent state, such as the active tab or thread. Hover is temporary
 pointer presence; focus identifies the keyboard target. An action button does not
@@ -63,7 +90,7 @@ unmistakably selected. Primary-action emphasis is a role, not a false selected s
 Use semantic tokens for resting, interactive and selected border/fill, plus readable
 foregrounds. Calibrate both themes and limited-color palettes; quiet does not mean
 invisible. Avoid using ANSI dim as a substitute for a tested neutral color. Bold
-selection and underlined focus remain useful when color distinctions collapse.
+selection and the leading focus mark remain useful when color distinctions collapse.
 When background color is unavailable, compact square controls may use reserved
 `[ Label ]` end cells. Keep dimensions and independent icon slots unchanged.
 An explicit plain-symbol mode may use ASCII outlines. Never change width to add a
@@ -103,7 +130,7 @@ operations. Ordinary palette or radius choices do not each require their own ADR
 
 Resolve state once, then use one measured rectangle for painting and hit testing.
 Edges activate the same primary command as the label. Preserve distinct secondary
-slots: a tab's type icon swaps to X on hover/focus, and only that slot closes it.
+slots: a tab's type icon swaps to X on hover/focus, and only that glyph cell closes it.
 Thread status/Close/trash/menu actions retain their lifecycle rules and targets.
 Hover alone must neither select nor dispatch an action.
 

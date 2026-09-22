@@ -15,8 +15,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Store persists the authoritative snapshot, command receipts and client
+// views in one SQLite database.
 type Store struct{ db *sql.DB }
 
+// Open opens or creates the SQLite database at path.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -107,7 +110,11 @@ func Open(path string) (*Store, error) {
 
 	return &Store{db}, nil
 }
+
+// Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Load returns the stored snapshot and whether one exists.
 func (s *Store) Load() (protocol.Snapshot, bool, error) {
 	var b []byte
 	err := s.db.QueryRow("SELECT data FROM state WHERE id=1").Scan(&b)
@@ -121,6 +128,9 @@ func (s *Store) Load() (protocol.Snapshot, bool, error) {
 	err = json.Unmarshal(b, &snap)
 	return snap, true, err
 }
+
+// Lookup returns the receipt recorded for a command ID, or nil when the
+// command has not been seen.
 func (s *Store) Lookup(c protocol.Command) (*protocol.Receipt, error) {
 	var cmd, b []byte
 	err := s.db.QueryRow("SELECT command,receipt FROM commands WHERE id=?", c.ID).Scan(&cmd, &b)
@@ -138,6 +148,9 @@ func (s *Store) Lookup(c protocol.Command) (*protocol.Receipt, error) {
 	err = json.Unmarshal(b, &r)
 	return &r, err
 }
+
+// Save stores the snapshot and, when given, the command with its receipt in
+// one transaction so a retry cannot observe a partial outcome.
 func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Receipt) error {
 	b, err := json.Marshal(snap)
 	if err != nil {
@@ -178,6 +191,9 @@ func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Re
 	}
 	return tx.Commit()
 }
+
+// LoadView returns a client view; an unknown id yields an empty document at
+// revision zero.
 func (s *Store) LoadView(id string) (protocol.View, error) {
 	var v protocol.View
 	var data []byte
@@ -188,6 +204,9 @@ func (s *Store) LoadView(id string) (protocol.View, error) {
 	}
 	return v, err
 }
+
+// PutView stores a client view when its current revision equals expected,
+// rejecting invalid payloads and stale revisions.
 func (s *Store) PutView(id string, b json.RawMessage, expected int64) (protocol.View, error) {
 	if !json.Valid(b) || len(b) > 128*1024 || id == "" || len(id) > 128 || expected < 0 {
 		return protocol.View{}, &protocol.Error{Code: "invalid_view", Message: "invalid view payload, client identity, or revision"}
@@ -233,10 +252,14 @@ func (s *Store) PutView(id string, b json.RawMessage, expected int64) (protocol.
 	}
 	return protocol.View{Data: b, Revision: next}, nil
 }
+
+// View returns a client view's data without its revision.
 func (s *Store) View(id string) (json.RawMessage, error) {
 	v, err := s.LoadView(id)
 	return v.Data, err
 }
+
+// SaveView stores b against the view's current revision.
 func (s *Store) SaveView(id string, b json.RawMessage) error {
 	v, err := s.LoadView(id)
 	if err != nil {
@@ -334,8 +357,9 @@ func pruneViews(tx *sql.Tx, live, deletedCommands map[string]bool) error {
 		}
 		projected, projectErr := protocol.PruneThreadViewCommands(data, live, deletedCommands)
 		if projectErr != nil {
-			rows.Close()
-			return projectErr
+			// A view this server cannot interpret must not veto authoritative
+			// deletion; its bytes stay untouched for the owning client.
+			continue
 		}
 		if !bytes.Equal(projected, data) {
 			changes = append(changes, projection{id, projected})

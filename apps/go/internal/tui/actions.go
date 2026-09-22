@@ -19,7 +19,13 @@ func (m *Model) showMenu(title string, items []menuItem) {
 	m.menuIndex = 0
 	m.menuOffset = 0
 }
+
 func (m *Model) openCommands() {
+	if m.terminalTooSmall() {
+		// Nothing here submits, stops, deletes or changes queue/lifecycle state.
+		m.showMenu("Commands", []menuItem{{"Detach TUI (Ctrl+Q)", action{Kind: "quit"}}, {"Suspend (Ctrl+Z)", action{Kind: "suspend"}}, {"Switch dark / light theme (F8)", action{Kind: "theme"}}})
+		return
+	}
 	items := []menuItem{{"Navigation · show / hide (F2)", action{Kind: "left"}}, {"Right surfaces · show / hide (F3)", action{Kind: "right"}}, {"Bottom panel · show / hide (F5)", action{Kind: "bottom"}}, {"Maximize / restore surface (F7)", action{Kind: "maximize"}}, {"Switch dark / light theme (F8)", action{Kind: "theme"}}, {"Attention", action{Kind: "attention"}}, {"Resume selected thread", action{Kind: "resume"}}, {"Stop selected thread", action{Kind: "interrupt"}}, {"Send / save queued edit (Ctrl+S)", action{Kind: "send"}}, {"Retry pending command", action{Kind: "retry"}}, {"Rebase queued edit after conflict", action{Kind: "refresh-edit"}}, {"Closed · collapse / expand", action{Kind: "recents-collapse"}}, {"Closed · hide / restore", action{Kind: "recents-hide"}}, {"Navigation · grow", action{Kind: "resize-left", Index: 2}}, {"Navigation · shrink", action{Kind: "resize-left", Index: -2}}, {"Right · grow (Alt+Left)", action{Kind: "resize-right", Index: 2}}, {"Right · shrink (Alt+Right)", action{Kind: "resize-right", Index: -2}}, {"Bottom · grow (Alt+Up)", action{Kind: "resize-bottom", Index: 1}}, {"Bottom · shrink (Alt+Down)", action{Kind: "resize-bottom", Index: -1}}, {"Usage details", action{Kind: "usage"}}, {"Copy visible transcript", action{Kind: "copy-transcript"}}, {"Detach TUI (Ctrl+Q)", action{Kind: "quit"}}}
 	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
 		items = append(items, menuItem{"Open " + title(kind), action{Kind: "open", Value: kind}})
@@ -39,12 +45,14 @@ func (m *Model) openCommands() {
 	items = append(items, menuItem{"App settings", action{Kind: "app-settings"}}, menuItem{"Select / filter projects", action{Kind: "projects"}}, menuItem{"Add project", action{Kind: "project-add"}}, menuItem{"New thread", action{Kind: "thread-create"}}, menuItem{"Closed threads", action{Kind: "closed-threads"}}, menuItem{"Selected thread options", action{Kind: "thread-menu", ID: m.state.Active}})
 	m.showMenu("Commands", items)
 }
+
 func title(s string) string {
 	if s == "" {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
 }
+
 func (m *Model) openSurface(kind, id string) {
 	v := m.viewState()
 	if m.singleColumn() {
@@ -56,12 +64,37 @@ func (m *Model) openSurface(kind, id string) {
 	v.DetailID = id
 	v.DetailScroll = 0
 	if !m.singleColumn() && m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Right.W == 0 {
-		m.state.Layout.Maximized = true
+		m.state.Layout.RevealRight() // effective only while it cannot fit; not a preference
 	}
 	m.setFocus("right-body")
 }
 
+// hiddenWorkBlocked names why work-affecting actions are refused while their
+// controls cannot be seen.
+func (m *Model) hiddenWorkBlocked() string {
+	if m.terminalTooSmall() {
+		return fmt.Sprintf("Enlarge the terminal to at least %d×%d first", minTerminalWidth, minTerminalHeight)
+	}
+	if m.settingsPage != "" {
+		return "Return to the workspace first"
+	}
+	return ""
+}
+
 func (m *Model) activate(a action) tea.Cmd {
+	if m.terminalTooSmall() && !slices.Contains([]string{"commands", "quit", "suspend", "theme", "menu-close", "menu-select", "scrollbar"}, a.Kind) {
+		// A menu opened before the resize must not act on hidden content.
+		return m.showNotice(m.hiddenWorkBlocked())
+	}
+	if requestScoped(a) && !m.requestBound(a) {
+		m.status = "That request changed or was resolved · nothing sent"
+		return m.showNotice(m.status)
+	}
+	if slices.Contains([]string{"answer-submit", "approve", "steer"}, a.Kind) {
+		if reason := m.hiddenWorkBlocked(); reason != "" {
+			return m.showNotice(reason)
+		}
+	}
 	if handled, cmd := m.activateSidebarSettings(a); handled {
 		m.configureInputs()
 		return cmd
@@ -100,6 +133,8 @@ func (m *Model) activate(a action) tea.Cmd {
 		return nil
 	case "quit":
 		return tea.Quit
+	case "suspend":
+		return tea.Suspend
 	case "columns":
 		m.openColumns()
 	case "column":
@@ -121,9 +156,17 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "bottom":
 		if m.singleColumn() {
+			// Choosing the compact Terminal column only changes presentation;
+			// its add control opens the first session.
 			m.selectColumn(shell.BottomRegion)
-		} else {
-			m.state.Layout.ToggleBottom()
+			break
+		}
+		m.state.Layout.ToggleBottom()
+		// Showing the wide panel is the explicit request for a terminal: an
+		// empty panel opens its first session at once instead of a header
+		// and button.
+		if len(v.Bottom.Tabs) == 0 && m.bottomShown() {
+			return m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open", Value: "bottom"})
 		}
 	case "maximize":
 		if m.singleColumn() {
@@ -131,6 +174,9 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		if g := m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()); g.Right.W == 0 || g.Right.H == 0 {
 			return nil
+		}
+		if m.state.Layout.Compute(m.width, m.height-1, 0).Forced {
+			return m.showNotice("Maximize needs room beside the conversation · F3 hides the right panel")
 		}
 		m.state.Layout.ToggleMaximize(&v.Host)
 	case "dismiss-agents":
@@ -143,12 +189,21 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "theme":
 		m.state.Light = !m.state.Light
+	case "icons":
+		// Saved explicitly either way, so the choice survives a changed
+		// environment default.
+		if m.iconsSetting() == "ascii" {
+			m.state.Icons = "nerd"
+		} else {
+			m.state.Icons = "ascii"
+		}
+		m.applyIcons()
 	case "resize-left":
-		m.state.Layout.Resize(shell.LeftDivider, a.Index)
+		m.resizePane(shell.LeftDivider, a.Index)
 	case "resize-right":
-		m.state.Layout.Resize(shell.RightDivider, a.Index)
+		m.resizePane(shell.RightDivider, a.Index)
 	case "resize-bottom":
-		m.state.Layout.Resize(shell.BottomDivider, a.Index)
+		m.resizePane(shell.BottomDivider, a.Index)
 	case "recents-hide":
 		m.state.RecentsHidden = !m.state.RecentsHidden
 	case "recents-collapse":
@@ -197,8 +252,18 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "bottom-new":
 		return m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open", Value: "bottom"})
+	case "bottom-tab":
+		if v.Bottom.Select(a.ID) {
+			v.BottomScroll = 0
+		}
+	case "bottom-tabs":
+		var items []menuItem
+		for _, tab := range v.Bottom.Tabs {
+			items = append(items, menuItem{tab.Title, action{Kind: "bottom-tab", ID: tab.ID, Value: tab.Kind}})
+		}
+		m.showMenu("Bottom terminals", items)
 	case "bottom-close":
-		return m.command(protocol.Command{Kind: "terminal.close", TargetID: v.BottomID}, a)
+		return m.command(protocol.Command{Kind: "terminal.close", TargetID: a.ID}, a)
 	case "projects":
 		m.openProjectDialog("filter")
 	case "project-add":
@@ -282,7 +347,8 @@ func (m *Model) activate(a action) tea.Cmd {
 		return m.command(protocol.Command{Kind: "thread.delete", ThreadID: a.ID, Revision: int64(a.Index)}, a)
 	case "thread-close", "thread-reopen":
 		if target, ok := m.threadByID(a.ID); ok {
-			if m.state.Edit != nil && m.state.Active == a.ID {
+			// Reopen selects its thread; Close selects another when it is active.
+			if m.state.Edit != nil && (a.Kind == "thread-reopen" || m.state.Active == a.ID || m.state.Edit.ThreadID == a.ID) {
 				m.status = "Save or cancel the queued edit first"
 				return nil
 			}
@@ -309,7 +375,7 @@ func (m *Model) activate(a action) tea.Cmd {
 			m.showMenu("Closed threads", items)
 		}
 	case "thread":
-		if m.state.Edit != nil {
+		if m.state.Edit != nil && a.ID != m.state.Edit.ThreadID {
 			m.status = "Save or cancel this queued edit before switching threads"
 			return nil
 		}
@@ -340,9 +406,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		if m.state.Active == a.ID {
 			for i, r := range m.requests() {
 				if r.ID == a.Value {
-					m.viewState().RequestIndex = i
-					m.viewState().QuestionIndex = 0
-					m.loadAnswer()
+					m.selectRequest(i)
 				}
 			}
 		}
@@ -359,7 +423,7 @@ func (m *Model) activate(a action) tea.Cmd {
 			return nil
 		}
 		if m.busy != nil {
-			return m.dispatch(*m.busy, m.busyAction)
+			return m.dispatch(*m.busy, m.busyAction, true)
 		}
 		m.status = "No uncertain command to retry"
 	case "send":
@@ -409,10 +473,14 @@ func (m *Model) activate(a action) tea.Cmd {
 			}
 		}
 	case "cancel-edit":
-		if m.state.Edit != nil {
-			m.prompt.SetValue(m.state.Edit.OldDraft)
-			v.Draft = m.state.Edit.OldDraft
-			v.Settings = m.state.Edit.OldSettings
+		if e := m.state.Edit; e != nil {
+			// Restore into the edited thread, never into whichever is active.
+			if ev := m.state.Threads[e.ThreadID]; ev != nil {
+				ev.Draft, ev.Settings = e.OldDraft, e.OldSettings
+			}
+			if m.state.Active == e.ThreadID && !m.creatingThread() {
+				m.prompt.SetValue(e.OldDraft)
+			}
 			m.state.Edit = nil
 		}
 	case "remove":
@@ -520,9 +588,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		m.showMenu("Running agents", items)
 	case "request-next":
-		v.RequestIndex++
-		v.QuestionIndex, v.RequestScroll = 0, 0
-		m.loadAnswer()
+		m.selectRequest(m.requestIndex(m.requests()) + 1)
 	case "request-select":
 		var items []menuItem
 		for _, r := range m.requests() {
@@ -532,8 +598,7 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "request-index":
 		for i, r := range m.requests() {
 			if r.ID == a.ID {
-				v.RequestIndex, v.QuestionIndex, v.RequestScroll = i, 0, 0
-				m.loadAnswer()
+				m.selectRequest(i)
 			}
 		}
 	case "question":
@@ -544,7 +609,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		if r, ok := m.request(); ok {
 			var items []menuItem
 			for i, q := range r.Questions {
-				items = append(items, menuItem{questionTabLabel(q, i, false), action{Kind: "question-index", Index: i}})
+				items = append(items, menuItem{questionTabLabel(q, i, false), action{Kind: "question-index", ID: r.ID, Index: i, Revision: r.Revision}})
 			}
 			m.showMenu("Questions", items)
 		}
@@ -559,10 +624,10 @@ func (m *Model) activate(a action) tea.Cmd {
 			var items []menuItem
 			for _, o := range q.Options {
 				mark := m.questionMarker(protocol.QuestionKind(q), slices.Contains(d.Choices, o)) + " "
-				items = append(items, menuItem{mark + o, action{Kind: "answer-choice", Value: o}})
+				items = append(items, menuItem{mark + o, action{Kind: "answer-choice", ID: r.ID, Value: o, Revision: r.Revision}})
 			}
 			if protocol.QuestionAllowsOther(q) {
-				items = append(items, menuItem{m.questionMarker(protocol.QuestionKind(q), d.Other) + " Other…", action{Kind: "answer-other"}})
+				items = append(items, menuItem{m.questionMarker(protocol.QuestionKind(q), d.Other) + " Other…", action{Kind: "answer-other", ID: r.ID, Revision: r.Revision}})
 			}
 			m.showMenu("Answer options", items)
 		}
@@ -570,14 +635,14 @@ func (m *Model) activate(a action) tea.Cmd {
 		if r, ok := m.request(); ok && r.Kind == "approval" {
 			var items []menuItem
 			for _, choice := range r.Choices {
-				items = append(items, menuItem{choice, action{Kind: "approve", Value: choice}})
+				items = append(items, menuItem{choice, action{Kind: "approve", ID: r.ID, Value: choice, Revision: r.Revision}})
 			}
 			m.showMenu("Approval choices", items)
 		}
 	case "answer-submit":
 		return m.submitAnswers(a)
 	case "approve":
-		if r, ok := m.request(); ok {
+		if r, ok := m.request(); ok && r.Kind == "approval" && slices.Contains(r.Choices, a.Value) {
 			return m.command(protocol.Command{Kind: "request.answer", TargetID: r.ID, Revision: r.Revision, Answers: []string{a.Value}}, a)
 		}
 	case "request-detail":
@@ -599,10 +664,21 @@ func (m *Model) activate(a action) tea.Cmd {
 	m.configureInputs()
 	return cmd
 }
+
 func (m *Model) showChooser() {
 	var items []menuItem
 	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
 		items = append(items, menuItem{title(kind), action{Kind: "open", Value: kind}})
 	}
 	m.showMenu("Add surface", items)
+}
+
+// bottomShown reports whether the wide center-bottom panel is actually
+// presented for an authoritative thread: a draft has no thread to own a
+// session, and a short height collapses the panel.
+func (m *Model) bottomShown() bool {
+	if m.state.Active == "" || m.creatingThread() || m.singleColumn() {
+		return false
+	}
+	return m.state.Layout.Bottom && m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Bottom.H > 0
 }

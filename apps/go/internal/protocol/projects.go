@@ -16,8 +16,12 @@ type AppSettings struct {
 	ProjectDirectory     string
 	ContinueAfterRestart bool
 }
+
+// ProjectSettings are the per-project fields a project.update command may change.
 type ProjectSettings struct{ Name, Icon, Color, WorkspaceDefault string }
 
+// EffectiveWorkspaceDefault resolves a project's workspace default through the
+// app default to the built-in "checkout".
 func EffectiveWorkspaceDefault(app AppSettings, project Project) string {
 	if project.WorkspaceDefault != "" {
 		return project.WorkspaceDefault

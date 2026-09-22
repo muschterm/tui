@@ -24,17 +24,20 @@ type pathCompletion struct {
 	err        string
 	cancel     context.CancelFunc
 }
+
 type pathQueryReady struct {
 	key        string
 	generation uint64
 	request    protocol.BrowseRequest
 }
+
 type pathQueryResult struct {
 	key        string
 	generation uint64
 	result     protocol.BrowseResult
 	err        error
 }
+
 type promptMention struct {
 	start, end int
 	query, key string
@@ -138,6 +141,7 @@ func (m *Model) runPathQuery(msg pathQueryReady) tea.Cmd {
 		return pathQueryResult{key: msg.key, generation: msg.generation, result: result, err: err}
 	}
 }
+
 func (m *Model) acceptPathQuery(msg pathQueryResult) {
 	key, _ := m.pathRequest()
 	if key != msg.key || msg.generation != m.paths.generation {
@@ -252,11 +256,13 @@ func (m *Model) mentionEntries() []protocol.PathEntry {
 	}
 	return entries
 }
+
 func (m *Model) dismissMention() {
 	if mention, ok := m.activeMention(); ok {
 		m.mentionDismissed = mention.key
 	}
 }
+
 func (m *Model) mentionKey(k tea.KeyPressMsg) (bool, tea.Cmd) {
 	if _, ok := m.activeMention(); !ok {
 		return false, nil
@@ -280,6 +286,7 @@ func (m *Model) mentionKey(k tea.KeyPressMsg) (bool, tea.Cmd) {
 	}
 	return false, nil
 }
+
 func (m *Model) selectMention(index int) tea.Cmd {
 	mention, ok := m.activeMention()
 	entries := m.mentionEntries()
@@ -344,6 +351,7 @@ func (m *Model) mentionRect(f frame) shell.Rect {
 	h := min(n+4, max(0, f.prompt.Y-1))
 	return shell.Rect{X: f.prompt.X - 1, Y: f.prompt.Y - 1 - h, W: f.prompt.W + 2, H: h}
 }
+
 func (m *Model) renderMentions(f *frame) {
 	r := m.mentionRect(*f)
 	if r.H < 4 {
@@ -360,10 +368,10 @@ func (m *Model) renderMentions(f *frame) {
 	}
 	f.hits = filtered
 	// The whole popup, including padding, consumes pointer activation.
-	f.hits = append(f.hits, hit{r, action{Kind: "mention-background"}, "Project files", "mention-background"})
+	f.hits = append(f.hits, hit{Rect: r, Action: action{Kind: "mention-background"}, Label: "Project files", Key: "mention-background"})
 	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, componentState{Focused: true}, p.text, p.input), p.canvas)
 	f.text(r.X+1, r.Y+1, r.W-5, "Project files · @", p.violet, p.input)
-	f.button(m, r.X+r.W-4, r.Y+1, 3, centered(m.icon("close"), 3), "mention-dismiss", action{Kind: "mention-dismiss"}, p.muted, p.input)
+	f.iconButton(m, r.X+r.W-4, r.Y+1, 3, centered(m.icon("close"), 3), "mention-dismiss", action{Kind: "mention-dismiss"}, p.muted, p.input)
 	entries := m.mentionEntries()
 	visible := r.H - 4
 	start := max(0, min(m.mentionIndex-visible+1, len(entries)-visible))

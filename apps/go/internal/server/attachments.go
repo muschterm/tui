@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,7 +39,7 @@ func captureCommand(parent context.Context, s protocol.Snapshot, c protocol.Comm
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
-		return c, err
+		return c, captureInterrupted(err)
 	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
@@ -51,7 +52,7 @@ func captureCommand(parent context.Context, s protocol.Snapshot, c protocol.Comm
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			return c, err
+			return c, captureInterrupted(err)
 		}
 		if a.Source == "" || !validRelativePath(a.Source) || a.Content != "" {
 			return c, attachmentFailure(a.Source, "select a relative workspace file without supplied content")
@@ -60,6 +61,10 @@ func captureCommand(parent context.Context, s protocol.Snapshot, c protocol.Comm
 		file, err := root.OpenFile(a.Source, os.O_RDONLY|unix.O_NONBLOCK, 0)
 		if err != nil {
 			return c, attachmentFailure(a.Source, "cannot capture selected file: "+err.Error())
+		}
+		if insideGit(root, a.Source) {
+			_ = file.Close()
+			return c, attachmentFailure(a.Source, "select a workspace file outside .git")
 		}
 		info, statErr := file.Stat()
 		if statErr != nil || !info.Mode().IsRegular() || info.Size() > 65536 {
@@ -78,7 +83,7 @@ func captureCommand(parent context.Context, s protocol.Snapshot, c protocol.Comm
 		c.Attachments[i] = a
 	}
 	if err := ctx.Err(); err != nil {
-		return c, err
+		return c, captureInterrupted(err)
 	}
 	return c, nil
 }
@@ -93,6 +98,14 @@ func captureRoot(s protocol.Snapshot, c protocol.Command) (string, error) {
 		req.ProjectID, req.ThreadID = c.ProjectID, ""
 	}
 	return browseRoot(s, req)
+}
+
+// A bare context error would surface as a storage failure.
+func captureInterrupted(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return failure("attachment", "capture timed out; nothing was sent")
+	}
+	return failure("attachment", "capture cancelled; nothing was sent")
 }
 
 func attachmentFailure(source, message string) error {

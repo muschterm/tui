@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -21,9 +22,17 @@ func TestProjectRemovalRollbackAndPayloadPurge(t *testing.T) {
 	if err := st.Save(snap, &create, &protocol.Receipt{ID: create.ID, State: "accepted", TargetID: "gone"}); err != nil {
 		t.Fatal(err)
 	}
-	// An invalid legacy view makes projection fail after receipt tombstones have
-	// been staged; the transaction must roll all of those changes back.
-	if _, err := st.db.Exec("INSERT INTO views(id,data,revision) VALUES('broken',?,1)", []byte(`{"Threads":42}`)); err != nil {
+	// A failed view projection happens after receipt tombstones have been
+	// staged; the transaction must roll all of those changes back.
+	if _, err := st.PutView("stale", json.RawMessage(`{"Active":"gone"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec("CREATE TRIGGER injected BEFORE UPDATE ON views BEGIN SELECT RAISE(ABORT,'injected view failure'); END"); err != nil {
+		t.Fatal(err)
+	}
+	// An uninterpretable legacy view is left alone instead of blocking removal.
+	broken := []byte(`{"Threads":42, "StartedDraft":{"ThreadID":"live","Command":{}},"DraftThreads":5}`)
+	if _, err := st.db.Exec("INSERT INTO views(id,data,revision) VALUES('broken',?,1)", broken); err != nil {
 		t.Fatal(err)
 	}
 	next := snap
@@ -33,7 +42,7 @@ func TestProjectRemovalRollbackAndPayloadPurge(t *testing.T) {
 	remove := protocol.Command{Version: 1, ID: "remove", Kind: "project.remove", ProjectID: "removed"}
 	receipt := protocol.Receipt{ID: remove.ID, State: "accepted"}
 	if err := st.Save(next, &remove, &receipt); err == nil {
-		t.Fatal("invalid saved view silently discarded")
+		t.Fatal("failed view projection did not fail removal")
 	}
 	loaded, _, err := st.Load()
 	if err != nil || !reflect.DeepEqual(loaded, snap) {
@@ -48,11 +57,17 @@ func TestProjectRemovalRollbackAndPayloadPurge(t *testing.T) {
 	if r, err := st.Lookup(remove); err != nil || r != nil {
 		t.Fatal("failed removal recorded receipt", err)
 	}
-	if _, err := st.db.Exec("DELETE FROM views WHERE id='broken'"); err != nil {
+	if _, err := st.db.Exec("DROP TRIGGER injected"); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Save(next, &remove, &receipt); err != nil {
-		t.Fatal(err)
+		t.Fatal("malformed view blocked project removal:", err)
+	}
+	if v, err := st.LoadView("broken"); err != nil || !bytes.Equal(v.Data, broken) || v.Revision != 1 {
+		t.Fatal("malformed view was not preserved byte-for-byte", string(v.Data), err)
+	}
+	if v, err := st.LoadView("stale"); err != nil || string(v.Data) != `{"Active":""}` || v.Revision != 2 {
+		t.Fatal("valid view was not pruned", string(v.Data), err)
 	}
 	rows, err := st.db.Query("SELECT command,receipt FROM commands")
 	if err != nil {

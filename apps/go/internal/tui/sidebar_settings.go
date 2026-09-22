@@ -216,7 +216,7 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 		}
 	case "project-remove-confirm":
 		return true, m.command(protocol.Command{Kind: "project.remove", ProjectID: a.ID, Revision: a.Revision}, a)
-	case "theme":
+	case "theme", "icons":
 		if m.settingsProjectID == "" {
 			return false, nil
 		}
@@ -343,6 +343,15 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 		}
 		button(value, "theme", action{Kind: "theme"})
 		paragraph("Saved for this client. F8 switches themes.")
+		gap()
+		heading("Symbols")
+		button(iconsLabel(m.iconsSetting()), "icons", action{Kind: "icons"})
+		paragraph("Nerd Font uses patched-font control glyphs. Choose ASCII when they render as boxes or misaligned cells.")
+		if m.state.Icons == "" {
+			paragraph("Following the TUI_GO_ICONS environment default until a choice is saved here.")
+		} else {
+			paragraph("Saved for this client; TUI_GO_ICONS no longer applies.")
+		}
 	case "keybindings":
 		name = "Keybindings"
 		if m.settingsProjectID != "" {

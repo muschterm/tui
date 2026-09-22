@@ -22,6 +22,7 @@ func agentDisplayName(value string) string {
 	}
 	return safe(value)
 }
+
 func modelDisplayName(value string) string {
 	switch strings.ToLower(value) {
 	case "":
@@ -39,6 +40,7 @@ func modelDisplayName(value string) string {
 	}
 	return safe(value)
 }
+
 func effortDisplayName(value string) string {
 	switch strings.ToLower(value) {
 	case "none":
@@ -62,6 +64,7 @@ func effortDisplayName(value string) string {
 	}
 	return safe(value)
 }
+
 func permissionDisplayName(value string) string {
 	if value == "fixture-only" {
 		return "Simulated"
@@ -71,6 +74,7 @@ func permissionDisplayName(value string) string {
 	}
 	return safe(value)
 }
+
 func optionalSetting(value string) bool {
 	return value != "" && value != "unavailable" && value != "unknown"
 }

@@ -70,11 +70,13 @@ The accepted [component rule](components.md) and
   Square outlines remain available where an explicit boundary is useful.
 
 Rest uses a quiet neutral border or fill; hover uses a stronger neutral; selection
-uses an accent and bold label. Keyboard focus independently underlines the label.
+uses an accent and bold label. Keyboard focus independently paints a mark in the
+cell before the control, never moving the control (2026-09-22; see
+[components](components.md#state-feedback)).
 Selection retains its treatment while hovered, including when a neighbor is
 hovered. Semantic status icons keep their own colors. Interaction must not change
 padding, shape or hit geometry. Monochrome compact controls use reserved bracket
-end cells; bold selection and underlined focus remain distinct.
+end cells; bold selection and the leading focus mark remain distinct.
 
 Question content scrolls within its bounded card. Tab edges select; only the
 independent icon slot closes. Preserve fixed question-arrow slots and overflow

@@ -132,8 +132,10 @@ func TestDeleteFailureRollsBackEveryStore(t *testing.T) {
 	if err := s.Save(snap, &cmd, &protocol.Receipt{ID: cmd.ID}); err != nil {
 		t.Fatal(err)
 	}
-	// A corrupt known view field cannot safely be projected; fail the whole delete.
-	if _, err := s.db.Exec("INSERT INTO views(id,data,revision) VALUES('corrupt',?,1)", []byte(`{"Threads":[]}`)); err != nil {
+	if _, err := s.PutView("stale", json.RawMessage(`{"Active":"gone"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("CREATE TRIGGER injected BEFORE UPDATE ON views BEGIN SELECT RAISE(ABORT,'injected view failure'); END"); err != nil {
 		t.Fatal(err)
 	}
 	del := protocol.Command{Version: 1, ID: "delete", Kind: "thread.delete", ThreadID: "gone"}
@@ -141,7 +143,7 @@ func TestDeleteFailureRollsBackEveryStore(t *testing.T) {
 	next.Threads = next.Threads[1:]
 	next.Terminals = next.Terminals[1:]
 	if err := s.Save(next, &del, &protocol.Receipt{ID: del.ID}); err == nil {
-		t.Fatal("malformed view deletion accepted")
+		t.Fatal("failed view projection did not fail deletion")
 	}
 	stored, _, err := s.Load()
 	if err != nil || len(stored.Threads) != 2 || len(stored.Terminals) != 2 {

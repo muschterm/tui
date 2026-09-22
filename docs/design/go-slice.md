@@ -14,14 +14,20 @@ make test
 ./bin/tui-go
 ```
 
+`make check` runs gofmt, `go vet`, staticcheck, race tests and the build; `make lint`,
+`make vuln` and `make pty` are available separately (see
+[the command line](#command-line-interface--2026-09-22)).
+
 Launch starts or attaches to the background server. The application home is `~/.tui-go`; set `TUI_GO_HOME` to an absolute temporary directory for isolated experiments. It contains `state.sqlite`, discovery, lock and server-log files, plus retained migration backups and per-incarnation shutdown outcomes when created. Exiting the TUI leaves the server running. Use:
 
 ```sh
+./bin/tui-go --help
 ./bin/tui-go server start
 ./bin/tui-go server status
 ./bin/tui-go --client desk
 ./bin/tui-go snapshot
 ./bin/tui-go probe
+./bin/tui-go version
 ./bin/tui-go server stop
 ```
 
@@ -50,7 +56,7 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 
 Pointer paths include visible controls, divider dragging, wheel scrolling and text selection. Terminal bracketed paste is supported; native Ctrl+V is disabled because its asynchronous widget path can split a grapheme at the input limit. Complex emoji pointer positioning and shortcut remapping remain prototype limitations. Clipboard and enhanced key delivery depend on the host terminal; their presence in the prototype is not evidence of every terminal/SSH/tmux path. The command menu exposes left-pane resizing as well. The shell supplies opened-surface tabs, singleton non-terminal surfaces, repeatable fixture terminals, attention, inspectors and fixed composer-adjacent activity. Usage remains unavailable, and rich graphics are not claimed.
 
-Controls use Nerd Font Codicons by default; configure a patched font in your terminal. `TUI_GO_ICONS=ascii ./bin/tui-go` selects the explicit plain-symbol fallback. Pane glyphs reflect visible open/closed state. Tabs contain an icon and name; hovering a tab or focusing its icon reveals the close action. Only the icon slot closes it. The overflow control appears only when some tabs are hidden, with one row per surface and Delete as a keyboard close path.
+Controls use Nerd Font Codicons by default; configure a patched font in your terminal. Settings › Appearance › Symbols switches this client to the ASCII fallback and back without restarting; `TUI_GO_ICONS=ascii ./bin/tui-go` is the environment default for a client that has not saved a choice (2026-09-22). Pane glyphs reflect visible open/closed state. Tabs contain an icon and name; hovering a tab or focusing its icon reveals the close action. Only the icon slot closes it. The overflow control appears only when some tabs are hidden, with one row per surface and Delete as a keyboard close path.
 
 The composer starts at two editable rows inside its outline and grows with wrapped text and newlines to eight rows where space permits. Short layouts reduce the cap while keeping fixed controls visible. Additional text scrolls and remains intact. Scrollbars appear for overflowing transcript, inspector, request text, composer/answer, navigation, bottom output and menus. Click the track to page or drag the thumb; one-cell tracks have no drag travel, so use wheel/keyboard. Reading older input lines does not move the insertion cursor; typing returns to it. See [controls validation and captures](../research/go-controls-2026-09-19.md).
 
@@ -140,7 +146,7 @@ Current bounds: 768 KiB command bodies; 16,384-byte prompts; 32 queued prompts p
 
 ## Dependencies and implementation assumptions
 
-[go.mod](../../apps/go/go.mod) pins Go 1.27.1, Bubble Tea 2.0.9, Bubbles 2.2.1, Lip Gloss 2.0.6, modernc SQLite 1.59.0 and coder/websocket 1.8.15, with checked-in module sums. Tea/Bubbles/Lip Gloss supply input/rendering, composer widgets and styling but add terminal compatibility work. These maintained releases were verified through the public Go module proxy and their downloaded versioned source on 2026-09-19. The existing transitive `uniseg` 0.4.7 dependency is now direct for grapheme-safe editing; `x/ansi` 0.11.8 provides cell-aware clipping/sanitization, and `x/sys` 0.48.0 supplies Unix locks and terminal queries. Their cost is a pinned Unicode/terminal implementation surface that still needs compatibility checks. Pure-Go SQLite avoids a cgo deployment dependency at the cost of a larger dependency/binary footprint. WebSocket support supplies transport framing and connection handling; application authentication, versioning and catch-up remain this repository's responsibility. The POSIX lock/process implementation currently targets macOS/Linux; Windows remains outstanding.
+[go.mod](../../apps/go/go.mod) pins Go 1.27.1, Bubble Tea 2.0.9, Bubbles 2.2.1, Lip Gloss 2.0.6, modernc SQLite 1.59.0 and coder/websocket 1.8.15, with checked-in module sums. Tea/Bubbles/Lip Gloss supply input/rendering, composer widgets and styling but add terminal compatibility work. These maintained releases were verified through the public Go module proxy and their downloaded versioned source on 2026-09-19. The existing transitive `uniseg` 0.4.7 dependency is now direct for grapheme-safe editing; `x/ansi` 0.11.8 provides cell-aware clipping/sanitization, and `x/sys` 0.48.0 supplies Unix locks and terminal queries. Their cost is a pinned Unicode/terminal implementation surface that still needs compatibility checks. Pure-Go SQLite avoids a cgo deployment dependency at the cost of a larger dependency/binary footprint. WebSocket support supplies transport framing and connection handling; application authentication, versioning and catch-up remain this repository's responsibility. The POSIX lock/process implementation currently targets macOS/Linux; Windows remains outstanding. cobra 1.10.2 (with pflag 1.0.9 and the Windows-only mousetrap 1.1.0) supplies subcommand parsing, per-command help and shell completion for the command line; staticcheck 0.8.1 and govulncheck 1.8.0 are pinned as go.mod `tool` dependencies for `make lint` and `make vuln`, so they are reproducible without entering the binary. See [ADR 0012](../adr/0012-go-cli-framework.md).
 
 The fixture runner is intentionally bounded to synthetic work. Workspace file context capture is limited to the source-backed UTF-8 attachment path described below. There are no workspace file writes, Git mutations, real agent jobs or interactive terminal subprocesses. Application persistence is real. A displayed terminal's controller field is fixture state, not a verified PTY controller contract. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
 
@@ -314,7 +320,8 @@ corner experiments: prompt, thread, request and dialog containers use rounded
 outlines and stable interior backgrounds; question/surface tabs and compact
 actions use single-row square fills. Square outlines remain available. Rest and
 hover use distinct neutral shades; selection uses accent plus bold, and keyboard
-focus independently underlines the label. Status colors remain semantic.
+focus independently paints a mark in the cell before the control (2026-09-22,
+replacing the underline; see below). Status colors remain semantic.
 Question content remains scrollable inside its 12-row maximum. Tab edges select;
 the separate icon closes. Incremental painting bounds retained ANSI styling.
 The [earlier control experiments](../research/go-prompt-corners-2026-09-20.md)
@@ -338,6 +345,20 @@ The leading circle keeps its status color and selects/reopens the thread. Hover
 or keyboard focus reveals the eligible action without shifting the title. The
 phone navigation column uses the same placement. Existing inactive-only Close
 and permanent-Delete confirmation behavior remain unchanged.
+
+## Closed row refinement — 2026-09-21
+
+Closed cards are three rows (border, title, border) instead of four; the state
+and project line is omitted and stays in the row's help text. The Closed
+heading, closed titles, finished/working circles and the trailing icon use a
+dimmed ink (`#67738f` dark, `#8790a7` light, 242/244 in 256-color, bright black
+in ANSI); selection, hover, focus, red error and yellow attention feedback are
+unchanged. The trailing slot reveals Reopen only on card hover or keyboard focus, like
+trash (`md-arrow_u_left_top` U+F17B3, the turning-left
+arrow closest to T3's lucide `Undo2` row action; `<` in plain mode)
+instead of the vertical ellipsis and sends the existing `thread-reopen` action.
+Trash keeps the reserved slot to its left. Glyph appearance in a real Nerd Font
+terminal has not been visually reviewed here.
 
 Validation on 2026-09-20: `GOCACHE=/tmp/tui-go-build make check` passed formatting,
 vet, race tests and build. The action-slot regressions cover narrow navigation,
@@ -426,3 +447,146 @@ client relaunch alone cannot enable these server capabilities.
 Validation and remaining limits are tracked in the
 [project-path checkpoint](../implementation/project-path-checkpoint.md). This
 slice adds no provider, collaborative-editor or embedded-terminal integration.
+
+## Code review hardening — 2026-09-21
+
+A three-part review of the backend, TUI state/input and rendering/hit testing
+found and fixed 24 confirmed defects, each with a regression test. User-visible
+changes: request menus and answer typing stay bound to the request they were
+opened for and close when it changes; thread switches are refused during a
+queued edit; a failed pre-send view save reports “Not sent” instead of leaving
+a pending command; below the minimum size the Commands menu offers only Detach,
+Suspend and Theme, and paste is ignored behind menus; opening a surface that
+cannot fit presents it full width without storing a maximize preference, with
+the maximize control absent while that presentation is forced; pane resizing is
+clamped to the effective layout; selection is dropped when its basis changes.
+Dispatched prompts keep one copy of their capture (`Activity.Prompt`), with a
+summary in `Detail`. Rebuild and relaunch the TUI; restart an older server when
+ready to load the backend fixes (restart also compacts duplicated legacy
+details). See the [review record](../research/go-code-review-2026-09-21.md) for
+findings, evidence, the repaired PTY harnesses and what remains open.
+
+## Icon control feedback and header glyphs — 2026-09-21
+
+Glyph-only controls now render through `iconButton`: the glyph is centered in
+its former slot, but the hit rectangle is only the glyph's cells plus one
+trailing cell (`hit.Slot` records the slot for layout checks). Hover and keyboard focus set bold and lift
+muted ink to text; there is no hover fill. Measured in the installed
+JetBrainsMono Nerd Font, icon outlines are byte-identical between the Regular
+and Bold faces, so the weight change is expected to be invisible there and the
+ink lift carries the feedback: accent inks blend halfway toward the text color
+(`lift`), which the user confirmed after bold alone showed nothing on blue icons.
+Since 2026-09-22 focus paints the mark in the padding cell before the glyph
+instead of underlining; only a slot with no leading padding (the thread status
+circle, the activity summary circle) keeps the underline. That same font is the
+wide (non-Mono) variant: icons advance one cell but draw up to 1.56 cells wide
+from the cell's left edge; a glyph-only target missed that spill in the user's
+terminal, so the trailing cell is part of every icon target. The sidebar header now uses Font Awesome glyphs
+(`fa-folder_o`, `fa-folder_plus`, `fa-pen_to_square`): the folder pair shares an
+identical 923×808 box and the pen square is 916×916 with the same center, close
+to the earlier scale. A Material Design trio tried first aligned but read as
+smaller (668 tall). The previous `cod-new_folder` was 20% taller than
+`cod-folder`, which read as misalignment. Measured in Maple Mono NF v7.9
+(release `MapleMono-NF-unhinted.zip`): every glyph used here is present with the
+same 600 advance and identical outline boxes as JetBrainsMono Nerd Font, and its
+Bold face also carries identical icon outlines, so the same conclusions apply.
+`fa-folder_plus` (U+EEC7) requires Nerd Fonts ≥ 3.2.1 (March 2024); the other
+glyphs predate it. Visual review in a real terminal
+is still pending for both changes.
+
+## Top bar composition — 2026-09-21
+
+`renderChrome` now lays out: left toggle, bold application title (`tui-go`,
+key `app-title`, action `thread-create` with the project filter as its value,
+so no filter opens the project chooser), the breadcrumb (`breadcrumb-project`
+hit over the project icon and name with the no-fill icon hover, then `  /  `
+and the thread title in text ink), the attention bell, and the pane controls.
+The bell's right edge is the center pane's right edge whenever the right host
+is visible and not maximized; the controls are right-aligned to the terminal
+edge, which is inside the host's span because its minimum width (24) exceeds
+the 19-cell control group. Maximize/restore use `fa-up_right_and_down_left_from_center`
+and `fa-down_left_and_up_right_to_center` (Nerd Fonts ≥ 3.2.1), the diagonal
+arrows of T3's `Maximize2`/`Minimize2`. The breadcrumb is left-justified one cell into the
+center pane (or directly after the toggle when navigation is hidden, which also
+hides the title) and truncates the title first while the project keeps at least
+a third of the space. The top row takes each pane's background and continues
+the dividers, whose glyph is drawn on row 0 and whose drag hit area includes
+that row (`Geometry.DividerAt` folds the top bar row onto the divider). The bell sits two slot cells left of the first control so its
+glyph pitch matches the six-cell pitch between controls; earlier it was five.
+A draft thread (`Active == ""` with a draft project) previously fell into the
+empty-state geometry that hides the right and bottom panes, so its toggles
+changed state without effect; `workspaceGeometry` now keys on `hasComposer`. A default project is not modeled, so the title falls back
+to the project chooser rather than a stored default. Visual review in a real
+terminal is pending.
+
+## Focus mark, tab insets and bottom terminal tabs — 2026-09-22
+
+The user asked for narrower right-host tabs, a focus cue that does not move the
+focused control, and a bottom panel that opens straight into a terminal tab.
+
+- **Tabs** are now end cap, glyph, its spill cell, one gap cell, the title and
+  end cap (`title + 5` cells, capped at 24), matching T3's tight `pl-1.5`/`pr-2`
+  tab insets instead of centering the glyph in its slot. The close target is
+  still the glyph plus spill cell; caps and the gap select the tab.
+- **Keyboard focus** paints `•` (`>` with `TUI_GO_ICONS=ascii`) in accent ink in
+  the cell before the control: a compact control's or tab's leading cap, an icon
+  control's padding cell inside its slot, or the blank gutter before a text row
+  (dialog rows, chooser rows, thread titles, settings rows). `styledButton` checks
+  that the gutter cell is blank before using it and otherwise underlines, so a
+  transcript row flush against the divider keeps the old cue. The mark is painted
+  from `componentVisual`, so frames built directly in tests carry it too.
+- **Bottom panel** holds a per-thread `shell.Host` of terminal tabs with the same
+  `tab` renderer, overflow menu and trailing add control as the right host and no
+  title row. Toggling the wide panel on while the thread has no bottom session
+  sends `terminal.open` at once; the tab appears from the receipt. Tab close sends
+  `terminal.close` for that identity; the last close hides the panel. Compact
+  column selection stays presentation-only, showing the empty tab row and add
+  control. Saved views that recorded the earlier single `BottomID` are migrated
+  into one tab on load. Terminal tabs number past the highest existing number in
+  their host, so a reopened instance never repeats a live tab's name.
+
+Validation: `make check` (build, vet, tests) passed; `python3 scripts/pty_small_screen.py`
+passed with the Terminal column now showing “No terminal sessions” and its add
+control. A PTY capture at 140×40 (`F5`, Tab to New terminal, Enter) showed the
+panel opening as `Terminal 1`, adding `Terminal 2`, and the mark before the
+focused close slot without shifting the tab; right-host tabs rendered as
+`  Files   Git ` with the mark replacing the cap on focus. Nerd Font rendering
+of the glyphs beside the mark was not re-measured in a real terminal font.
+
+## Command-line interface — 2026-09-22
+
+The binary is a conventional CLI built on cobra. `tui-go` alone opens the TUI;
+everything else is a subcommand with its own `--help`:
+
+| Command | Behavior |
+| --- | --- |
+| `tui-go [--client NAME]` | Ensure the home's server is running, then attach the TUI. Refuses with a hint when stdin or stdout is not a terminal. |
+| `tui-go server start` | Start the server if needed and print `state`, `pid`, `url`, `home` and `instance_id` as JSON. The bearer token is never printed. |
+| `tui-go server status` | Print the same JSON for a reachable server. Otherwise exit 1 with "no server is running for HOME" or "not reachable (stale discovery or shutting down)". |
+| `tui-go server stop` | Graceful stop with the confirmed shutdown outcome; failure or an unconfirmed outcome exits 1. |
+| `tui-go server run` | Run the server in the foreground; `start` and the TUI launch this in the background with output in `server.log`. |
+| `tui-go snapshot` | Authoritative state as JSON. |
+| `tui-go probe` | Build, runtime and terminal environment diagnostics as JSON; not capability evidence. |
+| `tui-go version`, `--version` | Build version: a linker `-X` value, else the module version plus the VCS revision and `-dirty` marker that the Go toolchain stamps. |
+| `tui-go completion bash\|zsh\|fish\|powershell` | Shell completion script; `tui-go completion <shell> --help` shows how to install it. |
+| `tui-go help [command]` | The same text as `--help`. |
+
+`--home DIR` on any command overrides `TUI_GO_HOME`; the flag, the variable and
+`~/.tui-go` resolve in that order, and a TUI launch passes its home to the server
+it starts. Exit codes are 0 for success, 1 for failure and 2 for a usage error
+(unknown command or flag, invalid `--client` name). Errors print as `tui-go: …`
+on stderr; usage errors add `Run 'tui-go <command> --help' for usage.` Server
+status categories and richer exit codes remain unselected in the
+[server design](server.md#command-and-shutdown-semantics).
+
+Enable completion for the current shell, for example:
+
+```sh
+source <(./bin/tui-go completion zsh)   # bash: source <(./bin/tui-go completion bash)
+./bin/tui-go completion fish | source   # fish
+```
+
+`internal/cli` owns parsing, help, output and exit codes and is unit-tested
+without a process; `cmd/tui-go` is a signal-aware `main`. The OS-PTY harnesses in
+`apps/go/scripts/` ([README](../../apps/go/scripts/README.md)) drive this CLI and
+run through `make pty`. See the [CLI and standards review](../research/go-cli-review-2026-09-22.md).

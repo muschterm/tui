@@ -7,7 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,11 +32,17 @@ type threadView struct {
 	Attachments                                                      []protocol.Attachment
 	Scroll, DetailScroll, RequestIndex, QuestionIndex, RequestScroll int
 	BottomScroll                                                     int
-	DetailID, BottomID                                               string
-	DismissedAgents, DismissedPlan                                   string
-	Answers                                                          map[string][]string
-	QuestionDrafts                                                   map[string][]answerDraft
+	DetailID                                                         string
+	// Bottom holds this thread's center-bottom terminal tabs. BottomID is the
+	// pre-tab single session, read once to migrate saved views.
+	Bottom                         shell.Host
+	BottomID                       string `json:",omitempty"`
+	RequestID                      string
+	DismissedAgents, DismissedPlan string
+	Answers                        map[string][]string
+	QuestionDrafts                 map[string][]answerDraft
 }
+
 type savedView struct {
 	DraftProjectID                         string
 	DraftThreads                           map[string]*threadView
@@ -47,25 +53,42 @@ type savedView struct {
 	ProjectFilter                          string
 	ThreadFilter                           string
 	Light, RecentsHidden, RecentsCollapsed bool
-	Threads                                map[string]*threadView
-	Edit                                   *editState
-	Pending                                *protocol.Command
-	PendingAction                          action
+	// Icons is this client's saved symbol set: "nerd", "ascii", or empty to
+	// follow the TUI_GO_ICONS environment default.
+	Icons         string `json:",omitempty"`
+	Threads       map[string]*threadView
+	Edit          *editState
+	Pending       *protocol.Command
+	PendingAction action
 }
+
 type action struct {
 	Kind, ID, Value string
 	Index           int
 	Revision        int64
 }
+
 type menuItem struct {
 	Label  string
 	Action action
 }
+
 type hit struct {
 	Rect       shell.Rect
 	Action     action
 	Label, Key string
+	// Slot is the reserved cells an icon control is centered in; Rect is only
+	// the interactive glyph. Layout checks use the slot, input uses Rect.
+	Slot shell.Rect
 }
+
+func (h hit) slot() shell.Rect {
+	if h.Slot.W > 0 {
+		return h.Slot
+	}
+	return h.Rect
+}
+
 type frame struct {
 	rows                                        []string
 	hits                                        []hit
@@ -78,21 +101,27 @@ type frame struct {
 	bottomBody, navigation                      shell.Rect
 	closedNavigation, settingsBody              shell.Rect
 }
+
 type snapshotMsg protocol.Snapshot
 type connectionMsg struct {
 	client *client.Client
 	err    error
 }
+
 type commandMsg struct {
 	command protocol.Command
 	receipt protocol.Receipt
 	err     error
 	local   action
+	// saveFailed: the pre-dispatch view save failed, so this attempt never left.
+	saveFailed, retry bool
 }
+
 type saveMsg struct {
 	err        error
 	generation int
 }
+
 type saveTick struct{}
 type editState struct {
 	ID, ThreadID, OldDraft string
@@ -100,6 +129,8 @@ type editState struct {
 	Revision               int64
 }
 
+// Model is the Bubble Tea model for one attached client: the server snapshot,
+// client-local view state, focus, input widgets and pending effects.
 type Model struct {
 	paths                                pathCompletion
 	mentionDismissed                     string
@@ -134,6 +165,7 @@ type Model struct {
 	width, height                        int
 	sizeKnown                            bool
 	plainIcons                           bool
+	envIcons                             string // TUI_GO_ICONS at startup; the default when no symbol set is saved
 	colorProfile                         colorprofile.Profile
 	colorProbe                           terminalColorProbe
 	colorReply                           terminalReplyFragments
@@ -166,6 +198,7 @@ type Model struct {
 	selectionStart, selectionEnd         [2]int
 	selectedText                         string
 	selectionRegion                      shell.Rect
+	selectionBasis                       selectionBasis
 	keyboard                             string
 	activityPhase                        int
 	activityTickPending                  bool
@@ -185,6 +218,9 @@ func newInput(placeholder string) textarea.Model {
 	a.SetVirtualCursor(true)
 	return a
 }
+
+// New builds a model for client id from the current snapshot and that
+// client's stored view document.
 func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *Model {
 	m := &Model{client: c, clientID: id, snapshot: snapshot, ctx: context.Background(), width: 120, height: 40, connected: true, colorProfile: colorprofile.TrueColor, focus: "prompt", keyboard: "legacy keyboard", prompt: newInput("Ask a follow-up…"), answer: newInput("Type an answer…")}
 	m.state = savedView{Layout: shell.NewState(), Threads: map[string]*threadView{}, RecentsCollapsed: true}
@@ -211,6 +247,8 @@ func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *
 		}
 	}
 	m.migrateQuestionDrafts()
+	m.migrateBottomSessions()
+	m.applyIcons()
 	m.busy = m.state.Pending
 	m.busyAction = m.state.PendingAction
 	m.reconcileProjects()
@@ -219,6 +257,7 @@ func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *
 	m.configureInputs()
 	return m
 }
+
 func (m *Model) thread() protocol.Thread {
 	if m.creatingThread() {
 		p, _ := m.projectByID(m.state.DraftProjectID)
@@ -232,6 +271,7 @@ func (m *Model) thread() protocol.Thread {
 	}
 	return protocol.Thread{}
 }
+
 func (m *Model) viewState() *threadView {
 	if m.creatingThread() {
 		if m.state.DraftThreads[m.state.DraftProjectID] == nil {
@@ -252,11 +292,16 @@ func (m *Model) viewState() *threadView {
 	}
 	return v
 }
+
 func (m *Model) loadDraft() { v := m.viewState(); m.prompt.SetValue(v.Draft); m.loadAnswer() }
+
 func (m *Model) markDirty() { m.dirty = true; m.generation++; m.state.Generation++ }
+
+// Init focuses the composer and starts the activity, checkout and save tickers.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.prompt.Focus(), m.nextActivityTick(), m.nextCheckoutInspection(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
 }
+
 func (m *Model) requests() []protocol.Request {
 	var r []protocol.Request
 	for _, q := range m.thread().Requests {
@@ -266,13 +311,93 @@ func (m *Model) requests() []protocol.Request {
 	}
 	return r
 }
+
 func (m *Model) request() (protocol.Request, bool) {
 	r := m.requests()
 	if len(r) == 0 {
 		return protocol.Request{}, false
 	}
-	return r[max(0, m.viewState().RequestIndex)%len(r)], true
+	return r[m.requestIndex(r)], true
 }
+
+// Selection follows request identity. RequestIndex remains the saved-view
+// fallback and the neighbor position after the selected request disappears.
+func (m *Model) requestIndex(pending []protocol.Request) int {
+	v := m.viewState()
+	if len(pending) == 0 {
+		return 0
+	}
+	if v.RequestID != "" {
+		if i := slices.IndexFunc(pending, func(r protocol.Request) bool { return r.ID == v.RequestID }); i >= 0 {
+			return i
+		}
+	}
+	return max(0, v.RequestIndex) % len(pending)
+}
+
+func (m *Model) pinRequest() {
+	v, pending := m.viewState(), m.requests()
+	id, i := "", 0
+	if len(pending) > 0 {
+		i = m.requestIndex(pending)
+		id = pending[i].ID
+	}
+	if v != &m.emptyView {
+		// Derived from the snapshot; persisted with the next real change.
+		v.RequestID, v.RequestIndex = id, i
+	}
+}
+
+func (m *Model) selectRequest(i int) {
+	pending := m.requests()
+	if len(pending) == 0 {
+		return
+	}
+	v := m.viewState()
+	v.RequestIndex = (i%len(pending) + len(pending)) % len(pending)
+	v.RequestID = pending[v.RequestIndex].ID
+	v.QuestionIndex, v.RequestScroll = 0, 0
+	m.loadAnswer()
+}
+
+// requestBound reports whether a menu action still targets the pending request
+// and revision it was built for. Unbound actions target the visible card.
+func (m *Model) requestBound(a action) bool {
+	if a.ID == "" {
+		return true
+	}
+	r, ok := m.request()
+	return ok && r.ID == a.ID && r.Revision == a.Revision
+}
+
+func requestScoped(a action) bool {
+	return a.ID != "" && slices.Contains([]string{"approve", "answer-choice", "answer-other", "question-index"}, a.Kind)
+}
+
+// reconcileRequests runs after each snapshot. A vanished selection moves to a
+// neighbor, but never with focus left in an answer control.
+func (m *Model) reconcileRequests() tea.Cmd {
+	var cmd tea.Cmd
+	v, pending := m.viewState(), m.requests()
+	if v.RequestID != "" && !slices.ContainsFunc(pending, func(r protocol.Request) bool { return r.ID == v.RequestID }) {
+		v.RequestID = ""
+		v.RequestIndex = max(0, min(v.RequestIndex, len(pending)-1))
+		m.markDirty()
+		if m.focus == "answer" || m.focus == "answer-other" || m.focus == "answer-submit" || strings.HasPrefix(m.focus, "option:") || strings.HasPrefix(m.focus, "approve:") {
+			m.setFocus("request-body")
+		}
+		if len(pending) > 0 {
+			cmd = m.showNotice("Request resolved elsewhere · showing another pending request")
+		}
+	}
+	m.pinRequest()
+	if len(m.menu) > 0 && m.projectMode == "" && slices.ContainsFunc(m.menu, func(item menuItem) bool { return requestScoped(item.Action) && !m.requestBound(item.Action) }) {
+		m.menu = nil
+		cmd = m.showNotice("Request changed · menu closed, nothing sent")
+	}
+	return cmd
+}
+
 func (m *Model) configureInputs() {
 	m.prompt.Placeholder = "Ask a follow-up…"
 	if m.creatingThread() {
@@ -352,6 +477,7 @@ func (m *Model) configureInputs() {
 		m.setFocus("prompt")
 	}
 }
+
 func (m *Model) setFocus(key string) tea.Cmd {
 	if m.settingsPage != "" && (key == "prompt" || key == "answer" || key == "thread-search") {
 		key = "sidebar-settings"
@@ -381,6 +507,7 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	}
 	return nil
 }
+
 func identity() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -444,9 +571,12 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	m.state.PendingAction = a
 	m.markDirty()
 	m.configureInputs()
-	return m.dispatch(c, a)
+	return m.dispatch(c, a, false)
 }
-func (m *Model) dispatch(c protocol.Command, a action) tea.Cmd {
+
+// A first dispatch whose view save fails never sends the command. A Retry
+// keeps the uncertain identity regardless of how that attempt fails.
+func (m *Model) dispatch(c protocol.Command, a action, retry bool) tea.Cmd {
 	m.inFlight = true
 	connection := m.client
 	ctx := m.ctx
@@ -455,15 +585,16 @@ func (m *Model) dispatch(c protocol.Command, a action) tea.Cmd {
 	return func() tea.Msg {
 		if writer != nil {
 			if err := writer.save(data); err != nil {
-				return commandMsg{command: c, err: err, local: a}
+				return commandMsg{command: c, err: err, local: a, saveFailed: true, retry: retry}
 			}
 		}
 		deadline, cancel := context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
 		r, e := connection.Command(deadline, c)
-		return commandMsg{c, r, e, a}
+		return commandMsg{command: c, receipt: r, err: e, local: a, retry: retry}
 	}
 }
+
 func (m *Model) save() tea.Cmd {
 	if !m.dirty || m.saving || !m.connected {
 		return nil
@@ -485,6 +616,7 @@ func (m *Model) save() tea.Cmd {
 	}
 }
 
+// Update routes every message through the model's explicit state transitions.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
@@ -565,6 +697,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reconcileProjects()
 			m.reconcileThreadMembership()
 		}
+		cmd = m.reconcileRequests()
 		newRequest, _ := m.request()
 		if questionDraftKey(oldRequest) != questionDraftKey(newRequest) || oldPage >= len(newRequest.Questions) {
 			m.viewState().QuestionIndex = 0
@@ -580,6 +713,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.inFlight = false
+		if msg.err != nil && msg.saveFailed && !msg.retry {
+			m.busy, m.state.Pending = nil, nil
+			m.busyAction, m.state.PendingAction = action{}, action{}
+			m.status = "Not sent · " + safe(msg.err.Error())
+			if msg.command.Kind == "request.answer" {
+				m.setRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, m.status, false)
+			}
+			m.markDirty()
+			m.configureInputs()
+			return m, m.showNotice(m.status)
+		}
 		if msg.err != nil {
 			m.status = safe(msg.err.Error())
 			for _, attachment := range msg.command.Attachments {
@@ -601,15 +745,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.command.Kind == "project.add" && m.projectMode == "add" || msg.command.Kind == "project.update" && m.projectMode == "rename" || msg.command.Kind == "settings.update" && m.projectMode == "project-root" {
 				m.projectError = m.status
 			}
-			if err, ok := msg.err.(*protocol.Error); ok && err.Code == "stale_settings" && m.projectMode == "project-root" {
+			var err *protocol.Error
+			// A failed Retry save wraps a view error; the command stays uncertain.
+			rejected := errors.As(msg.err, &err) && !msg.saveFailed
+			if rejected && err.Code == "stale_settings" && m.projectMode == "project-root" {
 				m.projectDirectoryConflicted = true
 				m.projectError = "Settings changed. Review the folder, then Save again."
 			}
-			if err, ok := msg.err.(*protocol.Error); ok && err.Code == "stale_project" && m.projectMode == "rename" {
+			if rejected && err.Code == "stale_project" && m.projectMode == "rename" {
 				m.projectRenameConflicted = true
 				m.projectError = "Project changed. Review the name, then Save again."
 			}
-			if _, ok := msg.err.(*protocol.Error); ok {
+			if rejected {
 				m.busy = nil
 				m.state.Pending = nil
 				m.markDirty()
@@ -663,13 +810,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "save-edit":
 			if m.state.Edit != nil {
-				if v.Draft == msg.command.Text && msg.command.Settings != nil && v.Settings == *msg.command.Settings {
+				// Save sends trimmed text; compare the same way so trailing
+				// whitespace cannot hold the editor in edit mode forever.
+				if m.state.Edit.ID != msg.command.TargetID {
+					break
+				}
+				if ev := m.state.Threads[m.state.Edit.ThreadID]; ev != nil {
+					v = ev
+				}
+				if strings.TrimSpace(v.Draft) == strings.TrimSpace(msg.command.Text) && msg.command.Settings != nil && v.Settings == *msg.command.Settings {
 					v.Draft = m.state.Edit.OldDraft
 					v.Settings = m.state.Edit.OldSettings
-					m.state.Edit = nil
-					if m.state.Active == msg.command.ThreadID {
+					if m.state.Active == m.state.Edit.ThreadID && !m.creatingThread() {
 						m.prompt.SetValue(v.Draft)
 					}
+					m.state.Edit = nil
 				} else {
 					m.state.Edit.Revision++
 					m.status = "Saved earlier edit; newer text remains in the editor"
@@ -677,15 +832,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "terminal-open":
 			if msg.local.Value == "bottom" {
-				v.BottomID = msg.receipt.TargetID
-			} else {
-				tab := v.Host.Open("terminal", fmt.Sprintf("Terminal %d", len(v.Host.Tabs)+1))
-				for i := range v.Host.Tabs {
-					if v.Host.Tabs[i].ID == tab.ID {
-						v.Host.Tabs[i].ID = msg.receipt.TargetID
-						v.Host.ActiveID = msg.receipt.TargetID
-					}
+				openTerminalTab(&v.Bottom, msg.receipt.TargetID)
+				v.BottomScroll = 0
+				if m.state.Active == msg.command.ThreadID && !m.singleColumn() {
+					m.state.Layout.Bottom = true
 				}
+			} else {
+				openTerminalTab(&v.Host, msg.receipt.TargetID)
 				if !m.singleColumn() {
 					v.RightVisible = true
 					if m.state.Active == msg.command.ThreadID {
@@ -706,7 +859,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "bottom-close":
-			v.BottomID = ""
+			v.Bottom.Close(msg.command.TargetID)
+			// The last bottom session ending hides the panel, as closing the
+			// last right tab hides its host; showing it again opens a fresh one.
+			if len(v.Bottom.Tabs) == 0 && m.state.Active == msg.command.ThreadID {
+				if m.singleColumn() {
+					if v.CompactColumn == shell.BottomRegion {
+						m.selectColumn(shell.CenterRegion)
+					}
+				} else if m.state.Layout.Bottom {
+					m.state.Layout.ToggleBottom()
+				}
+			}
 		}
 		m.markDirty()
 		m.configureInputs()
@@ -722,7 +886,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		cmd = m.key(msg)
 	case tea.PasteMsg:
-		if m.projectMode != "" {
+		if m.terminalTooSmall() || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
+			// Nothing behind a modal, the resize notice or settings accepts input.
+			cmd = m.showNotice("Paste ignored · no visible input")
+		} else if m.projectMode != "" {
 			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: singleLine(msg.Content)})
 			m.menuIndex = 0
 			m.refreshProjectMenu()
@@ -780,7 +947,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return tea.Suspend
 	}
 	if s == "f4" {
-		if m.settingsPage != "" {
+		if m.settingsPage != "" && !m.terminalTooSmall() {
 			m.openSettingsCommands()
 		} else {
 			m.openCommands()
@@ -788,7 +955,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	if s == "ctrl+shift+c" {
-		if m.selectedText != "" {
+		if m.selectionLive(m.measure()) && m.selectedText != "" {
 			return tea.SetClipboard(m.selectedText)
 		}
 		if m.focus == "prompt" {
@@ -947,8 +1114,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if s == "shift+enter" || s == "ctrl+j" {
 			k = tea.KeyPressMsg{Code: tea.KeyEnter}
 		}
-		var c tea.Cmd
-		c = updateInput(&m.prompt, k)
+		c := updateInput(&m.prompt, k)
 		m.viewState().Draft = m.prompt.Value()
 		m.markDirty()
 		return c
@@ -958,8 +1124,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if s == "shift+enter" || s == "ctrl+j" {
 			k = tea.KeyPressMsg{Code: tea.KeyEnter}
 		}
-		var c tea.Cmd
-		c = updateInput(&m.answer, k)
+		c := updateInput(&m.answer, k)
 		m.storeAnswer(m.answer.Value())
 		return c
 	}
@@ -1087,6 +1252,7 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 					m.selecting = true
 					m.selectedText = ""
 					m.selectionRegion = h.Rect
+					m.selectionBasis = m.selectionBasisFor(f)
 					m.selectionStart = [2]int{p.X, p.Y}
 					m.selectionEnd = m.selectionStart
 					return nil
@@ -1108,14 +1274,16 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 				m.scrollDrag = ""
 			}
 		} else if m.drag != shell.NoDivider {
-			d := p.X - m.lastX
+			// Track the pointer against the effective divider so an overshoot
+			// leaves no hidden debt; resizePane clamps to the current viewport.
+			d := p.X - f.geom.LeftDivider.X
 			if m.drag == shell.RightDivider {
-				d = -d
+				d = f.geom.RightDivider.X - p.X
 			}
 			if m.drag == shell.BottomDivider {
-				d = m.lastY - p.Y
+				d = f.geom.BottomDivider.Y - p.Y
 			}
-			m.state.Layout.Resize(m.drag, d)
+			m.resizePane(m.drag, d)
 			m.lastX, m.lastY = p.X, p.Y
 			m.markDirty()
 			m.configureInputs()
@@ -1152,10 +1320,12 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
 		m.answerView.Refresh(&m.answer, m.answerMetrics.Total)
 		if m.selecting {
-			m.selecting = false
 			painted := m.render()
-			m.selectedText = painted.selection(m.selectionStart, m.selectionEnd)
-			m.status = "Text selected · Ctrl+Shift+C copies via terminal clipboard"
+			if m.selectionLive(painted) {
+				m.selectedText = painted.selection(m.selectionStart, m.selectionEnd, m.selectionRegion)
+				m.status = "Text selected · Ctrl+Shift+C copies via terminal clipboard"
+			}
+			m.selecting = false
 		}
 	}
 	return nil

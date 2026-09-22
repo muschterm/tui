@@ -19,6 +19,8 @@ type pacedModel struct {
 	pending bool
 }
 
+// pace wraps m so frames are built at most once per redraw tick. The wrapper
+// implements tea.Model by delegating to m.
 func pace(m *Model) *pacedModel      { return &pacedModel{model: m, view: m.View()} }
 func (m *pacedModel) Init() tea.Cmd  { return m.model.Init() }
 func (m *pacedModel) View() tea.View { return m.view }

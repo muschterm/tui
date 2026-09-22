@@ -156,17 +156,24 @@ func TestNavigationHoverControlsHaveSeparateHitboxes(t *testing.T) {
 		f := m.render()
 		row := controlHit(t, f, "thread:"+id)
 		quick := controlHit(t, f, "thread-quick:"+id)
-		more := controlHit(t, f, "thread-menu:"+id)
+		trailing := "thread-menu:" + id
+		if closed {
+			trailing = "thread-reopen:" + id
+		}
+		more := controlHit(t, f, trailing)
 		status := controlHit(t, f, "thread-status:"+id)
 		// The full card is a selection fallback; the title's specific hit
 		// area stays between the status and the trailing action buttons.
 		for _, h := range f.hits {
-			if h.Key == row.Key && h.Rect.Y == status.Rect.Y && h.Rect.X == status.Rect.X+status.Rect.W {
+			if h.Key == row.Key && h.Rect.Y == status.Rect.Y && h.Rect.X == status.slot().X+status.slot().W {
 				row = h
 			}
 		}
-		if row.Rect.X+row.Rect.W > quick.Rect.X || quick.Rect.X+quick.Rect.W != more.Rect.X {
+		if row.Rect.X+row.Rect.W > quick.slot().X || quick.slot().X+quick.slot().W != more.slot().X {
 			t.Fatal("quick/menu actions overlap thread label")
+		}
+		if closed && strings.TrimSpace(ansi.Strip(ansi.Cut(f.rows[more.Rect.Y], more.slot().X, more.slot().X+3))) != "" {
+			t.Fatal("Reopen is visible without hover or focus")
 		}
 		m.Update(tea.MouseMotionMsg{X: row.Rect.X, Y: row.Rect.Y})
 		f = m.render()
@@ -176,9 +183,12 @@ func TestNavigationHoverControlsHaveSeparateHitboxes(t *testing.T) {
 			want = m.icon("trash")
 			kind = "thread-delete"
 		}
-		painted := ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], quick.Rect.X, quick.Rect.X+quick.Rect.W))
+		painted := ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], quick.slot().X, quick.slot().X+quick.slot().W))
 		if painted != " "+want+" " || quick.Action.Kind != kind {
 			t.Fatal("hover did not expose lifecycle icon")
+		}
+		if closed && (more.Action.Kind != "thread-reopen" || ansi.Strip(ansi.Cut(f.rows[more.Rect.Y], more.slot().X, more.slot().X+3)) != " "+m.icon("reopen")+" " || hasControl(f, "thread-menu:"+id)) {
+			t.Fatal("closed row did not replace the menu with Reopen")
 		}
 		if got := ansi.Strip(ansi.Cut(f.rows[status.Rect.Y], status.Rect.X, status.Rect.X+status.Rect.W)); !strings.Contains(got, "●") {
 			t.Fatal("hover replaced the leading status circle")
@@ -246,14 +256,18 @@ func TestThreadQuickActionSlotStaysBesideMenu(t *testing.T) {
 				if !hasControl(f, "thread-quick:"+id) {
 					t.Fatalf("missing quick: width=%d closed=%v plain=%v nav=%+v closedNav=%+v footer=%d", width, closed, plain, f.navigation, f.closedNavigation, m.footerHeight())
 				}
-				quick, more := controlHit(t, f, "thread-quick:"+id), controlHit(t, f, "thread-menu:"+id)
-				if quick.Rect.W != 3 || quick.Rect.X+quick.Rect.W != more.Rect.X {
+				trailing := "thread-menu:" + id
+				if closed {
+					trailing = "thread-reopen:" + id
+				}
+				quick, more := controlHit(t, f, "thread-quick:"+id), controlHit(t, f, trailing)
+				if quick.slot().W != 3 || quick.slot().X+quick.slot().W != more.slot().X {
 					t.Fatal("quick action is not directly left of menu", width)
 				}
-				prefix := ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], 0, quick.Rect.X))
+				prefix := ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], 0, quick.slot().X))
 				m.setFocus(quick.Key)
 				f = m.render()
-				if controlHit(t, f, quick.Key).Rect != quick.Rect || ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], 0, quick.Rect.X)) != prefix {
+				if controlHit(t, f, quick.Key).Rect != quick.Rect || ansi.Strip(ansi.Cut(f.rows[quick.Rect.Y], 0, quick.slot().X)) != prefix {
 					t.Fatal("focus shifted the title or action slot")
 				}
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -277,6 +291,14 @@ func TestNavigationCardMetadataAndPaddingSelectWithoutLifecycleAction(t *testing
 				f := m.render()
 				card := controlHit(t, f, "thread:"+target.ID)
 				x, y := card.Rect.X, card.Rect.Y
+				// Closed cards have one content row and no metadata row.
+				bottom := 3
+				if closed {
+					bottom = 2
+					if strings.HasPrefix(point, "metadata") {
+						t.Skip("closed cards omit the metadata row")
+					}
+				}
 				switch point {
 				case "trailing edge":
 					x += card.Rect.W - 1
@@ -285,7 +307,7 @@ func TestNavigationCardMetadataAndPaddingSelectWithoutLifecycleAction(t *testing
 				case "metadata edge":
 					x, y = x+card.Rect.W-1, y+2
 				case "bottom border":
-					x, y = x+4, y+3
+					x, y = x+4, y+bottom
 				}
 				m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
 				if m.state.Active != target.ID || m.busy != nil || m.state.Threads[original].Draft != "keep this draft" {
@@ -456,5 +478,18 @@ func TestNavigationF6ReachesNavigationWithoutInvisibleComposer(t *testing.T) {
 		if !reached {
 			t.Fatal("F6 never reached navigation")
 		}
+	}
+}
+
+func TestClosedRowsAreDimmedSingleLineCards(t *testing.T) {
+	m := navigationModel()
+	m.snapshot.Threads[0].Closed = true
+	m.snapshot.Threads[1].Closed = true
+	_, closed := m.navigationSections()
+	if len(closed) != 7 || closed[1].kind != "thread" || closed[2].kind != "card-bottom" {
+		t.Fatal("closed cards are not one content row", closed)
+	}
+	if m.dimmed() == m.colors().muted || m.dimmed() == m.colors().text {
+		t.Fatal("dimmed ink does not recede below muted")
 	}
 }

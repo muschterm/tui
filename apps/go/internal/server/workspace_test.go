@@ -62,6 +62,7 @@ func TestWorkspaceInspection(t *testing.T) {
 		t.Fatalf("cancelled: %+v", got)
 	}
 }
+
 func TestWorkspaceHandlerTargets(t *testing.T) {
 	e := &engine{snap: protocol.Snapshot{Projects: []protocol.Project{{ID: "p", Path: "fixture://project"}}, Threads: []protocol.Thread{{ID: "t", Checkout: "fixture://thread"}}}}
 	for _, tc := range []struct {

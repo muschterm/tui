@@ -4,6 +4,7 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,8 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
+// Home returns the absolute application home: TUI_GO_HOME when set, else
+// ~/.tui-go.
 func Home() (string, error) {
 	home := os.Getenv("TUI_GO_HOME")
 	if home == "" {
@@ -26,6 +29,9 @@ func Home() (string, error) {
 	}
 	return filepath.Abs(home)
 }
+
+// Status returns a client for the home's server after confirming that it
+// answers; stale or foreign discovery is an error.
 func Status(ctx context.Context, home string) (*client.Client, error) {
 	d, err := client.Discover(home)
 	if err != nil {
@@ -38,6 +44,9 @@ func Status(ctx context.Context, home string) (*client.Client, error) {
 	}
 	return c, nil
 }
+
+// Ensure returns a client for a running server, starting one detached from
+// this process when none answers. Its output goes to server.log in the home.
 func Ensure(ctx context.Context, home, executable string) (*client.Client, error) {
 	if c, err := Status(ctx, home); err == nil {
 		return c, nil
@@ -80,6 +89,9 @@ func Ensure(ctx context.Context, home, executable string) (*client.Client, error
 		}
 	}
 }
+
+// Stop asks the home's server to shut down and waits for its recorded
+// outcome. An unconfirmed or failed shutdown is an error.
 func Stop(ctx context.Context, home string) error {
 	c, err := Status(ctx, home)
 	if err != nil {
@@ -100,7 +112,7 @@ func Stop(ctx context.Context, home string) error {
 			return fmt.Errorf("shutdown completion not confirmed")
 		case <-ticker.C:
 			d, err := client.Discover(home)
-			if os.IsNotExist(err) {
+			if errors.Is(err, client.ErrNoServer) {
 				return confirmedShutdown(home, c.Discovery.InstanceID)
 			}
 			if err == nil && d.InstanceID != c.Discovery.InstanceID {

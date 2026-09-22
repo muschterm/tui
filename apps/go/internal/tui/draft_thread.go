@@ -21,6 +21,10 @@ func (m *Model) beginThreadDraft(projectID string) {
 	if _, ok := m.projectByID(projectID); !ok {
 		return
 	}
+	if m.state.Edit != nil {
+		m.status = "Save or cancel the queued edit first"
+		return
+	}
 	m.viewState().Draft = m.prompt.Value()
 	if m.state.Active != "" {
 		m.viewState().RightVisible = m.state.Layout.Right
@@ -30,6 +34,7 @@ func (m *Model) beginThreadDraft(projectID string) {
 		m.state.DraftThreads[projectID] = &threadView{Agent: "Fixture agent", Settings: protocol.Settings{Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}}
 	}
 	m.state.Layout.Right, m.state.Layout.Maximized = false, false
+	m.state.Layout.ClearReveal()
 	m.viewState().CompactColumn = shell.CenterRegion
 	m.loadDraft()
 	m.setFocus("prompt")
@@ -55,6 +60,10 @@ func (m *Model) configurationLocked() bool {
 }
 
 func (m *Model) sendBlocked() string {
+	// Never submit a prompt the user cannot see.
+	if reason := m.hiddenWorkBlocked(); reason != "" {
+		return reason
+	}
 	if !m.hasComposer() {
 		return "Choose New thread first"
 	}

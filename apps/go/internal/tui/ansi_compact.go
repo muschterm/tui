@@ -36,3 +36,31 @@ func compactSGR(text string) string {
 	out.WriteString(pending.String())
 	return out.String()
 }
+
+// cutCells returns exactly the cells [start,end) of a styled row. A cluster cut
+// by either edge becomes spaces in its own style, so the piece is never wider
+// or narrower than requested. Escapes are kept, as ansi.Cut keeps them, so
+// styles and their resets carry into and out of the piece.
+func cutCells(text string, start, end int) string {
+	var out strings.Builder
+	col, state := 0, byte(0)
+	for len(text) > 0 {
+		seq, width, n, next := ansi.DecodeSequence(text, state, nil)
+		if n == 0 {
+			break
+		}
+		text, state = text[n:], next
+		switch {
+		case width == 0:
+			if strings.HasPrefix(seq, "\x1b") || col >= start && col < end {
+				out.WriteString(seq)
+			}
+		case col >= start && col+width <= end:
+			out.WriteString(seq)
+		default:
+			out.WriteString(strings.Repeat(" ", max(0, min(col+width, end)-max(col, start))))
+		}
+		col += width
+	}
+	return out.String()
+}

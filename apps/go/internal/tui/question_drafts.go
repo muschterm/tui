@@ -98,6 +98,7 @@ func (m *Model) migrateQuestionDrafts() {
 }
 
 func (m *Model) loadAnswer() {
+	m.pinRequest()
 	r, ok := m.request()
 	if !ok || len(r.Questions) == 0 {
 		m.answer.SetValue("")

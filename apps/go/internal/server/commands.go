@@ -8,18 +8,25 @@ import (
 )
 
 func failure(code, message string) error { return &protocol.Error{Code: code, Message: message} }
+
 func validSettings(s protocol.Settings) bool {
 	return s.Model == "fixture-model" && (s.Effort == "low" || s.Effort == "medium" || s.Effort == "high") && s.Permissions == "fixture-only" && s.Context == "unavailable" && s.Speed == "standard"
 }
+
 func apply(s *protocol.Snapshot, c protocol.Command) (string, error) {
+	return applyResolved(s, c, nil)
+}
+
+// The engine holds its lock here and supplies paths it resolved beforehand.
+func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedPath) (string, error) {
 	if c.Kind == "thread.start" {
 		return startThread(s, c)
 	}
 	if c.Kind == "settings.update" || c.Kind == "project.update" || c.Kind == "project.remove" {
-		return applySettings(s, c)
+		return applySettingsResolved(s, c, resolved)
 	}
 	if c.Kind == "project.add" || c.Kind == "thread.create" {
-		return applyProject(s, c)
+		return applyProjectResolved(s, c, resolved)
 	}
 	var t *protocol.Thread
 	for i := range s.Threads {

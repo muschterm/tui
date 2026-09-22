@@ -13,6 +13,7 @@ type composerControl struct {
 	x, y, width            int
 	label, key, help, tone string
 	action                 action
+	icon                   bool // glyph-only: no fill, hit on the glyph cells
 }
 
 // Shared by prompt text and the settings/action rows. Collapse only for tiny
@@ -54,14 +55,18 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 	actions = append(actions,
 		control(usageGauge(nil, nil)+"  Cost —", "usage", "Context usage / billing / cost · unavailable", "muted", action{Kind: "usage-summary"}),
 		control(m.icon("attach"), "attach", "Attach context", "blue", action{Kind: "attach"}))
+	actions[1].icon = true
 	if activeTurn(t) {
 		actions = append(actions, control(m.icon("stop"), "interrupt", "Stop", "red", action{Kind: "interrupt"}))
+		actions[len(actions)-1].icon = true
 	}
 	actions = append(actions, control(m.icon("send"), "send", "Send · Enter", "blue", action{Kind: "send"}))
+	actions[len(actions)-1].icon = true
 	if reason := m.sendBlocked(); reason != "" {
 		actions[len(actions)-1].tone, actions[len(actions)-1].help = "muted", reason
 	}
 	more := control(m.icon("more-vertical"), "composer-more", "More settings", "muted", action{Kind: "composer-more"})
+	more.icon = true
 	hidden := map[string]bool{}
 	needed := func() int {
 		n, settingsWidth := 0, 0
@@ -84,7 +89,7 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 	compactUsage := func(gauge bool) {
 		// Usage owns its own overflow at the start of the right-hand group.
 		// Keep the same key/action so keyboard focus survives compaction.
-		actions[0].label = m.icon("more-vertical")
+		actions[0].label, actions[0].icon = m.icon("more-vertical"), !gauge
 		if gauge {
 			actions[0].label += " " + usageGauge(nil, nil)
 		}
@@ -173,6 +178,7 @@ func (m *Model) composerControls(width int) ([]composerControl, int) {
 	visible, _ := m.composerLayout(width)
 	return visible, 1
 }
+
 func (m *Model) composerControlsHeight(_ int) int { return 1 }
 
 func (m *Model) openComposerOverflow() {
@@ -217,9 +223,10 @@ func (m *Model) renderComposerControls(f *frame, r shell.Rect, y int) int {
 		case "muted":
 			fg = p.muted
 		}
-		f.button(m, r.X+c.x, y+c.y, c.width, c.label, c.key, c.action, fg, p.canvas)
-		if c.tone == "red" && (m.focus == c.key || m.hover == c.key) {
-			f.text(r.X+c.x, y+c.y, c.width, c.label, fg, p.selected)
+		if c.icon {
+			f.iconButton(m, r.X+c.x, y+c.y, c.width, centered(c.label, c.width), c.key, c.action, fg, p.canvas)
+		} else {
+			f.button(m, r.X+c.x, y+c.y, c.width, c.label, c.key, c.action, fg, p.canvas)
 		}
 		f.hits[len(f.hits)-1].Label = c.help
 	}

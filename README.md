@@ -51,7 +51,7 @@ specify variants, selection, hover and keyboard focus.
 
 [First-slice validation](docs/research/go-slice-validation-2026-09-19.md) · [Actual Go render captures](docs/research/go-captures/README.md) · [Notification/question review](docs/research/go-question-review-2026-09-20.md) · [Latest project/thread navigation review](docs/research/go-navigation-review-2026-09-20.md)
 
-[Sidebar and settings behavior](docs/design/settings.md) · [Sidebar implementation review](docs/research/go-sidebar-settings-2026-09-20.md) · [Draft/composer and modal review](docs/research/go-draft-composer-2026-09-20.md)
+[Code review and fixes, 2026-09-21](docs/research/go-code-review-2026-09-21.md) · [Sidebar and settings behavior](docs/design/settings.md) · [Sidebar implementation review](docs/research/go-sidebar-settings-2026-09-20.md) · [Draft/composer and modal review](docs/research/go-draft-composer-2026-09-20.md)
 
 ## Research and evidence
 
@@ -67,7 +67,7 @@ The documentation uses the local [grill-with-docs skill](.agents/skills/grill-wi
 
 ## Existing tooling
 
-From `apps/go`, run `make build`, `make check`, and `make test`; launch `./bin/tui-go`. Use `./bin/tui-go --client desk` to restore that named client’s view across launches. The Go reference uses `~/.tui-go`, overridable with `TUI_GO_HOME`. See [the first-slice guide](docs/design/go-slice.md) for lifecycle commands, prototype bindings and limitations.
+From `apps/go`, run `make build`, `make check` (gofmt, vet, staticcheck, race tests, build) and `make test`; `make vuln` runs govulncheck and `make pty` runs the OS-PTY harnesses in `apps/go/scripts/`. Launch `./bin/tui-go`; `./bin/tui-go --help` lists the `server`, `snapshot`, `probe`, `version` and `completion` commands. Use `./bin/tui-go --client desk` to restore that named client’s view across launches. The Go reference uses `~/.tui-go`, overridable with `--home` or `TUI_GO_HOME`. See [the first-slice guide](docs/design/go-slice.md) for lifecycle commands, prototype bindings and limitations.
 
 `bun run update-skills` updates the installed project skills. Rust and Bun application tooling has not been introduced.
 

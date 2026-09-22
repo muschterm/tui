@@ -125,7 +125,8 @@ pane bounds. Verify Close/Reopen preserves drafts across attached clients.
 
 Verify the accepted [component states](components.md) in dark/light, limited-color
 and monochrome modes: rest, hover, selected, focus and combined states. Selection
-must survive hover on a neighbor, focus must be independently underlined, and
+must survive hover on a neighbor, focus must show its independent leading mark
+without moving the control, and
 status icons must retain semantic colors. Outlined containers keep stable fills.
 Tab edges select without closing; the separate icon remains a close action.
 Verify single-row tabs/actions, reserved arrows, narrow overflow, keyboard paths

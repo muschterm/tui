@@ -40,3 +40,14 @@ selection accent plus bold, and keyboard focus independently underlined. Selecte
 state survives pointer movement to neighboring controls, and semantic status
 indicators retain their meaning. Implementation validation is recorded separately;
 acceptance alone establishes no terminal compatibility claim.
+
+**Amendment, 2026-09-22.** At the user's request the keyboard-focus cue is no
+longer an underline. Focus paints an accent mark (`•`, `>` in the plain-symbol
+fallback) in the one cell before the focused control that the control does not
+use for content: a filled control's or tab's leading end cap, an icon control's
+padding cell inside its reserved slot, or the blank gutter a container leaves
+before a text row. The control's own cells never change on focus, which is the
+cell-native translation of T3's focus ring. Where no such cell exists (a one-cell
+icon slot, or a text row flush against other content) the label keeps the
+underline as a documented fallback. Selection, hover and disabled treatment are
+unchanged; hover and focus still share the stronger neutral fill.

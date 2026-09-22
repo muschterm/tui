@@ -61,8 +61,8 @@ func TestTabNameSelectsAndOnlyIconCloses(t *testing.T) {
 	}
 	m.hover = name.Key
 	f = m.render()
-	iconText := ansi.Cut(ansi.Strip(f.rows[icon.Rect.Y]), icon.Rect.X, icon.Rect.X+icon.Rect.W)
-	if iconText != " "+m.icon("close")+" " {
+	iconText := ansi.Cut(ansi.Strip(f.rows[icon.Rect.Y]), icon.slot().X, icon.slot().X+icon.slot().W)
+	if iconText != m.icon("close")+"  " {
 		t.Fatalf("hover did not replace icon with close: %q", iconText)
 	}
 	clickControl(m, name)
@@ -92,7 +92,7 @@ func TestMenuCloseIconIsCenteredAndClosesOnlyMenu(t *testing.T) {
 		m.hover = "menu-close"
 		f := m.render()
 		h := controlHit(t, f, "menu-close")
-		label := ansi.Strip(ansi.Cut(f.rows[h.Rect.Y], h.Rect.X, h.Rect.X+h.Rect.W))
+		label := ansi.Strip(ansi.Cut(f.rows[h.Rect.Y], h.slot().X, h.slot().X+h.slot().W))
 		if label != " "+m.icon("close")+" " {
 			t.Fatalf("close glyph is not centered: %q", label)
 		}
@@ -137,7 +137,7 @@ func TestPaneIconsDistinguishOpenAndClosed(t *testing.T) {
 	for _, plain := range []bool{false, true} {
 		m.plainIcons = plain
 		for _, pane := range []string{"left", "right", "bottom"} {
-			if m.paneIcon(pane, true) == m.paneIcon(pane, false) || strings.Contains(m.paneIcon(pane, true), "?") {
+			if m.paneIcon(pane, true, 6) == m.paneIcon(pane, false, 6) || strings.Contains(m.paneIcon(pane, true, 6), "?") {
 				t.Fatalf("pane %s lacks distinct state icons (plain=%v)", pane, plain)
 			}
 		}

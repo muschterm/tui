@@ -23,6 +23,7 @@ func (m *Model) terminalTooSmall() bool {
 }
 
 func lipColor(s string) color.Color { return lipgloss.Color(s) }
+
 func (f *frame) put(r shell.Rect, text string) {
 	if f.rows == nil || r.W <= 0 || r.H <= 0 {
 		return
@@ -33,41 +34,96 @@ func (f *frame) put(r shell.Rect, text string) {
 		if y < 0 || y >= len(f.rows) {
 			continue
 		}
+		// Rows stay exactly as wide as the terminal: clip to it, and let
+		// cutCells turn any wide cluster split by an edge into styled spaces.
+		width := ansi.StringWidth(f.rows[y])
+		x0, x1 := max(0, r.X), min(width, r.X+r.W)
+		if x0 >= x1 {
+			continue
+		}
 		line := fit(lines[i], r.W)
-		f.rows[y] = compactSGR(ansi.Cut(f.rows[y], 0, r.X) + line + ansi.Cut(f.rows[y], r.X+r.W, ansi.StringWidth(f.rows[y])))
+		if x1-x0 < r.W {
+			line = cutCells(line, x0-r.X, x1-r.X)
+		}
+		f.rows[y] = compactSGR(cutCells(f.rows[y], 0, x0) + line + cutCells(f.rows[y], x1, width))
 	}
 }
+
 func (f *frame) fill(r shell.Rect, p palette, bg string) {
 	if f.rows != nil && r.W > 0 && r.H > 0 {
 		f.put(r, strings.TrimSuffix(strings.Repeat(style(p.text, bg).Render(strings.Repeat(" ", r.W))+"\n", r.H), "\n"))
 	}
 }
+
 func (f *frame) text(x, y, w int, s, fg, bg string) {
 	if f.rows != nil && w > 0 {
-		f.put(shell.Rect{X: x, Y: y, W: w, H: 1}, style(fg, bg).Render(fit(safe(s), w)))
+		f.put(shell.Rect{X: x, Y: y, W: w, H: 1}, style(fg, bg).Render(fit(singleLine(s), w)))
 	}
 }
+
 func (f *frame) button(m *Model, x, y, w int, label, key string, a action, fg, bg string) {
 	f.styledButton(x, y, w, label, key, a, m.componentStyle(squareFill, m.controlState(false, key), fg, bg))
 }
 
-func (f *frame) selection(a, b [2]int) string {
+type selectionSpan struct{ y, start, end int }
+
+// Spans bound every selected row to the region it was taken from and to the
+// frame, so neither the highlight nor the copy can reach neighbouring panes.
+func selectionSpans(a, b [2]int, region shell.Rect, width, height int) []selectionSpan {
 	if a[1] > b[1] || a[1] == b[1] && a[0] > b[0] {
 		a, b = b, a
 	}
-	var lines []string
-	for y := max(0, a[1]); y <= b[1] && y < len(f.rows); y++ {
-		start, end := 0, ansi.StringWidth(f.rows[y])
+	left, right := max(0, region.X), min(width, region.X+region.W)
+	var spans []selectionSpan
+	for y := max(0, region.Y, a[1]); y <= b[1] && y < min(height, region.Y+region.H); y++ {
+		start, end := left, right
 		if y == a[1] {
-			start = max(0, a[0])
+			start = max(left, a[0])
 		}
 		if y == b[1] {
-			end = b[0] + 1
+			end = min(right, b[0]+1)
 		}
-		lines = append(lines, strings.TrimRight(ansi.Strip(ansi.Cut(f.rows[y], start, end)), " "))
+		if start < end {
+			spans = append(spans, selectionSpan{y, start, end})
+		}
+	}
+	return spans
+}
+
+func (f *frame) selection(a, b [2]int, region shell.Rect) string {
+	var lines []string
+	for _, s := range selectionSpans(a, b, region, region.X+region.W, len(f.rows)) {
+		lines = append(lines, strings.TrimRight(ansi.Strip(cutCells(f.rows[s.y], s.start, s.end)), " "))
 	}
 	return strings.Join(lines, "\n")
 }
+
+// A selection is screen coordinates plus copied text. It only means anything
+// while everything that placed that text there is unchanged.
+type selectionBasis struct {
+	thread, surface, detailID        string
+	width, height                    int
+	scroll, lines, detailScroll, max int
+	transcript, detail               shell.Rect
+}
+
+func (m *Model) selectionBasisFor(f frame) selectionBasis {
+	v := m.viewState()
+	return selectionBasis{
+		thread: m.state.Active, surface: v.Host.ActiveID, detailID: v.DetailID,
+		width: m.width, height: m.height,
+		scroll: min(max(0, v.Scroll), f.transcriptMax), lines: f.transcriptMax,
+		detailScroll: min(max(0, v.DetailScroll), f.detailMax), max: f.detailMax,
+		transcript: f.transcript, detail: f.detail,
+	}
+}
+
+func (m *Model) selectionLive(f frame) bool {
+	return (m.selecting || m.selectedText != "") && m.settingsPage == "" && !m.terminalTooSmall() &&
+		(m.selectionRegion == f.transcript || m.selectionRegion == f.detail) &&
+		m.selectionBasis == m.selectionBasisFor(f)
+}
+
 func (m *Model) compact() bool { return m.height < 28 }
 
 func (m *Model) baseFooterHeight(w int) int {
@@ -102,6 +158,7 @@ func (m *Model) footerHeight() int {
 // styling, ANSI row composition and textarea rendering during input routing.
 func (m *Model) measure() frame { return m.compose(false) }
 func (m *Model) render() frame  { return m.compose(true) }
+
 func (m *Model) compose(paint bool) frame {
 	p := m.colors()
 	f := frame{}
@@ -112,10 +169,8 @@ func (m *Model) compose(paint bool) frame {
 			f.rows[i] = blank
 		}
 	}
-	footer := m.footerHeight()
-	f.geom = m.workspaceGeometry(footer)
-	g := f.geom
 	if m.terminalTooSmall() {
+		// No geometry: dividers, panes and scrollbars are unreachable here.
 		f.text(1, 1, max(1, m.width-2), fmt.Sprintf("tui-go · resize to at least %d × %d", minTerminalWidth, minTerminalHeight), p.gold, p.canvas)
 		f.button(m, 1, 3, 12, "Commands", "commands", action{Kind: "commands"}, p.blue, p.canvas)
 		f.text(1, 5, max(1, m.width-2), "Draft preserved · Ctrl+Q detaches", p.text, p.canvas)
@@ -124,6 +179,9 @@ func (m *Model) compose(paint bool) frame {
 		}
 		return f
 	}
+	footer := m.footerHeight()
+	f.geom = m.workspaceGeometry(footer)
+	g := f.geom
 	if m.settingsPage != "" {
 		m.renderSettingsWorkspace(&f)
 		return f
@@ -239,16 +297,17 @@ func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
 	}
 	return lines
 }
+
 func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 	p := m.colors()
-	f.hits = append(f.hits, hit{r, action{}, "Transcript · wheel / arrows to scroll", "transcript"})
+	f.hits = append(f.hits, hit{Rect: r, Action: action{}, Label: "Transcript · wheel / arrows to scroll", Key: "transcript"})
 	lines := m.activityLines(m.thread().Activity, r.W)
 	f.transcriptMax = max(0, len(lines)-r.H)
 	offset := min(max(0, m.viewState().Scroll), f.transcriptMax)
 	for i := 0; i < r.H && offset+i < len(lines); i++ {
 		line := lines[offset+i]
 		if line.action.Kind != "" {
-			f.button(m, r.X, r.Y+i, r.W, line.text, "activity:"+line.action.ID+fmt.Sprint(i), line.action, line.fg, line.bg)
+			f.button(m, r.X, r.Y+i, r.W, line.text, "activity:"+line.action.ID+":"+fmt.Sprint(i), line.action, line.fg, line.bg)
 		} else {
 			inset := 0
 			if line.rightAligned {
@@ -259,6 +318,7 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 	}
 	f.scrollbar(m, shell.Rect{X: r.X + r.W, Y: r.Y, W: 1, H: r.H}, "transcript", len(lines), r.H, offset, p.canvas)
 }
+
 func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	p := m.colors()
 	v := m.viewState()
@@ -289,13 +349,14 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	if f.rows != nil {
 		f.put(f.prompt, style(p.text, p.input).Width(f.prompt.W).Height(f.prompt.H).Render(m.promptView.View(&m.prompt)))
 	}
-	f.hits = append(f.hits, hit{f.prompt, action{}, "Enter sends · Shift+Enter / Ctrl+J adds a line", "prompt"})
+	f.hits = append(f.hits, hit{Rect: f.prompt, Action: action{}, Label: "Enter sends · Shift+Enter / Ctrl+J adds a line", Key: "prompt"})
 	promptScroll := m.promptView.Metrics(m.promptMetrics)
 	f.scrollbar(m, shell.Rect{X: f.prompt.X + f.prompt.W, Y: f.prompt.Y, W: 1, H: f.prompt.H}, "prompt", promptScroll.Total, f.prompt.H, promptScroll.Offset, p.input)
 	y += promptHeight
 	y = m.renderComposerControls(f, r, y+1)
 	m.renderCheckoutContext(f, shell.Rect{X: x, Y: y, W: w, H: 1})
 }
+
 func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	if r.W <= 0 || r.H <= 0 {
 		return
@@ -304,6 +365,11 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	v := m.viewState()
 	f.fill(r, p, p.panel)
 	x, y, w := r.X+1, r.Y+1, r.W-2
+	// A short host drops its margins; nothing is painted or hit outside r.
+	tight := r.H < 8
+	if tight {
+		y = r.Y
+	}
 	if v.Host.Chooser || len(v.Host.Tabs) == 0 {
 		kinds := []string{"files", "git", "terminal", "agents", "plan", "activity"}
 		if r.H < len(kinds)+3 {
@@ -333,12 +399,20 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 		cx += slot.width + 1
 	}
 	if overflow {
-		f.button(m, x+w-8, y+tabRows/2, 4, " "+m.icon("more"), "tabs", action{Kind: "tabs"}, p.muted, p.panel)
+		f.iconButton(m, x+w-8, y+tabRows/2, 4, " "+m.icon("more"), "tabs", action{Kind: "tabs"}, p.muted, p.panel)
 		f.hits[len(f.hits)-1].Label = "Hidden tabs · open or close a surface"
 	}
-	f.button(m, x+w-4, y+tabRows/2, 4, " "+m.icon("add"), "chooser", action{Kind: "chooser"}, p.blue, p.panel)
+	f.iconButton(m, x+w-4, y+tabRows/2, 4, " "+m.icon("add"), "chooser", action{Kind: "chooser"}, p.blue, p.panel)
+	f.hits[len(f.hits)-1].Label = "Add surface"
 	f.detail = shell.Rect{X: x + 1, Y: y + tabRows + 2, W: max(1, w-2), H: max(0, r.H-tabRows-4)}
-	f.hits = append(f.hits, hit{f.detail, action{}, "Surface · wheel / arrows to scroll", "right-body"})
+	if tight {
+		f.detail.Y, f.detail.H = y+tabRows+1, max(0, r.H-tabRows-1)
+	}
+	if f.detail.H == 0 {
+		f.detail = shell.Rect{}
+		return
+	}
+	f.hits = append(f.hits, hit{Rect: f.detail, Action: action{}, Label: "Surface · wheel / arrows to scroll", Key: "right-body"})
 	text := m.surfaceText(active)
 	lines := strings.Split(ansi.Wrap(safe(text), f.detail.W, ""), "\n")
 	f.detailMax = max(0, len(lines)-f.detail.H)
@@ -352,6 +426,7 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	}
 	f.scrollbar(m, shell.Rect{X: f.detail.X + f.detail.W, Y: f.detail.Y, W: 1, H: f.detail.H}, "detail", len(lines), f.detail.H, offset, p.panel)
 }
+
 func (m *Model) surfaceText(s shell.Surface) string {
 	t := m.thread()
 	v := m.viewState()
@@ -390,7 +465,7 @@ func (m *Model) surfaceText(s shell.Surface) string {
 			if v.DetailID != "" && a.ID != v.DetailID {
 				continue
 			}
-			fmt.Fprintf(&b, "%s · %s\n%s\n\n%s\n\n", a.Title, a.State, a.Text, a.Detail)
+			fmt.Fprintf(&b, "%s · %s\n%s\n\n%s\n\n", a.Title, a.State, a.Text, activityDetail(a))
 		}
 		for _, r := range t.Requests {
 			if v.DetailID != "" && r.ID != v.DetailID {
@@ -410,6 +485,7 @@ func (m *Model) surfaceText(s shell.Surface) string {
 	}
 	return b.String()
 }
+
 func (m *Model) terminalText(id string) string {
 	for _, t := range m.snapshot.Terminals {
 		if t.ID == id {
@@ -418,26 +494,45 @@ func (m *Model) terminalText(id string) string {
 	}
 	return "Terminal session unavailable · open a new session explicitly"
 }
+
+// The bottom panel is a tab row of this thread's terminal sessions with an
+// add control, like the right host, and no title row: each tab's icon slot
+// ends its own session, and the panel toggle only hides the row.
 func (m *Model) renderBottom(f *frame, r shell.Rect) {
 	p := m.colors()
 	f.fill(r, p, p.panel)
-	id := m.viewState().BottomID
-	f.text(r.X+1, r.Y, r.W-12, m.icon("terminal")+"  Terminal", p.cyan, p.panel)
-	if id == "" {
-		f.button(m, r.X+2, r.Y+2, r.W-4, m.icon("add")+" New terminal", "bottom-new", action{Kind: "bottom-new"}, p.blue, p.panel)
+	v := m.viewState()
+	x, w := r.X+1, r.W-2
+	active, ok := v.Bottom.Active()
+	visible, overflow := visibleTabs(v.Bottom.Tabs, active.ID, w-4)
+	cx := x
+	for _, slot := range visible {
+		tab := slot.tab
+		f.tab(m, cx, r.Y, slot.width, tab.Title, tab.Kind, "bottom-tab:"+tab.ID, "bottom-close:"+tab.ID,
+			action{Kind: "bottom-tab", ID: tab.ID}, action{Kind: "bottom-close", ID: tab.ID}, tab.ID == active.ID)
+		cx += slot.width + 1
+	}
+	if overflow {
+		f.iconButton(m, x+w-8, r.Y, 4, " "+m.icon("more"), "bottom-tabs", action{Kind: "bottom-tabs"}, p.muted, p.panel)
+		f.hits[len(f.hits)-1].Label = "Hidden terminals · select one"
+	}
+	f.iconButton(m, x+w-4, r.Y, 4, " "+m.icon("add"), "bottom-new", action{Kind: "bottom-new"}, p.blue, p.panel)
+	f.hits[len(f.hits)-1].Label = "New terminal"
+	if !ok {
+		f.text(r.X+2, r.Y+2, max(1, r.W-4), "No terminal sessions · "+m.icon("add")+" opens one", p.muted, p.panel)
 		return
 	}
-	f.button(m, r.X+r.W-10, r.Y, 9, centered("Close "+m.icon("close"), 9), "bottom-close", action{Kind: "bottom-close"}, p.muted, p.panel)
 	f.bottomBody = shell.Rect{X: r.X + 2, Y: r.Y + 2, W: max(1, r.W-4), H: max(0, r.H-2)}
-	lines := strings.Split(ansi.Wrap(safe(m.terminalText(id)), f.bottomBody.W, ""), "\n")
+	lines := strings.Split(ansi.Wrap(safe(m.terminalText(active.ID)), f.bottomBody.W, ""), "\n")
 	f.bottomMax = max(0, len(lines)-f.bottomBody.H)
 	offset := min(max(0, m.viewState().BottomScroll), f.bottomMax)
 	for i := 0; i < f.bottomBody.H && offset+i < len(lines); i++ {
 		f.text(f.bottomBody.X, f.bottomBody.Y+i, f.bottomBody.W, lines[offset+i], p.text, p.panel)
 	}
-	f.hits = append(f.hits, hit{f.bottomBody, action{}, "Terminal output · wheel / arrows to scroll", "bottom-body"})
+	f.hits = append(f.hits, hit{Rect: f.bottomBody, Action: action{}, Label: "Terminal output · wheel / arrows to scroll", Key: "bottom-body"})
 	f.scrollbar(m, shell.Rect{X: f.bottomBody.X + f.bottomBody.W, Y: f.bottomBody.Y, W: 1, H: f.bottomBody.H}, "bottom", len(lines), f.bottomBody.H, offset, p.panel)
 }
+
 func (m *Model) renderMenu(f *frame) {
 	p := m.colors()
 	r := m.menuRect()
@@ -451,13 +546,13 @@ func (m *Model) renderMenu(f *frame) {
 	f.hits = nil
 	f.scrollbars = nil
 	f.text(r.X+2, r.Y+1, w-7, m.menuTitle, p.violet, p.input)
-	f.button(m, r.X+w-4, r.Y+1, 3, centered(m.icon("close"), 3), "menu-close", action{Kind: "menu-close"}, p.muted, p.input)
+	f.iconButton(m, r.X+w-4, r.Y+1, 3, centered(m.icon("close"), 3), "menu-close", action{Kind: "menu-close"}, p.muted, p.input)
 	if extra > 0 {
 		input := shell.Rect{X: r.X + 2, Y: r.Y + 2, W: w - 4, H: 1}
 		if f.rows != nil {
 			f.put(input, m.projectInput.View())
 		}
-		f.hits = append(f.hits, hit{input, action{}, "Project search / folder path", "project-input"})
+		f.hits = append(f.hits, hit{Rect: input, Action: action{}, Label: "Project search / folder path", Key: "project-input"})
 		caption, ink := m.projectError, p.red
 		if caption == "" && (m.projectMode == "add" || m.projectMode == "project-root") {
 			caption, ink = m.paths.result.Directory, p.muted
@@ -475,7 +570,7 @@ func (m *Model) renderMenu(f *frame) {
 				state := m.controlState(index == m.menuIndex && !m.projectGear, key)
 				f.styledButton(r.X+2, y, w-8, "   "+project.Name, key, action{Kind: "menu-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
 				f.hits[len(f.hits)-1].Label = project.Name + " · " + project.Path
-				m.renderProjectBadge(f, r.X+2, y, project)
+				m.renderProjectBadge(f, r.X+2, y, project, p.input)
 				key = "project-settings:" + project.ID
 				state = m.controlState(index == m.menuIndex && m.projectGear, key)
 				f.styledButton(r.X+w-6, y, 3, centered(m.icon("settings"), 3), key, action{Kind: "project-settings", ID: project.ID}, m.componentStyle(squareFill, state, p.muted, p.input))
@@ -503,24 +598,14 @@ func (m *Model) renderMenu(f *frame) {
 	}
 	f.text(r.X+2, r.Y+h-2, w-4, help, p.muted, p.input)
 }
+
+// View composes the frame and overlays the live text selection.
 func (m *Model) View() tea.View {
 	f := m.render()
-	if m.settingsPage == "" && (m.selecting || m.selectedText != "") && len(m.menu) == 0 {
-		a, b := m.selectionStart, m.selectionEnd
-		if a[1] > b[1] || a[1] == b[1] && a[0] > b[0] {
-			a, b = b, a
-		}
-		for y := max(0, a[1]); y <= b[1] && y < len(f.rows); y++ {
-			start, end := m.selectionRegion.X, m.selectionRegion.X+m.selectionRegion.W
-			if y == a[1] {
-				start = a[0]
-			}
-			if y == b[1] {
-				end = b[0] + 1
-			}
-			line := ansi.Cut(f.rows[y], start, end)
-			highlight := style(m.colors().text, m.colors().selected).Render(ansi.Strip(line))
-			f.put(shell.Rect{X: start, Y: y, W: end - start, H: 1}, highlight)
+	if m.selectionLive(f) && len(m.menu) == 0 {
+		for _, s := range selectionSpans(m.selectionStart, m.selectionEnd, m.selectionRegion, m.width, len(f.rows)) {
+			highlight := style(m.colors().text, m.colors().selected).Render(ansi.Strip(cutCells(f.rows[s.y], s.start, s.end)))
+			f.put(shell.Rect{X: s.start, Y: s.y, W: s.end - s.start, H: 1}, highlight)
 		}
 	}
 	v := tea.NewView(strings.Join(f.rows, "\n"))
@@ -536,4 +621,22 @@ func (m *Model) View() tea.View {
 	}
 	v.ReportFocus = true
 	return v
+}
+
+// activityDetail shows a dispatched prompt's retained capture; Detail holds
+// only its summary.
+func activityDetail(a protocol.Activity) string {
+	if a.Prompt == nil || len(a.Prompt.Attachments) == 0 {
+		return a.Detail
+	}
+	var b strings.Builder
+	b.WriteString(a.Detail)
+	for _, at := range a.Prompt.Attachments {
+		name := at.Name
+		if at.Source != "" && at.Source != name {
+			name += " · " + at.Source
+		}
+		fmt.Fprintf(&b, "\n\n%s · %s · %d bytes captured\n%s", at.Kind, name, len(at.Content), at.Content)
+	}
+	return b.String()
 }

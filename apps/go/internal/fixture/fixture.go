@@ -3,6 +3,7 @@ package fixture
 
 import "github.com/muschterm/tui/apps/go/internal/protocol"
 
+// Initial returns the synthetic starting snapshot for a new application home.
 func Initial() protocol.Snapshot {
 	optional := false
 	s := protocol.Settings{Model: "fixture-model", Effort: "medium", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}

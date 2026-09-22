@@ -80,11 +80,39 @@ func validRelativePath(path string) bool {
 		return false
 	}
 	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if part == ".." || part == ".git" {
+		if part == ".." || strings.EqualFold(part, ".git") {
 			return false
 		}
 	}
 	return len(path) <= 4096 && utf8.ValidString(path) && !strings.ContainsFunc(path, unicode.IsControl)
+}
+
+// insideGit reports whether a root-relative path resolves to the checkout's
+// .git entry or below it. The lexical check cannot see case-insensitive
+// volumes or in-checkout symlinks; os.Root only confines to the checkout.
+func insideGit(root *os.Root, path string) bool {
+	git, err := root.Stat(".git")
+	if err != nil {
+		return false
+	}
+	path = filepath.Clean(path)
+	// A link may target a directory below .git; its resolved, link-free path
+	// passes through the .git entry itself.
+	if base, err := filepath.EvalSymlinks(root.Name()); err == nil {
+		if resolved, err := filepath.EvalSymlinks(filepath.Join(base, path)); err == nil {
+			if rel, err := filepath.Rel(base, resolved); err == nil && filepath.IsLocal(rel) {
+				path = rel
+			}
+		}
+	}
+	prefix := ""
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		prefix = filepath.Join(prefix, part)
+		if info, err := root.Stat(prefix); err == nil && os.SameFile(info, git) {
+			return true
+		}
+	}
+	return false
 }
 
 func expandHome(path string) (string, error) {
@@ -176,6 +204,13 @@ func browsePaths(parent context.Context, base string, req protocol.BrowseRequest
 		return out, err
 	}
 	defer dir.Close()
+	var git os.FileInfo
+	if req.Scope != "projects" {
+		if insideGit(root, directory) {
+			return out, failure("invalid", "file paths must remain outside .git")
+		}
+		git, _ = root.Stat(".git")
+	}
 	if req.Scope == "projects" {
 		out.Directory, err = filepath.EvalSymlinks(filepath.Join("/", directory))
 		if err != nil {
@@ -198,7 +233,7 @@ func browsePaths(parent context.Context, base string, req protocol.BrowseRequest
 			}
 			scanned++
 			name := entry.Name()
-			if name == ".git" || !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) || !strings.HasPrefix(name, prefix) || strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".") {
+			if strings.EqualFold(name, ".git") || !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) || !strings.HasPrefix(name, prefix) || strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".") {
 				continue
 			}
 			path := filepath.Join(directory, name)
@@ -209,7 +244,7 @@ func browsePaths(parent context.Context, base string, req protocol.BrowseRequest
 			} else {
 				info, statErr = root.Stat(path)
 			}
-			if statErr != nil || !info.IsDir() && !info.Mode().IsRegular() || req.Scope == "projects" && !info.IsDir() {
+			if statErr != nil || git != nil && (os.SameFile(info, git) || entry.Type()&os.ModeSymlink != 0 && insideGit(root, path)) || !info.IsDir() && !info.Mode().IsRegular() || req.Scope == "projects" && !info.IsDir() {
 				continue
 			}
 			if len(out.Entries) == browseLimit {

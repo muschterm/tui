@@ -49,6 +49,7 @@ func TestQuestionNavigationNeverSubmitsAndRemoteResolutionKeepsIdentity(t *testi
 		t.Fatal("old draft lost")
 	}
 }
+
 func TestThreadRestorationAndSingletonInspectors(t *testing.T) {
 	m := testModel()
 	m.prompt.SetValue("Draft é 👩🏽‍💻")
@@ -67,6 +68,7 @@ func TestThreadRestorationAndSingletonInspectors(t *testing.T) {
 		t.Fatal("thread view lost")
 	}
 }
+
 func TestQueueEditPersistsOriginalDraftAndRetainsTypingAfterAcceptance(t *testing.T) {
 	m := testModel()
 	m.prompt.SetValue("original draft")
@@ -91,6 +93,7 @@ func TestQueueEditPersistsOriginalDraftAndRetainsTypingAfterAcceptance(t *testin
 		t.Fatal("cancel lost original draft")
 	}
 }
+
 func TestLateReceiptCannotRepeatEffectsOrChangeOtherThreadLayout(t *testing.T) {
 	m := testModel()
 	c := protocol.Command{ID: "terminal-1", ThreadID: m.state.Active}
@@ -103,6 +106,7 @@ func TestLateReceiptCannotRepeatEffectsOrChangeOtherThreadLayout(t *testing.T) {
 		t.Fatal("late/duplicate receipt corrupted presentation")
 	}
 }
+
 func TestMenuPointerUsesSameActionAndBlocksUnderlyingContent(t *testing.T) {
 	m := testModel()
 	m.openCommands()
@@ -118,6 +122,7 @@ func TestMenuPointerUsesSameActionAndBlocksUnderlyingContent(t *testing.T) {
 	}
 	t.Fatal("no first menu item")
 }
+
 func TestRenderingDoesNotMutateStateAndRemovesTerminalEscapes(t *testing.T) {
 	m := testModel()
 	m.snapshot.Threads[0].Activity[0].Text = "hello\x1b[2J\x1b]52;c;YWJj\a world\u202e"
@@ -167,6 +172,7 @@ func TestPromptCapturesSettingsAndContextAtSend(t *testing.T) {
 		t.Fatal("receipt discarded newly added attachment")
 	}
 }
+
 func BenchmarkViewWide(b *testing.B) {
 	m := testModel()
 	m.width, m.height = 160, 50

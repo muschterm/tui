@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
@@ -94,10 +96,74 @@ func canonicalProjectPath(input string) (string, error) {
 	return path, nil
 }
 
+// resolvedPath carries a canonical path computed before the engine lock. A nil
+// value resolves inline for callers that hold no lock.
+type resolvedPath struct {
+	input, path string
+	err         error
+	done        bool
+}
+
+func (r *resolvedPath) result(input string) (string, error) {
+	if r == nil {
+		return canonicalProjectPath(input)
+	}
+	if !r.done || r.input != input {
+		return "", failure("stale_settings", "settings changed while resolving the folder; refresh before saving")
+	}
+	return r.path, r.err
+}
+
+func pathToResolve(s protocol.Snapshot, c protocol.Command) (string, bool) {
+	switch {
+	case c.Kind == "project.add":
+		return c.Path, true
+	case c.Kind == "settings.update" && c.AppSettings != nil:
+		directory := nextProjectDirectory(s, *c.AppSettings)
+		return directory, directory != s.AppSettings.ProjectDirectory && c.Revision == s.AppSettings.Revision
+	}
+	return "", false
+}
+
+const pathResolveTimeout = time.Second
+
+// A blocked filesystem call cannot be cancelled; bound how many may linger.
+var pathResolvers = make(chan struct{}, 8)
+
+func (e *engine) resolvePath(parent context.Context, input string) *resolvedPath {
+	resolve := e.resolve
+	if resolve == nil {
+		resolve = canonicalProjectPath
+	}
+	select {
+	case pathResolvers <- struct{}{}:
+	default:
+		return &resolvedPath{input: input, done: true, err: failure("unavailable", "earlier folder checks have not responded; try again later")}
+	}
+	result := make(chan *resolvedPath, 1)
+	go func() {
+		defer func() { <-pathResolvers }()
+		path, err := resolve(input)
+		result <- &resolvedPath{input: input, path: path, err: err, done: true}
+	}()
+	ctx, cancel := context.WithTimeout(parent, pathResolveTimeout)
+	defer cancel()
+	select {
+	case r := <-result:
+		return r
+	case <-ctx.Done():
+		return &resolvedPath{input: input, done: true, err: failure("unavailable", "folder did not respond in time; nothing was changed")}
+	}
+}
+
 func applyProject(s *protocol.Snapshot, c protocol.Command) (string, error) {
+	return applyProjectResolved(s, c, nil)
+}
+
+func applyProjectResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedPath) (string, error) {
 	switch c.Kind {
 	case "project.add":
-		path, err := canonicalProjectPath(c.Path)
+		path, err := resolved.result(c.Path)
 		if err != nil {
 			return "", err
 		}

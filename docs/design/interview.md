@@ -609,3 +609,26 @@ category's configuration**, as in T3. The Project category appears when entering
 through a project's gear. The composer and bottom workspace are hidden too,
 with their state preserved for Back. This supersedes the intermediate
 implementation that placed the settings form inside the left sidebar.
+
+On 2026-09-21 the user asked for the left panel's Closed heading and expanded
+Closed items to use a more dimmed color, for each Closed item to take one line
+instead of two “as T3 Code does”, and for the Closed row's ellipsis to become
+T3's re-open icon. Accepted; see [thread lifecycle](threads.md).
+
+Later on 2026-09-21 the user asked whether the mouse pointer can change on
+hover (“probably not”), asked to try bold instead of a background change for
+icon hover, asked that clicks target only the icon rather than its surrounding
+space “for all icons”, and reported the sidebar header icons after Search as
+misaligned. Bold-plus-ink-lift and glyph-only targets are accepted as a trial;
+pointer shape remains unadopted. See [components](components.md).
+
+Still on 2026-09-21 the user redefined the top bar: left toggle, then the
+left-justified application title that starts a new thread in the default
+project or opens project selection when there is none; a centered
+`<project> / <thread>` breadcrumb whose project part is clickable with a
+prefixed icon and hover feedback; the bottom and right toggles plus the bell at
+the right of the center pane while the right panel is hidden, and those toggles
+plus an expand/shrink control moving into the right panel while it is shown,
+with the bell staying in the center. Accepted. Open question: the ADE has no
+stored default project yet; the project filter stands in for it until decided.
+

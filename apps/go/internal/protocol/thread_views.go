@@ -105,6 +105,27 @@ func PruneThreadViewCommands(data json.RawMessage, live map[string]bool, deleted
 	// An acknowledged first send may still be awaiting its snapshot in the
 	// frontend. Deletion removes that accepted capture without erasing text
 	// typed after it was submitted or any other project's unsent draft.
+	// Shapes are validated on every write, not only when pruning applies; a
+	// stored view that cannot be projected would otherwise surface later,
+	// inside an unrelated thread or project deletion.
+	var drafts map[string]json.RawMessage
+	if raw, ok := fields["DraftThreads"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if err := json.Unmarshal(raw, &drafts); err != nil {
+			return nil, fmt.Errorf("invalid DraftThreads: %w", err)
+		}
+		for _, rawDraft := range drafts {
+			var draft struct{ Draft string }
+			if err := json.Unmarshal(rawDraft, &draft); err != nil {
+				return nil, fmt.Errorf("invalid project draft: %w", err)
+			}
+		}
+	}
+	if raw, ok := fields["DraftProjectID"]; ok {
+		var id string
+		if err := json.Unmarshal(raw, &id); err != nil {
+			return nil, fmt.Errorf("invalid DraftProjectID: %w", err)
+		}
+	}
 	if raw, ok := fields["StartedDraft"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		var started struct {
 			ThreadID string
@@ -116,20 +137,12 @@ func PruneThreadViewCommands(data json.RawMessage, live map[string]bool, deleted
 		if started.ThreadID != "" && !live[started.ThreadID] {
 			delete(fields, "StartedDraft")
 			changed = true
-			if rawDrafts, ok := fields["DraftThreads"]; ok {
-				var drafts map[string]json.RawMessage
-				if err := json.Unmarshal(rawDrafts, &drafts); err != nil {
-					return nil, fmt.Errorf("invalid DraftThreads: %w", err)
-				}
-				if rawDraft, ok := drafts[started.Command.ProjectID]; ok {
-					var draft struct{ Draft string }
-					if err := json.Unmarshal(rawDraft, &draft); err != nil {
-						return nil, fmt.Errorf("invalid project draft: %w", err)
-					}
-					if draft.Draft == started.Command.Text {
-						delete(drafts, started.Command.ProjectID)
-						fields["DraftThreads"] = rawObject(drafts)
-					}
+			if rawDraft, ok := drafts[started.Command.ProjectID]; ok {
+				var draft struct{ Draft string }
+				_ = json.Unmarshal(rawDraft, &draft)
+				if draft.Draft == started.Command.Text {
+					delete(drafts, started.Command.ProjectID)
+					fields["DraftThreads"] = rawObject(drafts)
 				}
 			}
 		}

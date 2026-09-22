@@ -71,7 +71,7 @@ func (m *Model) renderSettingsContent(f *frame, r shell.Rect) {
 	f.settingsBody = shell.Rect{X: x, Y: r.Y + 3, W: width, H: max(0, r.H-4)}
 	f.settingsMax = max(0, len(rows)-f.settingsBody.H)
 	offset := min(max(0, m.settingsScroll), f.settingsMax)
-	f.hits = append(f.hits, hit{f.settingsBody, action{}, "Settings · wheel / arrows to scroll", "sidebar-settings"})
+	f.hits = append(f.hits, hit{Rect: f.settingsBody, Action: action{}, Label: "Settings · wheel / arrows to scroll", Key: "sidebar-settings"})
 	for i := 0; i < f.settingsBody.H && offset+i < len(rows); i++ {
 		row, y := rows[offset+i], f.settingsBody.Y+i
 		if row.key != "" {
@@ -96,13 +96,13 @@ func (m *Model) renderSettingsWorkspace(f *frame) {
 	g := f.geom
 	f.fill(shell.Rect{W: m.width, H: 1}, p, p.nav)
 	if m.singleColumn() {
-		f.button(m, 1, 0, 5, centered(m.icon("menu"), 5), "settings-nav", action{Kind: "settings-nav"}, p.text, p.nav)
+		f.iconButton(m, 1, 0, 5, centered(m.icon("menu"), 5), "settings-nav", action{Kind: "settings-nav"}, p.text, p.nav)
 		f.hits[len(f.hits)-1].Label = "Settings categories · F2"
 	}
 	attentionX := m.width - 5 - m.attentionWidth()
 	f.text(7, 0, max(1, attentionX-8), m.settingsBreadcrumb(), p.text, p.nav)
-	m.renderAttention(f, attentionX)
-	f.button(m, m.width-4, 0, 3, centered(m.icon("close"), 3), "settings-close", action{Kind: "settings-back"}, p.muted, p.nav)
+	m.renderAttention(f, attentionX, p.nav)
+	f.iconButton(m, m.width-4, 0, 3, centered(m.icon("close"), 3), "settings-close", action{Kind: "settings-back"}, p.muted, p.nav)
 	f.hits[len(f.hits)-1].Label = "Return to workspace · Esc"
 	if g.Left.W > 0 {
 		m.renderSidebarSettings(f, g.Left)

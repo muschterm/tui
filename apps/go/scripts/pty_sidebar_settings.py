@@ -84,11 +84,15 @@ def main():
             subprocess.run([str(binary), 'server', 'start'], env=env, check=True, capture_output=True)
             term = Terminal(binary, home, 'sidebar-review', artifacts)
             term.click(17, 2)
-            paste(term, str(project))
-            term.send(b'\r', 1.2)
+            paste(term, str(project) + '/')
+            term.pump(.8)
+            term.click_label('Add this folder')
+            term.pump(1.2)
             p = next(p for p in snap()['projects'] if p['Name'] == 'Sidebar project')
             term.click(20, 2)
-            term.pump(1.2)
+            # New thread always asks for its destination project first.
+            paste(term, 'Sidebar project')
+            term.send(b'\r', 1.2)
             view = get('views/sidebar-review')['data']
             check(view['Active'] == '' and view['DraftProjectID'] == p['ID'], 'new thread starts as local draft')
             term.click_label('Choose model')
@@ -117,7 +121,8 @@ def main():
             capture('01-general')
             nav_back()
             term.click(20, 2)
-            term.pump(.8)
+            paste(term, 'Sidebar project')
+            term.send(b'\r', 1.2)
             check(get('views/sidebar-review')['data']['DraftProjectID'] == p['ID'] and len(snap()['threads']) == 3,
                   'opening another local draft does not create a thread under a worktree default')
             project_settings('Sidebar project')

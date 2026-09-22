@@ -30,7 +30,19 @@ func ensureAppSettings(s *protocol.Snapshot) {
 	}
 }
 
-func applySettings(s *protocol.Snapshot, c protocol.Command) (string, error) {
+// Older clients omit the directory when changing existing settings. Preserve
+// it; an explicit "~" resets the starting directory.
+func nextProjectDirectory(s protocol.Snapshot, requested protocol.AppSettings) string {
+	if requested.ProjectDirectory != "" {
+		return requested.ProjectDirectory
+	}
+	if s.AppSettings.ProjectDirectory != "" {
+		return s.AppSettings.ProjectDirectory
+	}
+	return "~"
+}
+
+func applySettingsResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedPath) (string, error) {
 	if c.Kind == "settings.update" {
 		if c.Revision != s.AppSettings.Revision {
 			return "", failure("stale_settings", "app settings changed; refresh before saving")
@@ -39,16 +51,9 @@ func applySettings(s *protocol.Snapshot, c protocol.Command) (string, error) {
 			return "", failure("invalid", "choose current checkout or worktree")
 		}
 		next := *c.AppSettings
-		if next.ProjectDirectory == "" {
-			// Older clients omit this field when changing existing settings.
-			// Preserve it; an explicit "~" resets the starting directory.
-			next.ProjectDirectory = s.AppSettings.ProjectDirectory
-			if next.ProjectDirectory == "" {
-				next.ProjectDirectory = "~"
-			}
-		}
+		next.ProjectDirectory = nextProjectDirectory(*s, next)
 		if next.ProjectDirectory != s.AppSettings.ProjectDirectory {
-			path, err := canonicalProjectPath(next.ProjectDirectory)
+			path, err := resolved.result(next.ProjectDirectory)
 			if err != nil {
 				return "", err
 			}

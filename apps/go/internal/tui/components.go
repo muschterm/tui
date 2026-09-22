@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -33,7 +34,11 @@ type componentState struct {
 
 type componentVisual struct {
 	foreground, background, border string
-	bold, underline                bool
+	// base is the surrounding background before any hover or selection fill;
+	// a focus mark painted beside the control's fill uses it. mark and markInk
+	// are the keyboard-focus glyph and its accent.
+	base, mark, markInk string
+	bold, focused       bool
 }
 
 func (m *Model) controlState(selected bool, keys ...string) componentState {
@@ -43,6 +48,24 @@ func (m *Model) controlState(selected bool, keys ...string) componentState {
 		s.Focused = s.Focused || m.focus == key
 	}
 	return s
+}
+
+// dimmed recedes below muted for Closed navigation while staying legible.
+func (m *Model) dimmed() string {
+	switch m.colorProfile {
+	case colorprofile.TrueColor:
+		if m.state.Light {
+			return "#8790a7"
+		}
+		return "#67738f"
+	case colorprofile.ANSI256:
+		if m.state.Light {
+			return "244"
+		}
+		return "242"
+	default:
+		return "8"
+	}
 }
 
 func (m *Model) hoverFill() string {
@@ -69,7 +92,7 @@ func (m *Model) hoverFill() string {
 // wins over hover; focus adds a text cue without changing persistent selection.
 func (m *Model) componentStyle(variant componentVariant, s componentState, fg, bg string) componentVisual {
 	p := m.colors()
-	v := componentVisual{foreground: fg, background: bg, border: p.line}
+	v := componentVisual{foreground: fg, background: bg, base: bg, border: p.line, mark: m.icon("focus"), markInk: p.blue}
 	if s.Disabled {
 		v.foreground = p.muted
 		return v
@@ -95,26 +118,144 @@ func (m *Model) componentStyle(variant componentVariant, s componentState, fg, b
 	if m.colorProfile <= colorprofile.ANSI && variant == squareFill && (s.Selected || s.Hovered || s.Focused) {
 		v.foreground = p.text
 	}
-	v.underline = s.Focused
+	v.focused = s.Focused
 	return v
 }
 
+// Icon controls have no fill. Hover and focus embolden the glyph and lift muted
+// ink to text, as T3's muted-to-foreground row actions do; focus adds the
+// leading mark. Bold alone is unreliable for Nerd Font glyphs, whose outlines
+// are identical in the Bold face, so the ink lift carries the feedback there.
+func (m *Model) iconStyle(s componentState, fg, bg string) componentVisual {
+	p := m.colors()
+	v := componentVisual{foreground: fg, background: bg, base: bg, mark: m.icon("focus"), markInk: p.blue}
+	if s.Disabled {
+		v.foreground = p.muted
+		return v
+	}
+	if s.Hovered || s.Focused {
+		v.bold = true
+		v.foreground = m.lift(fg)
+	}
+	if s.Selected {
+		v.foreground, v.bold = p.blue, true
+	}
+	v.focused = s.Focused
+	return v
+}
+
+// lift moves hovered icon ink toward the text color: muted becomes text, and
+// accent colors brighten (dark theme) or deepen (light theme) halfway while
+// keeping their hue. Low-color profiles have no midpoint and use text.
+func (m *Model) lift(fg string) string {
+	p := m.colors()
+	if fg == p.text || fg == p.muted || m.colorProfile != colorprofile.TrueColor {
+		return p.text
+	}
+	a, b := parseHex(fg), parseHex(p.text)
+	if a == nil || b == nil {
+		return p.text
+	}
+	var out [3]int
+	for i := range out {
+		out[i] = (a[i] + b[i]) / 2
+	}
+	return fmt.Sprintf("#%02x%02x%02x", out[0], out[1], out[2])
+}
+
+func parseHex(s string) []int {
+	if len(s) != 7 || s[0] != '#' {
+		return nil
+	}
+	var out []int
+	for i := 1; i < 7; i += 2 {
+		var v int
+		if _, err := fmt.Sscanf(s[i:i+2], "%02x", &v); err != nil {
+			return nil
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// iconButton paints a padded glyph label across its reserved slot, but only
+// the glyph's own cells are interactive: the slot keeps chrome spacing stable
+// while the leading padding neither hovers nor activates. One trailing cell
+// joins the target because wide Nerd Font variants draw a one-cell glyph
+// about half a cell past its advance, so that cell is visibly icon there.
+func (f *frame) iconButton(m *Model, x, y, w int, label, key string, a action, fg, bg string) {
+	if w <= 0 {
+		return
+	}
+	label = fit(singleLine(label), w)
+	glyph := strings.TrimSpace(label)
+	lead := ansi.StringWidth(label[:strings.Index(label, glyph)])
+	gw := ansi.StringWidth(glyph)
+	slot := shell.Rect{X: x, Y: y, W: w, H: 1}
+	f.text(x, y, w, label, fg, bg)
+	if gw == 0 {
+		// A hidden glyph keeps its key and slot so focus can still reveal it,
+		// at the cells a centered one-cell glyph would occupy.
+		lead, gw = (w-1)/2, 1
+	}
+	target := shell.Rect{X: x + lead, Y: y, W: min(gw+1, w-lead), H: 1}
+	if glyph != "" {
+		v := m.iconStyle(m.controlState(false, key), fg, bg)
+		// The mark takes the padding cell before the glyph inside the slot. A
+		// slot with no leading padding keeps the underline across the target.
+		underline := v.focused && lead == 0
+		f.styledText(target.X, y, target.W, glyph, v, underline)
+		if v.focused && lead > 0 {
+			f.focusMark(x+lead-1, y, v, bg)
+		}
+	}
+	f.hits = append(f.hits, hit{Rect: target, Action: a, Label: glyph, Key: key, Slot: slot})
+}
+
 func (f *frame) componentText(x, y, width int, label string, v componentVisual) {
+	f.styledText(x, y, width, label, v, false)
+}
+
+func (f *frame) styledText(x, y, width int, label string, v componentVisual, underline bool) {
 	if f.rows != nil && width > 0 {
-		f.put(shell.Rect{X: x, Y: y, W: width, H: 1}, style(v.foreground, v.background).Bold(v.bold).Underline(v.underline).Render(fit(safe(label), width)))
+		f.put(shell.Rect{X: x, Y: y, W: width, H: 1}, style(v.foreground, v.background).Bold(v.bold).Underline(underline).Render(fit(singleLine(label), width)))
 	}
 }
 
+// focusMark paints the keyboard-focus glyph into one cell the focused control
+// does not use for content, so focusing never moves an icon or label.
+func (f *frame) focusMark(x, y int, v componentVisual, bg string) {
+	f.text(x, y, 1, v.mark, v.markInk, bg)
+}
+
+// blank reports whether a painted cell holds only a space, so a focus mark can
+// take it without covering a neighbour's content. Nothing is blank while
+// measuring: hits are unaffected and no mark is painted then anyway.
+func (f *frame) blank(x, y int) bool {
+	if f.rows == nil || y < 0 || y >= len(f.rows) || x < 0 || x >= ansi.StringWidth(f.rows[y]) {
+		return false
+	}
+	return ansi.Strip(cutCells(f.rows[y], x, x+1)) == " "
+}
+
+// A text control has no reserved end cells: the mark takes the blank cell
+// before it when its container leaves one, otherwise focus underlines the
+// label as before.
 func (f *frame) styledButton(x, y, width int, label, key string, a action, v componentVisual) {
 	if width <= 0 {
 		return
 	}
-	f.componentText(x, y, width, label, v)
-	f.hits = append(f.hits, hit{shell.Rect{X: x, Y: y, W: width, H: 1}, a, label, key})
+	marked := v.focused && f.blank(x-1, y)
+	f.styledText(x, y, width, label, v, v.focused && !marked)
+	if marked {
+		f.focusMark(x-1, y, v, v.base)
+	}
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: a, Label: label, Key: key})
 }
 
 // The end cells are always reserved. Low-color/plain fallbacks add visible
 // brackets without changing width, icon slots, or the one-row hit rectangle.
+// Keyboard focus replaces the leading end cell with the focus mark.
 func (f *frame) compactControl(m *Model, x, y, width int, label string, v componentVisual) {
 	if width < 3 {
 		return
@@ -123,7 +264,10 @@ func (f *frame) compactControl(m *Model, x, y, width int, label string, v compon
 	if m.colorProfile <= colorprofile.ANSI || m.plainIcons {
 		left, right = "[", "]"
 	}
-	f.componentText(x, y, width, left+fit(safe(label), width-2)+right, v)
+	f.componentText(x, y, width, left+fit(singleLine(label), width-2)+right, v)
+	if v.focused {
+		f.focusMark(x, y, v, v.background)
+	}
 }
 
 func (f *frame) compactButton(m *Model, x, y, width int, label, key string, a action, selected bool, role componentRole) {
@@ -135,7 +279,7 @@ func (f *frame) compactButton(m *Model, x, y, width int, label, key string, a ac
 	s.Role = role
 	v := m.componentStyle(squareFill, s, p.text, p.input)
 	f.compactControl(m, x, y, width, centered(ansi.Truncate(label, width-2, "…"), width-2), v)
-	f.hits = append(f.hits, hit{shell.Rect{X: x, Y: y, W: width, H: 1}, a, label, key})
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: a, Label: label, Key: key})
 }
 
 func componentBorder(variant componentVariant, plain bool) lipgloss.Border {

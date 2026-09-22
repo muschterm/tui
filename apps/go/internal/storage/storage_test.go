@@ -70,6 +70,7 @@ func TestViewCASRejectsLateAndCompetingSaves(t *testing.T) {
 		t.Fatal("rejected write changed view")
 	}
 }
+
 func TestViewRevisionMigrationPreservesDraft(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	db, err := sql.Open("sqlite", path)
@@ -122,6 +123,7 @@ func TestFutureSchemaUntouched(t *testing.T) {
 		t.Fatal("future schema backup/migration attempted")
 	}
 }
+
 func TestMigrationBackupPreservesOriginalSchemaAndContents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	db, err := sql.Open("sqlite", path)

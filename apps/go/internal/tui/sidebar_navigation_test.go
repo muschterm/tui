@@ -76,7 +76,7 @@ func TestSidebarThreadSearchScopesBothSections(t *testing.T) {
 	m.state.ThreadFilter = "  sEaRcH  "
 	m.state.ProjectFilter = "alpha"
 	open, closed := m.navigationSections()
-	if len(open) != 4 || len(closed) != 4 || open[1].thread.ID != "open-match" || closed[1].thread.ID != "closed-match" {
+	if len(open) != 4 || len(closed) != 3 || open[1].thread.ID != "open-match" || closed[1].thread.ID != "closed-match" {
 		t.Fatal("search/filter did not scope both sections", open, closed)
 	}
 	if m.state.Active != active || m.prompt.Value() != "preserved draft" {
@@ -122,15 +122,15 @@ func TestProjectBadgeAutomaticAndExplicitColors(t *testing.T) {
 	if projectBadgeColorName(project) != "purple" {
 		t.Fatal("explicit color lost")
 	}
-	dark := m.projectBadgeStyle(project)
+	dark := m.projectBadgeStyle(project, m.colors().nav)
 	m.state.Light = true
-	light := m.projectBadgeStyle(project)
+	light := m.projectBadgeStyle(project, m.colors().nav)
 	if dark.foreground == dark.background || light.foreground == light.background || dark == light {
 		t.Fatal("badge failed to adapt contrasting colors to theme")
 	}
 	for _, profile := range []colorprofile.Profile{colorprofile.ANSI, colorprofile.NoTTY} {
 		m.colorProfile = profile
-		visual := m.projectBadgeStyle(project)
+		visual := m.projectBadgeStyle(project, m.colors().nav)
 		if strings.Contains(visual.foreground, "#") || strings.Contains(visual.background, "#") || visual.foreground == visual.background || !visual.bold {
 			t.Fatal("fallback badge lost readable bounded styling", visual)
 		}

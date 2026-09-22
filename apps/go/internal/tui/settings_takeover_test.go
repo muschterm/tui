@@ -122,7 +122,7 @@ func TestSettingsTakeoverPreservesWorkspaceAndActiveWork(t *testing.T) {
 		m.viewState().RightVisible = true
 		m.viewState().Host.Open("files", "Files")
 		m.viewState().Host.Open("terminal", "Existing shell")
-		m.viewState().BottomID = "existing-bottom-session"
+		openTerminalTab(&m.viewState().Bottom, "existing-bottom-session")
 		m.state.Layout.Maximized = maximized
 		m.prompt.SetValue("Unsent prompt survives settings")
 		m.viewState().Draft = m.prompt.Value()

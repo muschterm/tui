@@ -27,7 +27,7 @@ func Run(ctx context.Context, c *client.Client, home, id string) error {
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m := New(c, id, snapshot, stored.Data)
-	m.plainIcons = os.Getenv("TUI_GO_ICONS") == "ascii"
+	m.setEnvIcons(os.Getenv("TUI_GO_ICONS"))
 	m.ctx = watchCtx
 	m.writer = &viewWriter{id: id, revision: stored.Revision, generation: m.state.Generation, acknowledged: append([]byte(nil), stored.Data...)}
 	m.writer.connection.Store(c)

@@ -98,7 +98,13 @@ func (m *Model) requestHeight(width int) int {
 	desired := fixed + input + max(1, len(m.questionLines(r, width-4)))
 	// Keep the composer and its controls intact. At short heights the content
 	// viewport shrinks first; it always retains at least one scrollable row.
-	budget := max(fixed+1+min(input, 1), m.height-3-m.baseFooterHeight(width))
+	floor := fixed + 1 + min(input, 1)
+	budget := max(floor, m.height-3-m.baseFooterHeight(width))
+	if m.surfaceFillsCenter() {
+		// The surface gets the rows instead; the card scrolls within ~40% of
+		// the body and keeps its decision controls.
+		budget = min(budget, max(floor, (m.height-2)*2/5))
+	}
 	return min(desired, maxQuestionCardRows, budget)
 }
 
@@ -141,7 +147,7 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 	lines := m.questionLines(req, body.W)
 	f.requestMax = max(0, len(lines)-body.H)
 	offset := min(max(0, m.viewState().RequestScroll), f.requestMax)
-	f.hits = append(f.hits, hit{body, action{}, "Question · arrows / wheel to scroll", "request-body"})
+	f.hits = append(f.hits, hit{Rect: body, Action: action{}, Label: "Question · arrows / wheel to scroll", Key: "request-body"})
 	optionsHidden := false
 	for i, line := range lines {
 		if i < offset || i >= offset+body.H {
@@ -161,7 +167,7 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 		if f.rows != nil {
 			f.put(f.answer, style(p.text, p.input).Width(f.answer.W).Height(f.answer.H).Render(m.answerView.View(&m.answer)))
 		}
-		f.hits = append(f.hits, hit{f.answer, action{}, "Answer text · choose a question tab to review", "answer"})
+		f.hits = append(f.hits, hit{Rect: f.answer, Action: action{}, Label: "Answer text · choose a question tab to review", Key: "answer"})
 		scroll := m.answerView.Metrics(m.answerMetrics)
 		f.scrollbar(m, shell.Rect{X: x + w - 1, Y: y, W: 1, H: inputRows}, "answer", scroll.Total, inputRows, scroll.Offset, p.input)
 	}

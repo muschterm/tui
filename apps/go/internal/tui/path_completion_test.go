@@ -20,10 +20,12 @@ func pathModel() *Model {
 	m.beginThreadDraft("alpha")
 	return m
 }
+
 func pathResults(m *Model, result protocol.BrowseResult) {
 	m.nextPathQuery()
 	m.acceptPathQuery(pathQueryResult{key: m.paths.key, generation: m.paths.generation, result: result})
 }
+
 func mentionModel(value string) *Model {
 	m := pathModel()
 	m.prompt.SetValue(value)
@@ -57,6 +59,7 @@ func TestProjectDestinationAlwaysChoosesAndSearches(t *testing.T) {
 		}
 	}
 }
+
 func TestProjectDestinationAddedReceiptWaitsForSnapshotAndRestoresDraft(t *testing.T) {
 	m := pathModel()
 	m.beginThreadDraft("beta")
@@ -77,6 +80,7 @@ func TestProjectDestinationAddedReceiptWaitsForSnapshotAndRestoresDraft(t *testi
 		t.Fatalf("snapshot failed to restore draft: %q", m.prompt.Value())
 	}
 }
+
 func TestPathFolderBrowsingCancelsAndRejectsStaleResultsWithoutMutation(t *testing.T) {
 	m := pathModel()
 	m.activate(action{Kind: "project-add"})
@@ -97,6 +101,7 @@ func TestPathFolderBrowsingCancelsAndRejectsStaleResultsWithoutMutation(t *testi
 		t.Fatal("dismissed folder accepted result")
 	}
 }
+
 func TestPathStartingFolderUsesAppScopeAndOpeningRevision(t *testing.T) {
 	m := pathModel()
 	m.snapshot.AppSettings.Revision = 7
@@ -117,6 +122,7 @@ func TestPathStartingFolderUsesAppScopeAndOpeningRevision(t *testing.T) {
 		t.Fatal("project scope exposed app starting folder")
 	}
 }
+
 func TestMentionCursorBoundaryAndQuotedUnicode(t *testing.T) {
 	for _, tc := range []struct {
 		value  string
@@ -136,6 +142,7 @@ func TestMentionCursorBoundaryAndQuotedUnicode(t *testing.T) {
 		})
 	}
 }
+
 func TestMentionBrowseSelectAndRemoveThroughKeyboardAndMouse(t *testing.T) {
 	for _, mouse := range []bool{false, true} {
 		t.Run(fmt.Sprint(mouse), func(t *testing.T) {
@@ -166,6 +173,7 @@ func TestMentionBrowseSelectAndRemoveThroughKeyboardAndMouse(t *testing.T) {
 		})
 	}
 }
+
 func TestMentionEnterWithNoMatchesNeverSendsAndEscapePreservesText(t *testing.T) {
 	m := mentionModel("@missing")
 	m.activate(action{Kind: "setting-model"})
@@ -179,6 +187,7 @@ func TestMentionEnterWithNoMatchesNeverSendsAndEscapePreservesText(t *testing.T)
 		t.Fatal("Escape did not dismiss safely")
 	}
 }
+
 func TestMentionLateResultsCannotCrossQueryDestinationOrSettings(t *testing.T) {
 	for _, change := range []string{"query", "draft", "settings", "focus"} {
 		t.Run(change, func(t *testing.T) {
@@ -205,6 +214,7 @@ func TestMentionLateResultsCannotCrossQueryDestinationOrSettings(t *testing.T) {
 		})
 	}
 }
+
 func TestPathCompletionCapturesAndNarrowHitBounds(t *testing.T) {
 	dir := os.Getenv("TUI_GO_CAPTURE_DIR")
 	if dir != "" {

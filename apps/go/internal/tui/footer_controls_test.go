@@ -30,7 +30,7 @@ func TestComposerControlsFitAndMeasureExactly(t *testing.T) {
 						t.Fatalf("overlap: %#v %#v", h, other)
 					}
 				}
-				if h.Key == "send" && h.Rect.X+h.Rect.W != 3+width-2 {
+				if h.Key == "send" && h.slot().X+h.slot().W != 3+width-2 {
 					t.Fatal("send not aligned with inset right edge")
 				}
 				if h.Key == "usage" && (!strings.Contains(h.Label, "unavailable") || strings.Contains(h.Label, "0%")) {
@@ -58,6 +58,7 @@ func TestComposerSettingsAndActionsShareInsetRow(t *testing.T) {
 		}
 	}
 }
+
 func TestStopAndEffectiveSettingsOnlyForActiveTurn(t *testing.T) {
 	for _, state := range []string{"running", "waiting", "idle", "completed"} {
 		for _, resume := range []bool{false, true} {
@@ -85,6 +86,7 @@ func TestStopAndEffectiveSettingsOnlyForActiveTurn(t *testing.T) {
 		}
 	}
 }
+
 func TestComposerRecoveryControlsRemainReachable(t *testing.T) {
 	m := testModel()
 	m.state.Edit = &editState{}
@@ -172,7 +174,7 @@ func TestComposerOverflowPointerKeyboardResizeAndDraft(t *testing.T) {
 		m.Update(tea.PasteMsg{Content: "keep this unsent draft"})
 		more := controlHit(t, m.measure(), "composer-more")
 		if pointer {
-			m.Update(tea.MouseClickMsg{X: more.Rect.X + 1, Y: more.Rect.Y, Button: tea.MouseLeft})
+			m.Update(tea.MouseClickMsg{X: more.Rect.X, Y: more.Rect.Y, Button: tea.MouseLeft})
 		} else {
 			m.setFocus("composer-more")
 			m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

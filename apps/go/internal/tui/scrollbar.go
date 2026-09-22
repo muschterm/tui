@@ -32,6 +32,8 @@ func newScrollbar(total, viewport, offset, trackRows int) scrollbar {
 	return s
 }
 
+// Visible reports whether the track should be painted: overflowing content
+// with room for a track.
 func (s scrollbar) Visible() bool {
 	return s.TrackRows > 0 && s.Viewport > 0 && s.MaxOffset > 0
 }
