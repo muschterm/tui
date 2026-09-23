@@ -3,6 +3,7 @@
 !.agents/skills
 .claude/*
 !.claude/skills
+!.claude/agents
 .cursor/
 vercel-skills/
 

@@ -21,27 +21,12 @@ Build the Go reference app first with Bubble Tea v2, Bubbles, and Lip Gloss, as 
 
 ## Subagents
 
-Delegate when a subagent isolates context or runs independent, bounded work in parallel for less total cost than doing it inline. Use a direct tool call for a single lookup, and keep work in the parent when the brief would have to restate most of the parent's reasoning.
+Delegate bounded work to the subagents defined in `.claude/agents/` (Claude Code) and `.codex/agents/` (Codex): `explore`, `implement`, `implement-hard`, `implement-hardest` and `verify`. Each definition fixes its model and reasoning effort and describes when to use it; do not restate models or efforts in briefs, since the harness cannot set effort per call. Delegate when a subagent isolates context or runs independent, bounded work in parallel for less total cost than doing it inline. Use a direct tool call for a single lookup, and keep work in the parent when the brief would have to restate most of the parent's reasoning.
 
 - **Brief:** give each subagent one objective, the context it needs, acceptance criteria and the files it owns. Never let two subagents edit the same file. Send a focused brief, not the whole conversation.
 - **Result:** ask for a concise report: evidence or `file:line` references, checks run with their outcomes, and open issues. Do not redo delegated work in the parent.
-- **Escalation:** a subagent that cannot finish returns what it found, what it tried and a recommended next step. Raise effort before changing tier, and hand completed work forward instead of restarting.
-- **Ownership:** the parent owns prioritization, integration, verification and the final response. User instructions override this section.
-
-### Model and effort
-
-Subagents exist to do bounded work more cheaply than the parent. The parent's model (Opus 5.5 or GPT-6 Astra) orchestrates, owns architecture and difficult tradeoffs, and verifies consequential results; delegate to the cheapest tier that can finish the task, and upgrade only when it falls short.
-
-Use only the models, identifiers and effort controls the current harness exposes, and respect explicit user selections. Prefer the parent model's family; inherit the parent model when the preferred one is unavailable, and use harness defaults when selection is unavailable. Where a harness fixes effort per agent definition rather than per call, use a defined agent type for the row you need instead of assuming the effort.
-
-| Work | Claude | OpenAI |
-| --- | --- | --- |
-| Bounded retrieval, extraction, file discovery and mechanical transforms | Sonnet 5 low | GPT-6 Luna (`gpt-6-luna`) low |
-| Well-scoped implementation, routine debugging, focused analysis and small self-contained tasks with clear acceptance criteria | Sonnet 5 low, then medium | GPT-6 Luna (`gpt-6-luna`) max |
-| Upgrade: multi-step implementation, unclear causes, research synthesis, or work the tier above fell short on | Opus 5.5 low–medium | GPT-6 Sol (`gpt-6-sol`) high, then xhigh |
-| Verification of consequential changes: data loss, duplicate writes, Git operations, queue/revision races, reconnect and recovery | Opus 5.5 medium | GPT-6 Astra (`gpt-6-astra`) medium |
-
-Keep architecture, difficult tradeoffs and integration in the parent rather than delegating them at high effort. Escalate Sonnet 5 past medium by switching to Opus 5.5, and GPT-6 Luna past max by switching to GPT-6 Sol. Do not use Haiku or Fable 5.1 for subagents unless the user asks: Haiku's misses cost more to catch in the parent than they save, and Fable costs more than the parent it would serve.
+- **Escalation:** a subagent that cannot finish returns what it found, what it tried and a recommended next step. Escalate to the next agent its definition names and hand completed work forward instead of restarting.
+- **Ownership:** the parent owns architecture, difficult tradeoffs, prioritization, integration, verification and the final response. Do not use Haiku or Fable 5.1 for subagents unless the user asks. User instructions override this section.
 
 ## Architectural boundaries
 
@@ -117,6 +102,7 @@ Before completing an implementation change, run applicable formatting checks, bu
 - `docs/research/`: dated primary-source findings, limitations, and unverified hypotheses.
 - `docs/adr/`: accepted consequential decisions, created when a decision warrants a record.
 - `.agents/skills/`: project skill instructions; `.claude/skills/` exposes the corresponding skills.
+- `.claude/agents/` and `.codex/agents/`: subagent definitions with fixed model and effort, one per agent, kept equivalent across both harnesses.
 - `apps/go/`: first Go reference slice; run `make build`, `make check`, and `make test` there, with `make lint`, `make vuln` and `make pty` for static analysis, vulnerability scanning and the OS-PTY harnesses in `apps/go/scripts/`. See [current scope and prototype bindings](docs/design/go-slice.md); fixtures are not integration evidence.
 - `docs/research/go-feasibility-probes/`: one-off feasibility scripts referenced by their dated research note; they are evidence, not application code.
 - `index.ts` and `package.json`: existing Bun bootstrap and skill-maintenance tooling; they are not an established TUI implementation or a decision about the eventual repository layout.
