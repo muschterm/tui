@@ -21,7 +21,7 @@ Build the Go reference app first with Bubble Tea v2, Bubbles, and Lip Gloss, as 
 
 ## Subagents
 
-Delegate bounded work to the subagents defined in `.claude/agents/` (Claude Code) and `.codex/agents/` (Codex): `explore`, `implement`, `implement-hard`, `implement-hardest` and `verify`. Each definition fixes its model and reasoning effort and describes when to use it; do not restate models or efforts in briefs, since the harness cannot set effort per call. Delegate when a subagent isolates context or runs independent, bounded work in parallel for less total cost than doing it inline. Use a direct tool call for a single lookup, and keep work in the parent when the brief would have to restate most of the parent's reasoning.
+Delegate bounded work to the subagents defined in `.claude/agents/` (Claude Code) and `.codex/agents/` (Codex): `lookup`, `implement`, `implement-hard`, `implement-hardest` and `verify`. Each definition fixes its model and reasoning effort and describes when to use it; do not restate models or efforts in briefs, since the harness cannot set effort per call. Delegate when a subagent isolates context or runs independent, bounded work in parallel for less total cost than doing it inline. Use a direct tool call for a single lookup, and keep work in the parent when the brief would have to restate most of the parent's reasoning.
 
 - **Brief:** give each subagent one objective, the context it needs, acceptance criteria and the files it owns. Never let two subagents edit the same file. Send a focused brief, not the whole conversation.
 - **Result:** ask for a concise report: evidence or `file:line` references, checks run with their outcomes, and open issues. Do not redo delegated work in the parent.
