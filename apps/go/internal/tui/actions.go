@@ -91,7 +91,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		m.status = "That request changed or was resolved · nothing sent"
 		return m.showNotice(m.status)
 	}
-	if slices.Contains([]string{"answer-submit", "approve", "steer"}, a.Kind) {
+	if slices.Contains([]string{"answer-submit", "answer-action", "approve", "steer"}, a.Kind) {
 		if reason := m.hiddenWorkBlocked(); reason != "" {
 			return m.showNotice(reason)
 		}
@@ -623,14 +623,16 @@ func (m *Model) activate(a action) tea.Cmd {
 			}
 		}
 	case "question":
-		m.selectQuestion(v.QuestionIndex + a.Index)
+		if r, ok := m.request(); ok {
+			m.selectQuestion(m.questionIndex(r) + a.Index)
+		}
 	case "question-index":
 		m.selectQuestion(a.Index)
 	case "question-tabs":
 		if r, ok := m.request(); ok {
 			var items []menuItem
 			for i, q := range r.Questions {
-				items = append(items, menuItem{questionTabLabel(q, i, false), action{Kind: "question-index", ID: r.ID, Index: i, Revision: r.Revision}})
+				items = append(items, menuItem{questionTabLabel(q, i), action{Kind: "question-index", ID: r.ID, Index: i, Revision: r.Revision}})
 			}
 			m.showMenu("Questions", items)
 		}
@@ -639,18 +641,15 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "answer-other":
 		m.toggleOther()
 	case "answer-options":
-		if r, ok := m.request(); ok && len(r.Questions) > 0 {
-			q := r.Questions[v.QuestionIndex]
-			d := m.questionDraft(r, v.QuestionIndex)
+		if r, ok := m.request(); ok {
+			q, _, _ := m.activeQuestion(r)
 			var items []menuItem
-			for _, o := range q.Options {
-				mark := m.questionMarker(protocol.QuestionKind(q), slices.Contains(d.Choices, o)) + " "
-				items = append(items, menuItem{mark + o, action{Kind: "answer-choice", ID: r.ID, Value: o, Revision: r.Revision}})
+			for _, o := range m.questionOptions(r) {
+				items = append(items, menuItem{m.questionMarker(protocol.QuestionKind(q), o.selected) + " " + o.label, o.action})
 			}
-			if protocol.QuestionAllowsOther(q) {
-				items = append(items, menuItem{m.questionMarker(protocol.QuestionKind(q), d.Other) + " Other…", action{Kind: "answer-other", ID: r.ID, Revision: r.Revision}})
+			if len(items) > 0 {
+				m.showMenu("Answer options", items)
 			}
-			m.showMenu("Answer options", items)
 		}
 	case "approval-options":
 		if r, ok := m.request(); ok && r.Kind == "approval" {
@@ -662,6 +661,18 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "answer-submit":
 		return m.submitAnswers(a)
+	case "answer-action":
+		return m.submitRequestAction(a)
+	case "answer-actions":
+		if r, ok := m.request(); ok {
+			var items []menuItem
+			for _, name := range questionOfferedActions(r) {
+				items = append(items, menuItem{questionActionLabel(name), action{Kind: "answer-action", ID: r.ID, Revision: r.Revision, Value: name}})
+			}
+			if len(items) > 0 {
+				m.showMenu("Request actions", items)
+			}
+		}
 	case "approve":
 		return m.submitApproval(a)
 	case "request-detail":

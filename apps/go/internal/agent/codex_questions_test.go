@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ func TestBuiltinCodexQuestionContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if form.Request.Mode != "blocking" || len(form.Request.Questions) != 2 || !strings.Contains(form.Request.Questions[0].Text, "A bounded change") || form.Request.Questions[1].Kind != "text" || string(form.Request.SourcePayload) != string(raw) {
+	if form.Request.Mode != "blocking" || len(form.Request.Questions) != 2 || form.Request.Questions[0].Text != "Which scope?" || !reflect.DeepEqual(form.Request.Questions[0].OptionDescriptions, []string{"A bounded change", "A large change"}) || form.Request.Questions[1].OptionDescriptions != nil || len(form.Request.Actions) != 0 || form.Request.Questions[1].Kind != "text" || string(form.Request.SourcePayload) != string(raw) {
 		t.Fatal("lost question semantics", form)
 	}
 	response, err := form.Response([]protocol.Answer{{Choices: []string{"Small"}}, {Text: "Extra detail"}})
@@ -25,6 +26,12 @@ func TestBuiltinCodexQuestionContract(t *testing.T) {
 	content := response["content"].(map[string]any)
 	if content["question_0"] != "Small" || content["question_1_custom"] != "Extra detail" {
 		t.Fatal(response)
+	}
+	// Codex's ToolRequestUserInputResponse has no decline or cancel result.
+	for _, action := range []string{"decline", "cancel"} {
+		if response, err := form.ActionResponse(action); err == nil {
+			t.Fatalf("Codex %s produced %+v", action, response)
+		}
 	}
 	for _, changed := range []string{
 		strings.Replace(string(raw), `"sessionId":"session"`, `"sessionId":"other"`, 1),

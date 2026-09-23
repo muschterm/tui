@@ -2,12 +2,14 @@ package tui
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
 func questionHistoryFixture() (protocol.Thread, protocol.Request, protocol.Activity) {
@@ -65,7 +67,7 @@ func TestQuestionHistoryShowsQuestionAnswerAndAvailableOptions(t *testing.T) {
 	multiOther := m.questionMarker("multiple", false)
 	for _, part := range []string{
 		"Submitted · provider confirmation unavailable", "Which layout?", singlePicked, singleOther,
-		"Which features?", multiPicked + " Files", multiPicked + " Terminal", multiOther + " Git", m.icon("check") + " Other · Use built-in previews",
+		"Which features?", multiPicked + " Files", multiPicked + " Terminal", multiOther + " Git", multiPicked + " Other · Use built-in previews",
 		"Anything else?", "Skipped (optional)",
 	} {
 		if !strings.Contains(text, part) {
@@ -110,8 +112,8 @@ func TestQuestionHistoryCopyIncludesFullOriginalChoicesAndAcceptedValues(t *test
 	_, request, _ := questionHistoryFixture()
 	text := questionHistoryText(request)
 	for _, part := range []string{
-		"Submitted · provider confirmation unavailable", "Which layout?", "✓ Compact", "· Roomy",
-		"Which features?", "✓ Files", "· Git", "✓ Terminal", "Other · Use built-in previews",
+		"Submitted · provider confirmation unavailable", "Which layout?", "◉ Compact", "○ Roomy",
+		"Which features?", "☑ Files", "☐ Git", "☑ Terminal", "☑ Other · Use built-in previews",
 		"Skipped (optional)",
 	} {
 		if !strings.Contains(text, part) {
@@ -407,5 +409,81 @@ func TestQuestionHistoryHeaderToneMatchesDeliveryConfidence(t *testing.T) {
 				t.Fatalf("render changed request delivery state: before=%s after=%s", before, after)
 			}
 		})
+	}
+}
+
+// A single-choice question answered through Other… keeps the filled radio of
+// a selected option in the card, its compact preview and the copied text; the
+// answered check is reserved for open-ended answers.
+func TestQuestionHistorySelectedOtherUsesRadioMarker(t *testing.T) {
+	m := testModel()
+	request := protocol.Request{
+		ID: "history-other", Kind: "question", State: "resolved", Delivery: "fixture-confirmed", SubmissionID: "answer-other",
+		Questions: []protocol.Question{
+			{ID: "layout", Text: "Which layout?", Kind: "single", Options: []string{"Compact", "Roomy"}, AllowOther: true},
+			{ID: "note", Text: "Anything else?", Kind: "text"},
+		},
+		QuestionAnswers: []protocol.Answer{{Text: "Wide inspector"}, {Text: "Keep it calm"}},
+	}
+	activity := protocol.Activity{ID: "question-answer:history-other:1", Role: "question-answer", RequestID: request.ID}
+	thread := protocol.Thread{ID: "thread", Requests: []protocol.Request{request}, Activity: []protocol.Activity{activity}}
+	radioOn, radio, check := m.questionMarker("single", true), m.questionMarker("single", false), m.icon("check")
+
+	lines, _ := m.questionHistoryLines(thread, activity, 80)
+	card := questionHistoryRenderedText(lines)
+	for _, want := range []string{radioOn + " Other · Wide inspector", radio + " Compact", radio + " Roomy", check + " Keep it calm"} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("card missing %q:\n%s", want, card)
+		}
+	}
+	if strings.Contains(card, check+" Other") {
+		t.Fatalf("card marks Other with the answered check:\n%s", card)
+	}
+	if got := m.questionHistoryAnswerPreview(request.Questions[0], request.QuestionAnswers[0]); got != radioOn+" Other: Wide inspector" {
+		t.Fatalf("preview = %q", got)
+	}
+	if got := m.questionHistoryAnswerPreview(request.Questions[1], request.QuestionAnswers[1]); got != check+" Keep it calm" {
+		t.Fatalf("open-ended preview = %q", got)
+	}
+	copied := questionHistoryText(request)
+	for _, want := range []string{"○ Compact", "○ Roomy", "◉ Other · Wide inspector", "✓ Keep it calm"} {
+		if !strings.Contains(copied, want) {
+			t.Fatalf("copy missing %q:\n%s", want, copied)
+		}
+	}
+}
+
+// The answered card has one muted rest outline on all four sides, like the
+// prompt and pending card; delivery status colours only its header text.
+func TestQuestionHistoryOutlineIsUniform(t *testing.T) {
+	for _, delivery := range []string{"fixture-confirmed", "acp-undeliverable", "acp-uncertain"} {
+		m := testModel()
+		request := protocol.Request{
+			ID: "history-outline", Kind: "question", State: "resolved", Delivery: delivery, SubmissionID: "answer-outline",
+			Questions:       []protocol.Question{{ID: "layout", Text: "Which layout?", Kind: "single", Options: []string{"Compact", "Roomy"}}},
+			QuestionAnswers: []protocol.Answer{{Choices: []string{"Compact"}}},
+		}
+		thread := &m.snapshot.Threads[0]
+		thread.Requests = []protocol.Request{request}
+		thread.Activity = []protocol.Activity{{ID: "question-answer:history-outline:1", Role: "question-answer", RequestID: request.ID}}
+		thread.Queue = nil
+		m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+		m.viewState().Scroll = 0
+		f := m.render()
+		lines := m.transcriptLines(*thread, f.transcript.W)
+		if len(lines) < 5 || !lines[0].outset {
+			t.Fatalf("%s: transcript does not start with the card", delivery)
+		}
+		height := slices.IndexFunc(lines, func(l contentLine) bool { return !l.outset })
+		box := shell.Rect{X: f.transcript.X - 1, Y: f.transcript.Y, W: f.transcript.W + 2, H: height}
+		p := m.colors()
+		assertUniformOutline(t, m, f, box, m.containerStyle(false, p.text, p.panel).border)
+		status := strings.Index(ansi.Strip(f.rows[box.Y+1]), "Answered")
+		if delivery != "fixture-confirmed" {
+			status = strings.Index(ansi.Strip(f.rows[box.Y+1]), "Submitted")
+		}
+		if status < 0 {
+			t.Fatalf("%s: status header missing: %q", delivery, ansi.Strip(f.rows[box.Y+1]))
+		}
 	}
 }

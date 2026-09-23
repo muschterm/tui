@@ -75,6 +75,10 @@ type fakeAgent struct {
 	elicitationForm  bool
 	questionCancel   context.CancelFunc
 	questionResponse map[string]any
+	// questionBlocking, questionReceipt and questionFail shape the native
+	// question turn: blocking Codex mode, a bridge delivery receipt after the
+	// answer, and a failed prompt after the answer.
+	questionBlocking, questionReceipt, questionFail bool
 }
 
 func (f *fakeAgent) optionWire() []any {
@@ -259,6 +263,7 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 		wire := nativeQuestionWire(session)
 		if f.codexQuestions {
 			wire = codexNativeQuestionWire(session)
+			wire["source"].(map[string]any)["isBlocking"] = f.questionBlocking
 		}
 		response, err := acp.SendRequest[map[string]any](f.conn, questionCtx, "elicitation/create", wire)
 		if err != nil {
@@ -266,7 +271,14 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 		}
 		f.mu.Lock()
 		f.questionResponse = response
+		receipt, fail := f.questionReceipt, f.questionFail
 		f.mu.Unlock()
+		if receipt {
+			f.update(ctx, session, map[string]any{"sessionUpdate": "tui_question_delivery", "dialect": acpbridge.QuestionDeliveryDialect, "toolCallId": "question-call", "evidence": "fake"})
+		}
+		if fail {
+			return nil, acp.NewInternalError(map[string]any{"error": "the fake agent failed after the answer"})
+		}
 		f.update(ctx, session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "question-call", "status": "completed"})
 		f.update(ctx, session, chunk("question answered"))
 		return map[string]any{"stopReason": "end_turn"}, nil
@@ -330,6 +342,9 @@ type fakeFleet struct {
 	codexQuestions       bool
 	nativeVersion        string
 	dropQuestionResponse bool
+	questionBlocking     bool
+	questionReceipt      bool
+	questionFail         bool
 }
 
 func (f *fakeFleet) launch(ctx context.Context, o agent.Options) (*agent.Session, error) {
@@ -339,7 +354,7 @@ func (f *fakeFleet) launch(ctx context.Context, o agent.Options) (*agent.Session
 		f.mu.Unlock()
 		return nil, err
 	}
-	fake := &fakeAgent{options: map[string]string{}, authRequired: f.authRequired, rejectValue: f.rejectValue, nativeQuestions: f.nativeQuestions, codexQuestions: f.codexQuestions, nativeVersion: f.nativeVersion}
+	fake := &fakeAgent{options: map[string]string{}, authRequired: f.authRequired, rejectValue: f.rejectValue, nativeQuestions: f.nativeQuestions, codexQuestions: f.codexQuestions, nativeVersion: f.nativeVersion, questionBlocking: f.questionBlocking, questionReceipt: f.questionReceipt, questionFail: f.questionFail}
 	dropApprovalResponse := f.dropApprovalResponse
 	dropQuestionResponse := f.dropQuestionResponse
 	f.agents = append(f.agents, fake)

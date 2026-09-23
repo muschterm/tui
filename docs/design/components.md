@@ -40,7 +40,9 @@ Treat shape and interaction state as separate inputs. Do not switch from square
 to rounded, add a border, or change padding on hover/selection. Responsive variants
 may change at a deliberate layout breakpoint; preserve focus, selection and drafts.
 An optional quiet interior fill in outlined containers remains constant and inset
-from corner cells. Background colors themselves work; smooth rounded clipping is
+from corner cells. Outlined containers that hold controls (the pending request
+card, the queue group) take the focused outline while keyboard focus is inside
+them and never change it on hover; their inner controls carry their own state. Background colors themselves work; smooth rounded clipping is
 the missing feature of this text renderer.
 
 ## State feedback

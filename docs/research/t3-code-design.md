@@ -211,3 +211,48 @@ web build; the checkout has no end-user CLI, `bin` entry, completion script or
 and the `effect-acp` package is a protocol library). Nothing there informs the
 Go reference's command line, which follows Go CLI conventions instead
 ([ADR 0012](../adr/0012-go-cli-framework.md)).
+
+## Questions, user messages and composer placeholder — inspected 2026-09-23
+
+HEAD `1ba471a37`, read-only. Pending user-input prompts
+(`apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx`) dock
+directly above the composer textarea inside the same surface as an attached
+banner, not in the transcript. The header row shows a neutral icon slot, the
+question header in muted text and, for several questions, an `n / total`
+counter at the right. Questions are shown one at a time; single-select
+auto-advances after a short delay and multi-select toggles in place. Options are
+full-width rows with label and optional description: selection is a tinted
+background plus a trailing check, and unselected rows show a `1`–`9` shortcut
+key at the trailing edge. There is no separate Other field: the composer
+textarea becomes the free-text answer and its placeholder changes to “Type your
+own answer, or leave this blank to use the selected option”. There is no
+dedicated Submit; the ordinary Send button commits the answer. Approval
+requests (`ComposerPendingApprovalPanel.tsx`) use a warning-tinted variant with
+inline Decline/Approve buttons and an overflow menu for extra options.
+
+User messages (`MessagesTimeline.tsx:2089`) are right-aligned bubbles
+(`max-w-[80%]`, `rounded-2xl`, `bg-message`, `p-3`) with a screen-reader-only
+“You” heading and no avatar; assistant messages are plain full-width Markdown
+with no bubble. The main composer placeholder (`ChatComposer.tsx:6876`) is “Ask
+anything, @tag files/folders, $use skills, or / for commands”, with contextual
+overrides for approvals, pending questions and disconnected states; the body
+has top padding before the textarea.
+
+Applied here: the Go card keeps this project's accepted tabs, radio/checkbox
+rows, indented Other field and explicit Submit, and takes from T3 the neutral
+in-container header with a page counter, selection feedback bounded to the row
+content rather than the full width, digit shortcuts for options and a padded
+composer with a single “Ask to do anything” placeholder. User messages become a
+full-width tinted box aligned with the prompt outline rather than a
+right-aligned bubble, at the user's request.
+
+## Claude model naming — 2026-09-23 (HEAD `1ba471a37`, read-only)
+
+T3 does not surface the Claude CLI picker names. `apps/server/src/provider/ClaudeModelCatalog.ts`
+resolves rows from a bundled `model-manifest.json` whose Claude entries are
+named by version ("Claude Opus 5", "Claude Sonnet 4.6", "Claude Haiku 4.5"),
+keyed by canonical slug with alias lists; no Opus 5.5 entry existed at this
+HEAD. This confirms version-specific row names as the expected presentation.
+This project keeps native CLI discovery as its source and takes the versioned
+identity from Claude's own description strings instead; see
+[Claude effort and model rows](claude-effort-2026-09-23.md).

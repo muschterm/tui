@@ -22,7 +22,7 @@ func Initial() protocol.Snapshot {
 		thread.Children = append(thread.Children, protocol.Child{ID: "child-" + name, ParentID: thread.ID, Name: name, State: "running", Activity: []protocol.Activity{{ID: "note", Role: "agent", Text: "Synthetic child history; reviewing the supplied scenario."}}})
 	}
 	thread.Children = append(thread.Children, protocol.Child{ID: "child-done", ParentID: thread.ID, Name: "Contract review", State: "completed", Activity: []protocol.Activity{{ID: "result", Role: "agent", Text: "Fixture contract review complete."}}})
-	second.Requests = append(second.Requests, protocol.Request{ID: "question-blocking", Kind: "question", Mode: "blocking", State: "pending", Revision: 1, Title: "Confirm keyboard review scope", Origin: "Fixture agent", Questions: []protocol.Question{{ID: "scope", Text: "Which keyboard flow should be checked?", Options: []string{"Navigation", "Composer"}}}})
+	second.Requests = append(second.Requests, protocol.Request{ID: "question-blocking", Kind: "question", Mode: "blocking", State: "pending", Revision: 1, Title: "Confirm keyboard review scope", Origin: "Fixture agent", Actions: []string{protocol.RequestActionDecline, protocol.RequestActionCancel}, Questions: []protocol.Question{{ID: "scope", Text: "Which keyboard flow should be checked?", Options: []string{"Navigation", "Composer"}, OptionDescriptions: []string{"Pane focus, thread cards and the attention bell", ""}}}})
 	// The fixture agent record is part of this synthetic starting state; real
 	// ACP connections are added by the server from its own configuration.
 	agents := []protocol.Agent{agent.Defaults(nil)[0]}

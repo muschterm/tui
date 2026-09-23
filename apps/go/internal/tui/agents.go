@@ -424,7 +424,7 @@ func (m *Model) chooseSetting(field, value string) tea.Cmd {
 // remain unconfirmed rather than assumed successful.
 func deliveryConfirmed(delivery string) bool {
 	switch delivery {
-	case "fixture-confirmed", "confirmed":
+	case "fixture-confirmed", "confirmed", "acp-turn-confirmed":
 		return true
 	}
 	return false

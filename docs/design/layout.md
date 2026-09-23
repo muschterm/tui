@@ -47,8 +47,10 @@ moves an icon or label; only controls without such a cell keep an underline.
 
 Center close glyphs within their cell hit areas, including modal headers and tab
 menus. Give the prompt and its controls one complete, clearly visible rounded
-outline. The typing area sits above the settings/actions row inside that outline;
-the checkout context row stays below it. Retain bounded input growth and its
+outline. One blank prompt-tinted padding row separates the top border from the
+typing area, which sits above the settings/actions row inside that outline; the
+checkout context row stays below it. The empty prompt's placeholder is "Ask to do
+anything" for new-thread drafts and existing threads alike. Retain bounded input growth and its
 internal scrollbar. Keep the prompt text and controls inside shared two-cell side
 gutters, reducing those gutters only at tiny widths. Selected agent/model/settings
 align left; usage, attachments, Stop and Send align right on the same footer row
@@ -71,7 +73,7 @@ Keep the same layout when the right surface is maximized. This 2026-09-20 review
 supersedes the earlier request to wrap settings; it changes presentation only,
 never drafts, captured settings or execution.
 
-Enter sends from the prompt composer. Shift+Enter inserts a newline, with Ctrl+J as a fallback when the terminal cannot distinguish modified Enter. Pasting multiline content never submits it. Start the empty or single-line composer at two editable rows inside its outline, excluding borders and the settings/actions row. Grow with explicit and wrapped lines to a bounded height, then scroll without discarding text; clearing or shortening the draft returns to two rows. Eight visible lines is the initial implementation choice within the user's suggested five-to-eight range; short windows reduce that cap to preserve requests, settings and usage. Answers still require their separate explicit Submit action.
+Enter sends from the prompt composer. Shift+Enter inserts a newline, with Ctrl+J as a fallback when the terminal cannot distinguish modified Enter. Pasting multiline content never submits it. Start the empty or single-line composer at two editable rows inside its outline, excluding borders, the padding row above the typing area and the settings/actions row. Grow with explicit and wrapped lines to a bounded height, then scroll without discarding text; clearing or shortening the draft returns to two rows. Eight visible lines is the initial implementation choice within the user's suggested five-to-eight range; short windows reduce that cap to preserve requests, settings and usage. Answers still require their separate explicit Submit action.
 
 New thread opens a persisted local creation draft with a visible model choice;
 no authoritative thread exists until a valid first Send. Settings are editable

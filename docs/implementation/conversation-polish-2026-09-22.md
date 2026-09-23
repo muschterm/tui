@@ -21,7 +21,9 @@ inapplicable selections before capture; queued prompts retain their settings.
 The Claude Fast control was verified through native state readback; its runtime
 still gates account availability. An isolated live startup reported
 `extra_usage_disabled`; when unavailable, Standard stays visible with the reason.
-Claude effort remains unavailable because no effective-state readback was found.
+Claude effort remained unavailable here because no effective-state readback had
+been found; the `get_settings` readback was verified and used on
+[2026-09-23](../research/claude-effort-2026-09-23.md).
 
 Integration review corrected the live Auto catalog to retain model applicability
 for a captured target model even when the previous model lacks Auto. Native

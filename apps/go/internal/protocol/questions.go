@@ -25,6 +25,58 @@ func QuestionAllowsOther(q Question) bool {
 	return q.AllowOther || (q.Kind == "" && len(q.Options) != 0)
 }
 
+// Request actions a client may choose instead of answering a question request.
+const (
+	RequestActionDecline = "decline"
+	RequestActionCancel  = "cancel"
+)
+
+// ValidateQuestion checks the question's own shape: option descriptions are
+// either absent or parallel to Options.
+func ValidateQuestion(q Question) error {
+	if len(q.OptionDescriptions) != 0 && len(q.OptionDescriptions) != len(q.Options) {
+		return fmt.Errorf("option descriptions do not match options")
+	}
+	return nil
+}
+
+// ValidateRequestActions checks a request's offered actions: known values,
+// each at most once, and only on question requests.
+func ValidateRequestActions(r Request) error {
+	if len(r.Actions) != 0 && r.Kind != "question" {
+		return fmt.Errorf("only question requests offer decline or cancel")
+	}
+	seen := map[string]bool{}
+	for _, action := range r.Actions {
+		if (action != RequestActionDecline && action != RequestActionCancel) || seen[action] {
+			return fmt.Errorf("invalid request action %q", action)
+		}
+		seen[action] = true
+	}
+	return nil
+}
+
+// ValidateRequestAction checks a chosen decline or cancel against the
+// request's offered actions. It carries no answer: any supplied answers,
+// structured or legacy, are rejected rather than silently discarded.
+func ValidateRequestAction(r Request, action string, structured []Answer, legacy []string) error {
+	if err := ValidateRequestActions(r); err != nil {
+		return err
+	}
+	if action != RequestActionDecline && action != RequestActionCancel {
+		return fmt.Errorf("unsupported request action %q", action)
+	}
+	if len(structured) != 0 || len(legacy) != 0 {
+		return fmt.Errorf("a %s carries no answers", action)
+	}
+	for _, offered := range r.Actions {
+		if offered == action {
+			return nil
+		}
+	}
+	return fmt.Errorf("this request does not offer %s", action)
+}
+
 // ValidateAnswer validates one draft without mutating or submitting it. Choices
 // contain exact supplied option values; Text carries open text or an Other answer.
 // The combined answer is bounded to 4096 bytes, including all selected values.
@@ -32,6 +84,9 @@ func ValidateAnswer(q Question, a Answer) error {
 	kind := QuestionKind(q)
 	if kind != "single" && kind != "multiple" && kind != "text" {
 		return fmt.Errorf("unsupported question kind %q", kind)
+	}
+	if err := ValidateQuestion(q); err != nil {
+		return err
 	}
 	bytes := len(a.Text)
 	seen := make(map[string]bool, len(a.Choices))

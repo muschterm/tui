@@ -126,7 +126,7 @@ def main():
             # Exercise cursor insertion through the prompt context menu.
             data.write_text('CURSOR-PASTE')
             prompt = 'LEFT-right'
-            terminal.click_label('Ask a follow-up')
+            terminal.click_label('Ask to do anything')
             terminal.send(prompt.encode(), .3)
             px, py, _ = locate(terminal, prompt)
             insertion_x = px + len('LEFT')

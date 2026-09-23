@@ -88,6 +88,8 @@ func Normalize(t *protocol.Thread, u Update) {
 		}
 	case "usage_update", "tui_usage_update":
 		normalizeUsage(t, u)
+	case "tui_question_delivery":
+		// Delivery receipts are correlated by the server, never transcript rows.
 	case "session_info_update":
 		var info struct {
 			Title *string `json:"title"`

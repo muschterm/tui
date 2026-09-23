@@ -353,9 +353,13 @@ def main():
                   and question_request()['State'] == 'pending',
                   'checkbox pointer and Space toggle selection without advancing or submitting')
             q.click_label('▶')
-            q.send(b'Native PTY review note', 1.2)
+            q.pump(1.2)
             check(question_state()['QuestionIndex'] == 2 and question_request()['State'] == 'pending',
                   'filled Next arrow opens optional text question without submitting')
+            # Next only navigates and keeps focus on the arrow (or the active tab once
+            # the arrow disappears); Down reaches the open-ended answer field.
+            q.send(b'\x1b[B', .4)
+            q.send(b'Native PTY review note', 1.2)
             # End arrows disappear without letting tabs fill their reserved slots.
             last_screen = q.screen()
             last_row_index, last_row = next((i, row) for i, row in enumerate(last_screen) if '3 Notes' in row and '◀' in row)

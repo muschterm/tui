@@ -19,9 +19,52 @@ type answerDraft struct {
 	Other   bool
 }
 
+// Drafts belong to a request identity and its question schema. A revision
+// bump with unchanged questions keeps the draft; the revision guards only the
+// submission. A changed schema gets a fresh draft while the old one is kept
+// for recovery until the request is no longer pending.
 func questionDraftKey(r protocol.Request) string {
+	schema, _ := json.Marshal(r.Questions)
+	return r.ID + "#" + fmt.Sprintf("%x", sha256.Sum256(schema))
+}
+
+// legacyQuestionDraftKey is the pre-2026-09-23 revision-bound key.
+func legacyQuestionDraftKey(r protocol.Request) string {
 	key, _ := json.Marshal([]any{r.ID, r.Revision, r.Questions})
 	return fmt.Sprintf("%x", sha256.Sum256(key))
+}
+
+func questionDraftRequestID(key string) (string, bool) {
+	id, _, ok := strings.Cut(key, "#")
+	return id, ok
+}
+
+// pruneQuestionDrafts drops drafts whose request is no longer live (pending or
+// submitted) in the current snapshot, including unmigrated revision-bound
+// drafts. A submitted request keeps its draft until it resolves so a failed
+// handoff never loses typed text. Threads absent from the snapshot are left
+// alone. It reports whether it removed any.
+func (m *Model) pruneQuestionDrafts() bool {
+	pruned := false
+	for _, t := range m.snapshot.Threads {
+		v := m.state.Threads[t.ID]
+		if v == nil || len(v.QuestionDrafts) == 0 {
+			continue
+		}
+		pending := map[string]bool{}
+		for _, r := range t.Requests {
+			if r.State == "pending" || r.State == "submitted" {
+				pending[r.ID] = true
+			}
+		}
+		for key := range v.QuestionDrafts {
+			if id, ok := questionDraftRequestID(key); !ok || !pending[id] {
+				delete(v.QuestionDrafts, key)
+				pruned = true
+			}
+		}
+	}
+	return pruned
 }
 
 func (m *Model) questionDraft(r protocol.Request, i int) answerDraft {
@@ -76,6 +119,14 @@ func (m *Model) migrateQuestionDrafts() {
 		}
 		for _, r := range t.Requests {
 			key := questionDraftKey(r)
+			// Revision-bound drafts of the loaded revision move to the schema
+			// key once; other legacy keys are pruned with resolved requests.
+			if legacy, ok := v.QuestionDrafts[legacyQuestionDraftKey(r)]; ok {
+				if _, exists := v.QuestionDrafts[key]; !exists {
+					v.QuestionDrafts[key] = legacy
+				}
+				delete(v.QuestionDrafts, legacyQuestionDraftKey(r))
+			}
 			if _, exists := v.QuestionDrafts[key]; exists || len(v.Answers[r.ID]) == 0 {
 				continue
 			}
@@ -104,7 +155,7 @@ func (m *Model) loadAnswer() {
 		m.answer.SetValue("")
 		return
 	}
-	i := min(max(0, m.viewState().QuestionIndex), len(r.Questions)-1)
+	i := m.questionIndex(r)
 	m.viewState().QuestionIndex = i
 	m.answer.SetValue(m.questionDraft(r, i).Text)
 	m.answerView.Reset()
@@ -115,7 +166,7 @@ func (m *Model) storeAnswer(text string) {
 	if !ok || len(r.Questions) == 0 {
 		return
 	}
-	i := m.viewState().QuestionIndex
+	i := m.questionIndex(r)
 	d := m.questionDraft(r, i)
 	d.Text = text
 	if protocol.QuestionKind(r.Questions[i]) != "text" {
@@ -132,10 +183,22 @@ func (m *Model) selectQuestion(index int) {
 	if !ok || index < 0 || index >= len(r.Questions) {
 		return
 	}
+	// Back, Next, tabs and the header only navigate: focus stays on the
+	// activating control, or the active tab when that arrow disappeared.
+	// Answering (a choice, the answer field, validation) moves on to the new
+	// question's input. Read focus first: re-measuring drops a vanished key.
+	focus := m.focus
 	v := m.viewState()
 	v.QuestionIndex, v.RequestScroll = index, 0
 	m.loadAnswer()
 	m.configureInputs()
+	if questionNavigationFocus(focus) {
+		m.setFocus(focus)
+		if !hasHit(m.measure(), focus) {
+			m.setFocus(fmt.Sprint("question-page:", index))
+		}
+		return
+	}
 	if protocol.QuestionKind(r.Questions[index]) == "text" || m.questionDraft(r, index).Other {
 		m.setFocus("answer")
 	} else {
@@ -143,12 +206,45 @@ func (m *Model) selectQuestion(index int) {
 	}
 }
 
+func hasHit(f frame, key string) bool {
+	return slices.ContainsFunc(f.hits, func(h hit) bool { return h.Key == key })
+}
+
+// chooseQuestionOption selects (radio) or toggles (checkbox) the option with
+// index n of the active question, as a digit key does. Other focuses its
+// field; a radio selection advances as a click does.
+func (m *Model) chooseQuestionOption(n int) {
+	r, ok := m.request()
+	if !ok {
+		return
+	}
+	options := m.questionOptions(r)
+	if n < 0 || n >= len(options) {
+		return
+	}
+	o := options[n]
+	if o.key != "answer-other" {
+		before := m.questionIndex(r)
+		m.chooseAnswer(o.label)
+		// A tab-focused selection that advanced follows the active tab.
+		if strings.HasPrefix(m.focus, "question-page:") && m.questionIndex(r) != before {
+			m.setFocus(fmt.Sprint("question-page:", m.questionIndex(r)))
+		}
+		return
+	}
+	if q, _, _ := m.activeQuestion(r); o.selected && protocol.QuestionKind(q) == "single" {
+		m.setFocus("answer")
+		return
+	}
+	m.toggleOther()
+}
+
 func (m *Model) chooseAnswer(value string) {
 	r, ok := m.request()
 	if !ok || len(r.Questions) == 0 {
 		return
 	}
-	i := m.viewState().QuestionIndex
+	i := m.questionIndex(r)
 	q := r.Questions[i]
 	if !slices.Contains(q.Options, value) || protocol.QuestionKind(q) == "text" {
 		return
@@ -174,7 +270,7 @@ func (m *Model) toggleOther() {
 	if !ok || len(r.Questions) == 0 {
 		return
 	}
-	i := m.viewState().QuestionIndex
+	i := m.questionIndex(r)
 	q := r.Questions[i]
 	if !protocol.QuestionAllowsOther(q) {
 		return
@@ -190,6 +286,39 @@ func (m *Model) toggleOther() {
 	if d.Other {
 		m.setFocus("answer")
 	}
+}
+
+// submitRequestAction declines or cancels the visible question request
+// through the same gates and feedback as Submit. It sends no answers and
+// leaves every question draft intact, so a refused or failed action can be
+// followed by an ordinary answer.
+func (m *Model) submitRequestAction(a action) tea.Cmd {
+	r, ok := m.request()
+	if !ok || r.Kind == "approval" {
+		return nil
+	}
+	reject := func(message string) tea.Cmd {
+		m.status = message
+		m.setRequestFeedback(m.state.Active, r.ID, r.Revision, message, false)
+		m.configureInputs()
+		return nil
+	}
+	if !slices.Contains(questionOfferedActions(r), a.Value) {
+		return reject("This request does not offer " + strings.ToLower(questionActionLabel(a.Value)) + " · nothing sent")
+	}
+	if m.thread().NeedsResume {
+		return reject("Resume this thread first (F4 → Resume).")
+	}
+	if !m.connected {
+		return reject("Disconnected · wait for the server to reconnect.")
+	}
+	c := protocol.Command{Kind: "request.answer", TargetID: r.ID, Revision: r.Revision, RequestAction: a.Value}
+	cmd := m.command(c, a)
+	if cmd == nil {
+		return reject(m.status)
+	}
+	m.clearRequestFeedback(m.state.Active, r.ID, r.Revision, false)
+	return cmd
 }
 
 func (m *Model) submitAnswers(a action) tea.Cmd {

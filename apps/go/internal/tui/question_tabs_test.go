@@ -132,7 +132,7 @@ func TestQuestionAnsweredMarkerKeepsTabGeometry(t *testing.T) {
 			t.Fatal("answering moved the header controls")
 		}
 	}
-	if !strings.Contains(controlHit(t, after, "question-page:0").Label, "✓") {
+	if !strings.Contains(controlHit(t, after, "question-page:0").Label, "answered") {
 		t.Fatal("answered marker was lost")
 	}
 }

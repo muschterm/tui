@@ -125,6 +125,41 @@ func runFakeClaudeRuntime() int {
 	}
 	var activeUserUUID string
 	var activePrompt string
+	// Effort mirrors the installed CLI (2.1.281, probed 2026-09-23): the
+	// catalogue lists per-model levels, apply_flag_settings ACKs any
+	// effortLevel, get_settings reports what will actually be sent, and a
+	// model change re-derives it (null for a model without effort, a
+	// downgrade for a level the model lacks).
+	fakeEffortLevels := map[string][]string{
+		"claude-model-live-a":    {"low", "medium", "high", "xhigh", "max"},
+		"claude-model-live-a-v1": {"low", "medium", "high", "xhigh", "max"},
+		"claude-opus-4-8":        {"low", "medium", "high"},
+		"claude-opus-4-7":        {"low", "medium", "high"}, // legacy ID the runtime still runs
+	}
+	effortRank := func(level string) int {
+		for i, known := range []string{"low", "medium", "high", "xhigh", "max"} {
+			if known == level {
+				return i
+			}
+		}
+		return -1
+	}
+	currentModel, requestedEffort := "claude-model-live-a", "high"
+	appliedEffort := func() any {
+		levels := fakeEffortLevels[currentModel]
+		if len(levels) == 0 {
+			return nil
+		}
+		if cap := os.Getenv("TUI_GO_CLAUDE_TEST_EFFORT_CAP"); cap != "" && effortRank(requestedEffort) > effortRank(cap) {
+			return cap
+		}
+		for _, level := range levels {
+			if level == requestedEffort {
+				return level
+			}
+		}
+		return "high"
+	}
 	writeResult := func(userUUID string, fields map[string]any) error {
 		fields["type"] = "result"
 		fields["user_message_uuid"] = userUUID
@@ -146,7 +181,8 @@ func runFakeClaudeRuntime() int {
 				Model    string `json:"model"`
 				Mode     string `json:"mode"`
 				Settings struct {
-					FastMode bool `json:"fastMode"`
+					FastMode    *bool           `json:"fastMode"`
+					EffortLevel json.RawMessage `json:"effortLevel"`
 				} `json:"settings"`
 			}
 			_ = json.Unmarshal(msg.Request, &request)
@@ -157,8 +193,13 @@ func runFakeClaudeRuntime() int {
 			case "initialize":
 				response = map[string]any{
 					"models": []any{
-						map[string]any{"value": "claude-model-live-a", "resolvedModel": "claude-model-live-a-v1", "displayName": "Live model A", "supportsAutoMode": true, "supportsFastMode": true},
+						map[string]any{"value": "claude-model-live-a", "resolvedModel": "claude-model-live-a-v1", "displayName": "Live model A", "supportsEffort": true, "supportedEffortLevels": fakeEffortLevels["claude-model-live-a"], "supportsAutoMode": true, "supportsFastMode": true},
 						map[string]any{"value": "claude-model-live-b", "displayName": "Live model B", "supportsAutoMode": false},
+						// Natively listed versioned IDs overlap the documented legacy list.
+						map[string]any{"value": "claude-opus-4-8", "resolvedModel": "claude-opus-4-8", "displayName": "Opus 4.8", "description": "Best for everyday, complex tasks", "supportsEffort": true, "supportedEffortLevels": fakeEffortLevels["claude-opus-4-8"]},
+						// The alias-only catalogue shape names rows by alias and puts the version first in the description.
+						map[string]any{"value": "fable-alias", "resolvedModel": "claude-fable-5", "displayName": "Fable", "description": "Fable 5 · Most capable"},
+						map[string]any{"value": "default", "resolvedModel": "claude-model-live-a-v1", "displayName": "Default (recommended)", "description": "Live model A · Best for everyday tasks"},
 					},
 					"current_permission_mode":   "default",
 					"fast_mode_state":           "off",
@@ -169,9 +210,25 @@ func runFakeClaudeRuntime() int {
 					delete(response, "fast_mode_disabled_reason")
 				}
 			case "apply_flag_settings":
-				if os.Getenv("TUI_GO_CLAUDE_TEST_FAST_ACK_ONLY") != "1" || !request.Settings.FastMode {
-					fastMode = request.Settings.FastMode
+				if request.Settings.FastMode != nil && (os.Getenv("TUI_GO_CLAUDE_TEST_FAST_ACK_ONLY") != "1" || !*request.Settings.FastMode) {
+					fastMode = *request.Settings.FastMode
 				}
+				if len(request.Settings.EffortLevel) != 0 && os.Getenv("TUI_GO_CLAUDE_TEST_EFFORT_ACK_ONLY") != "1" {
+					var level *string
+					if json.Unmarshal(request.Settings.EffortLevel, &level) == nil {
+						if level == nil {
+							requestedEffort = "high"
+						} else if effortRank(*level) >= 0 {
+							requestedEffort = *level
+						}
+					}
+				}
+			case "get_settings":
+				if os.Getenv("TUI_GO_CLAUDE_TEST_NO_SETTINGS_READBACK") == "1" {
+					subtype, message = "error", "get_settings is not available on this connection"
+					break
+				}
+				response = map[string]any{"sources": []any{}, "applied": map[string]any{"model": currentModel, "effort": appliedEffort(), "advisor": nil, "ultracode": false}}
 			case "set_model":
 				if request.Model != "" && request.Model == os.Getenv("TUI_GO_CLAUDE_TEST_DELAY_MODEL") {
 					logFakeClaude(fakeClaudeLogEntry{Kind: "model_ack_delayed", RequestID: msg.RequestID, Request: msg.Request})
@@ -179,6 +236,8 @@ func runFakeClaudeRuntime() int {
 				}
 				if request.Model == os.Getenv("TUI_GO_CLAUDE_TEST_REJECT_MODEL") {
 					subtype, message = "error", "model selection rejected by fake runtime"
+				} else {
+					currentModel = request.Model
 				}
 			case "set_permission_mode":
 				response = map[string]any{"mode": request.Mode}
@@ -401,6 +460,50 @@ func (f *claudeFixture) setSpeed(t *testing.T, speed string) error {
 	return err
 }
 
+func (f *claudeFixture) setEffort(t *testing.T, effort string) error {
+	t.Helper()
+	_, err := f.setField(t, "effort", effort)
+	return err
+}
+
+func (f *claudeFixture) setField(t *testing.T, id, value string) ([]acp.SessionConfigOption, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	resp, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{
+		SessionId: f.session, ConfigId: acp.SessionConfigId(id), Value: acp.SessionConfigValueId(value),
+	}})
+	return resp.ConfigOptions, err
+}
+
+func selectOption(t *testing.T, options []acp.SessionConfigOption, id string) *acp.SessionConfigOptionSelect {
+	t.Helper()
+	for _, option := range options {
+		if option.Select != nil && option.Select.Id == acp.SessionConfigId(id) {
+			if option.Select.Options.Ungrouped == nil {
+				t.Fatalf("%s options are not a flat list", id)
+			}
+			return option.Select
+		}
+	}
+	t.Fatalf("%s configuration option missing", id)
+	return nil
+}
+
+func modelOptionRows(t *testing.T, options []acp.SessionConfigOption) []acp.SessionConfigSelectOption {
+	t.Helper()
+	return *selectOption(t, options, "model").Options.Ungrouped
+}
+
+func anyEqual(values []any, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *claudeFixture) prompt(ctx context.Context, text string) (acp.PromptResponse, error) {
 	return f.conn.Prompt(ctx, acp.PromptRequest{SessionId: f.session, Prompt: []acp.ContentBlock{{Text: &acp.ContentBlockText{Type: "text", Text: text}}}})
 }
@@ -483,8 +586,8 @@ func modelOptionValues(t *testing.T, options []acp.SessionConfigOption) []string
 func TestClaudeBridgeRequiresDiscoveredAndAcknowledgedModel(t *testing.T) {
 	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_REJECT_MODEL=claude-model-live-a")
 	values := modelOptionValues(t, f.options)
-	if len(values) < 3 || values[0] != "claude-model-live-a" || values[1] != "claude-model-live-b" || !stringInSlice(values, "claude-opus-4-8") || !stringInSlice(values, "claude-model-live-a-v1") {
-		t.Fatalf("model values omitted native aliases or documented legacy choices: %v", values)
+	if len(values) < 3 || values[0] != "claude-model-live-a" || values[1] != "claude-model-live-b" || !stringInSlice(values, "claude-opus-4-7") || stringInSlice(values, "claude-model-live-a-v1") {
+		t.Fatalf("model values omitted native aliases or documented legacy choices, or listed pinned duplicates: %v", values)
 	}
 	if err := f.setModel(t, "invented-model"); err == nil {
 		t.Fatal("accepted a model absent from the runtime catalogue")
@@ -496,26 +599,61 @@ func TestClaudeBridgeRequiresDiscoveredAndAcknowledgedModel(t *testing.T) {
 		t.Fatal("prompt ran without an acknowledged explicit model")
 	}
 	entries := readFakeClaudeLog(t, f.logPath)
-	if got := entryCount(entries, "host_control"); got != 4 {
-		t.Fatalf("runtime saw %d controls, want initialize, Standard reset/readback, and one valid set_model request", got)
+	if got := entryCount(entries, "host_control"); got != 5 {
+		t.Fatalf("runtime saw %d controls, want initialize, Standard reset/readback, effort readback and one valid set_model request", got)
 	}
 	if got := entryCount(entries, "user"); got != 0 {
 		t.Fatalf("runtime received %d prompt(s) after a failed setting", got)
 	}
 }
 
-func TestClaudeBridgeOffersPinnedAndDocumentedLegacyModelIDs(t *testing.T) {
+func TestClaudeBridgeDedupesLegacyRowsAndOmitsPinnedDuplicates(t *testing.T) {
 	f := startClaudeFixture(t)
-	values := modelOptionValues(t, f.options)
-	for _, value := range []string{"claude-model-live-a-v1", "claude-opus-4-8", "claude-fable-5"} {
-		if !stringInSlice(values, value) {
-			t.Fatalf("missing pinned or legacy %q: %v", value, values)
+	rows := modelOptionRows(t, f.options)
+	counts := map[string]int{}
+	for _, row := range rows {
+		counts[string(row.Value)]++
+	}
+	for _, value := range []string{"claude-opus-4-8", "claude-opus-4-7"} {
+		if counts[value] != 1 {
+			t.Fatalf("model %q offered %d times: %+v", value, counts[value], rows)
+		}
+	}
+	// Natively listed IDs keep Claude's own name; an alias's resolved ID and
+	// the pinned duplicate rows are not offered again.
+	for _, row := range rows {
+		switch string(row.Value) {
+		case "claude-opus-4-8":
+			if row.Name != "Opus 4.8" || row.Description == nil || *row.Description != "Best for everyday, complex tasks" {
+				t.Fatalf("native versioned model was relabelled: %+v", row)
+			}
+		case "claude-opus-4-7":
+			if !strings.HasPrefix(row.Name, "Legacy") {
+				t.Fatalf("documented legacy model is unlabelled: %+v", row)
+			}
+		case "claude-model-live-a":
+			if row.Name != "Live model A" || row.Description == nil || *row.Description != "claude-model-live-a-v1" {
+				t.Fatalf("alias row lost its name or resolved ID: %+v", row)
+			}
+		case "fable-alias":
+			if row.Name != "Fable 5" || row.Description == nil || *row.Description != "Fable · Most capable · claude-fable-5" {
+				t.Fatalf("alias row did not take Claude's versioned identity as its name: %+v", row)
+			}
+		case "default":
+			if row.Name != "Default (recommended)" || row.Description == nil || *row.Description != "Live model A · Best for everyday tasks · claude-model-live-a-v1" {
+				t.Fatalf("default row was renamed: %+v", row)
+			}
+		case "claude-fable-5", "claude-model-live-a-v1":
+			t.Fatalf("resolved ID listed as its own row: %+v", row)
+		}
+		if strings.Contains(row.Name, "(pinned)") || strings.Contains(row.Name, "(claude-") {
+			t.Fatalf("model name carries a synthetic suffix: %+v", row)
 		}
 	}
 	if err := f.setModel(t, "claude-model-live-a-v1"); err != nil {
-		t.Fatalf("native bridge rejected runtime resolved model: %v", err)
+		t.Fatalf("native bridge rejected a captured resolved model: %v", err)
 	}
-	if err := f.setModel(t, "claude-opus-4-8"); err != nil {
+	if err := f.setModel(t, "claude-opus-4-7"); err != nil {
 		t.Fatalf("native bridge rejected documented legacy model: %v", err)
 	}
 	entries := readFakeClaudeLog(t, f.logPath)
@@ -530,8 +668,145 @@ func TestClaudeBridgeOffersPinnedAndDocumentedLegacyModelIDs(t *testing.T) {
 		_ = json.Unmarshal(entry.Request, &request)
 		selected = append(selected, request.Model)
 	}
-	if got := strings.Join(selected, ","); got != "claude-model-live-a-v1,claude-opus-4-8" {
+	if got := strings.Join(selected, ","); got != "claude-model-live-a-v1,claude-opus-4-7" {
 		t.Fatalf("native model controls = %s", got)
+	}
+}
+
+func TestClaudeEffortIsScopedPerModelAndConfirmedByReadback(t *testing.T) {
+	f := startClaudeFixture(t)
+	effort := selectOption(t, f.options, "effort")
+	if effort.Category == nil || *effort.Category != "thought_level" || effort.CurrentValue != "high" {
+		t.Fatalf("effort option = %+v, want thought_level with the runtime's applied level", effort)
+	}
+	var levels []string
+	scope := map[string][]any{}
+	for _, value := range *effort.Options.Ungrouped {
+		levels = append(levels, string(value.Value))
+		scope[string(value.Value)], _ = value.Meta["tui-go.models"].([]any)
+	}
+	if got := strings.Join(levels, ","); got != "low,medium,high,xhigh,max" {
+		t.Fatalf("effort levels = %s", got)
+	}
+	if !anyEqual(scope["max"], "claude-model-live-a") || !anyEqual(scope["max"], "claude-model-live-a-v1") || anyEqual(scope["max"], "claude-opus-4-8") || anyEqual(scope["low"], "claude-model-live-b") || !anyEqual(scope["max"], "claude-opus-4-7") {
+		t.Fatalf("effort scope = %v, want catalogue-reported models per level plus readback-verified legacy IDs", scope)
+	}
+	if err := f.setEffort(t, "low"); err == nil {
+		t.Fatal("accepted effort before a model was selected")
+	}
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	options, err := f.setField(t, "effort", "low")
+	if err != nil {
+		t.Fatalf("effort selection was not confirmed: %v", err)
+	}
+	if got := selectOption(t, options, "effort").CurrentValue; got != "low" {
+		t.Fatalf("current effort after confirmed change = %q", got)
+	}
+	if err := f.setEffort(t, "ultra"); err == nil {
+		t.Fatal("accepted an effort level the catalogue does not list")
+	}
+	// A capped model re-derives effort on selection; the readback is authoritative.
+	if _, err := f.setField(t, "model", "claude-opus-4-8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setEffort(t, "xhigh"); err == nil {
+		t.Fatal("accepted an effort level the selected model does not report")
+	}
+	options, err = f.setField(t, "model", "claude-model-live-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectOption(t, options, "effort").CurrentValue; got != "" {
+		t.Fatalf("model without effort still reports %q", got)
+	}
+	if err := f.setEffort(t, "low"); err == nil {
+		t.Fatal("accepted effort for a model without effort support")
+	}
+	// A legacy ID accepts catalogue levels only as far as the readback confirms them.
+	if _, err := f.setField(t, "model", "claude-opus-4-7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setEffort(t, "max"); err == nil || !strings.Contains(err.Error(), "max") || !strings.Contains(err.Error(), "applied high") {
+		t.Fatalf("legacy downgrade was not reported with the applied level: %v", err)
+	}
+	options, err = f.setField(t, "effort", "medium")
+	if err != nil {
+		t.Fatalf("legacy effort confirmed by readback was rejected: %v", err)
+	}
+	if got := selectOption(t, options, "effort").CurrentValue; got != "medium" {
+		t.Fatalf("legacy current effort = %q", got)
+	}
+	entries := readFakeClaudeLog(t, f.logPath)
+	var sequence []string
+	for _, entry := range entries {
+		if entry.Kind == "host_control" {
+			sequence = append(sequence, entry.Subtype)
+		}
+	}
+	// Startup: initialize, Standard reset, Fast readback, effort readback.
+	want := "initialize,apply_flag_settings,initialize,get_settings,set_model,get_settings,apply_flag_settings,get_settings,set_model,get_settings,set_model,get_settings,set_model,get_settings,apply_flag_settings,get_settings,apply_flag_settings,get_settings"
+	if got := strings.Join(sequence, ","); got != want {
+		t.Fatalf("native controls = %s\nwant %s", got, want)
+	}
+	var effortControls []string
+	for _, entry := range entries {
+		if entry.Subtype == "apply_flag_settings" && strings.Contains(string(entry.Request), "effortLevel") {
+			effortControls = append(effortControls, string(entry.Request))
+		}
+	}
+	if got := strings.Join(effortControls, ";"); got != `{"settings":{"effortLevel":"low"},"subtype":"apply_flag_settings"};{"settings":{"effortLevel":"max"},"subtype":"apply_flag_settings"};{"settings":{"effortLevel":"medium"},"subtype":"apply_flag_settings"}` {
+		t.Fatalf("effort controls = %s", got)
+	}
+}
+
+func TestClaudeEffortGenericACKDoesNotClaimEffectiveEffort(t *testing.T) {
+	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_EFFORT_ACK_ONLY=1")
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setEffort(t, "low"); err == nil {
+		t.Fatal("accepted effort when the runtime's applied level stayed high")
+	}
+	if _, err := f.prompt(context.Background(), "still-usable"); err != nil {
+		t.Fatalf("a rejected effort change must not retire the session: %v", err)
+	}
+}
+
+func TestClaudeEffortDowngradeIsReportedNotClaimed(t *testing.T) {
+	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_EFFORT_CAP=medium")
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	err := f.setEffort(t, "max")
+	if err == nil || !strings.Contains(err.Error(), "medium") {
+		t.Fatalf("downgraded effort was not reported with the applied level: %v", err)
+	}
+	options, err := f.setField(t, "effort", "medium")
+	if err != nil {
+		t.Fatalf("the applied level itself must be selectable: %v", err)
+	}
+	if got := selectOption(t, options, "effort").CurrentValue; got != "medium" {
+		t.Fatalf("current effort = %q", got)
+	}
+}
+
+func TestClaudeEffortUnavailableWithoutSettingsReadback(t *testing.T) {
+	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_NO_SETTINGS_READBACK=1")
+	for _, option := range f.options {
+		if option.Select != nil && option.Select.Id == "effort" {
+			t.Fatalf("effort offered without an effective-state readback: %+v", option)
+		}
+	}
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setEffort(t, "low"); err == nil {
+		t.Fatal("accepted effort without a readback")
+	}
+	if _, err := f.prompt(context.Background(), "still-usable"); err != nil {
+		t.Fatalf("missing readback must not block prompts: %v", err)
 	}
 }
 

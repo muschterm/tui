@@ -10,6 +10,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
@@ -437,12 +438,15 @@ type acpRun struct {
 	// busy is guarded by the engine lock; everything below by mu.
 	busy bool
 
-	mu          sync.Mutex
-	session     *agent.Session
-	info        agent.Info
-	options     []protocol.ConfigOption
-	pending     map[string]*pendingApproval
-	questions   map[string]*pendingQuestion
+	mu        sync.Mutex
+	session   *agent.Session
+	info      agent.Info
+	options   []protocol.ConfigOption
+	pending   map[string]*pendingApproval
+	questions map[string]*pendingQuestion
+	// delivered maps answered question IDs to the turn in which this
+	// connection's built-in bridge reported provider-side delivery.
+	delivered   map[string]string
 	generation  string
 	interrupted bool
 	cancelCh    chan struct{}
@@ -682,6 +686,8 @@ func (r *acpRun) finishTurn(w dispatchWork, response acp.PromptResponse, err err
 		r.turnDone = nil
 	}
 	r.cancelCh = nil
+	delivered := r.delivered
+	r.delivered = nil
 	r.mu.Unlock()
 	cancelled := interrupted || response.StopReason == acp.StopReasonCancelled
 	r.e.mutateThread(r.threadID, true, func(t *protocol.Thread) {
@@ -698,6 +704,15 @@ func (r *acpRun) finishTurn(w dispatchWork, response acp.PromptResponse, err err
 				request.Revision++
 			} else if err != nil && request.Delivery == "acp-unconfirmed" {
 				request.Delivery = "acp-uncertain"
+				request.Revision++
+			} else if err == nil && !cancelled && request.Delivery == "acp-unconfirmed" && request.Kind == "question" && request.Mode == "blocking" && request.Action == "" && delivered[request.ID] == w.prompt.ID {
+				// A blocking question holds its turn until answered. The bridge
+				// saw the provider take our answer, and that same turn then
+				// finished normally: that settles delivery. Without the receipt,
+				// or for continued-work questions, completion alone proves nothing.
+				// The receipt covers accepted answers only; the bridges emit none
+				// for a decline or cancel, which therefore stays unconfirmed.
+				request.State, request.Delivery = "resolved", "acp-turn-confirmed"
 				request.Revision++
 			}
 		}
@@ -844,6 +859,10 @@ func (r *acpRun) stop() {
 // SessionUpdate streams one agent update into the snapshot.
 func (h *acpHandler) SessionUpdate(_ context.Context, sessionID string, u agent.Update) error {
 	r := h.acpRun
+	if toolCallID, ok := agent.QuestionDeliveryReceipt(u); ok {
+		h.questionDelivered(sessionID, toolCallID)
+		return nil
+	}
 	r.e.streamMutate(func(s *protocol.Snapshot) {
 		t := threadByID(s, r.threadID)
 		if t == nil {
@@ -860,4 +879,34 @@ func (h *acpHandler) SessionUpdate(_ context.Context, sessionID string, u agent.
 		}
 	})
 	return nil
+}
+
+// questionDelivered records a built-in bridge's delivery receipt for an
+// answer this connection handed off in the current turn. It changes no
+// durable state: finishTurn decides whether the turn's outcome settles it,
+// and a restart before then leaves the answer uncertain.
+func (h *acpHandler) questionDelivered(sessionID, toolCallID string) {
+	h.mu.Lock()
+	version := h.info.Version
+	h.mu.Unlock()
+	if version != acpbridge.ClaudeIdentity && version != acpbridge.CodexIdentity {
+		return // Only our pinned bridges define this receipt.
+	}
+	r, e := h.acpRun, h.e
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t := threadByID(&e.snap, r.threadID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t == nil || h.generation != r.generation || sessionID == "" || sessionID != t.SessionID || r.turnDone == nil {
+		return
+	}
+	for _, request := range t.Requests {
+		if request.Kind == "question" && request.TurnID == t.TurnID && request.State == "closed" && request.Delivery == "acp-unconfirmed" && request.Action == "" && request.DeliveryRoute == "native-response" && agent.QuestionToolCallID(request.SourcePayload) == toolCallID {
+			if r.delivered == nil {
+				r.delivered = make(map[string]string)
+			}
+			r.delivered[request.ID] = t.TurnID
+		}
+	}
 }

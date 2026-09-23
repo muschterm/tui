@@ -122,6 +122,18 @@ func (m *Model) componentStyle(variant componentVariant, s componentState, fg, b
 	return v
 }
 
+// containerStyle resolves a rounded container's frame, such as the pending
+// question card or an answered history card: the rest outline on all four
+// sides, or the focused outline (the prompt's focused ink) while keyboard
+// focus is inside the container. Pointer hover over the container or any of
+// its controls never recolors the frame, and focus moving between its inner
+// controls keeps it unchanged; those controls carry their own state cues.
+func (m *Model) containerStyle(focusInside bool, fg, bg string) componentVisual {
+	v := m.componentStyle(roundedOutline, componentState{Focused: focusInside}, fg, bg)
+	v.focused = false // The frame has no focus mark; its focused control does.
+	return v
+}
+
 // Icon controls have no fill. Hover and focus embolden the glyph and lift muted
 // ink to text, as T3's muted-to-foreground row actions do; focus adds the
 // leading mark. Bold alone is unreliable for Nerd Font glyphs, whose outlines

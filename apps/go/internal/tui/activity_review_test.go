@@ -59,7 +59,9 @@ func TestMessagesUseAlignmentWithoutRoleHeaders(t *testing.T) {
 
 func TestActivitySummariesFinishDismissAndRestorePerThread(t *testing.T) {
 	m := testModel()
-	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	// Tall enough that the transcript's closing Thinking row is visible
+	// beside the fixture's queue and question card.
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 44})
 	m.prompt.SetValue("Keep this draft")
 	m.viewState().Draft = m.prompt.Value()
 	if !strings.Contains(m.View().Content, "Thinking…") || hasControl(m.measure(), "dismiss-agents") {

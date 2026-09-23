@@ -48,50 +48,82 @@ func questionTabWindow(widths []int, active, available int) []questionTabSlot {
 	return slots
 }
 
-func (m *Model) renderQuestionTabs(f *frame, r shell.Rect, req protocol.Request) {
-	p := m.colors()
-	active := m.viewState().QuestionIndex
+// questionTabPlan measures the tab row once for painting, hit testing and the
+// header's overflow counter.
+type questionTabPlan struct {
+	slots          []questionTabSlot
+	labels         []string
+	answered       []bool
+	x, end         int
+	overflow       bool
+	active, marker int
+}
+
+// Each tab is " <label> <mark> " with its end caps: the marker cell is always
+// reserved, so answering never moves the label.
+func (m *Model) questionTabPlan(req protocol.Request, r shell.Rect) questionTabPlan {
+	plan := questionTabPlan{active: m.questionIndex(req), marker: max(1, ansi.StringWidth(m.icon("check")))}
 	// Fixed empty slots prevent tab labels from occupying a hidden arrow's
 	// position. One cell separates each arrow from the tab strip.
-	x, end := r.X+questionArrowWidth+1, r.X+r.W-questionArrowWidth-1
-	f.fill(r, p, p.panel)
-	if active > 0 {
-		f.compactButton(m, r.X, r.Y, questionArrowWidth, m.icon("previous"), "question-back", action{Kind: "question", Index: -1}, false, normalControl)
-		f.hits[len(f.hits)-1].Label = "Previous question"
-	}
-	labels := make([]string, len(req.Questions))
+	plan.x, plan.end = r.X+questionArrowWidth+1, r.X+r.W-questionArrowWidth-1
+	plan.labels = make([]string, len(req.Questions))
+	plan.answered = make([]bool, len(req.Questions))
 	widths := make([]int, len(req.Questions))
-	answered := make([]bool, len(req.Questions))
 	total := max(0, len(req.Questions)-1) // Gaps between button containers.
 	for i, q := range req.Questions {
 		d := m.questionDraft(req, i)
 		answer := draftAnswer(q, d)
-		answered[i] = (len(answer.Choices) > 0 || strings.TrimSpace(answer.Text) != "") && validateDraft(q, d) == nil
-		labels[i] = strings.Join(strings.Fields(safe(questionTabLabel(q, i, false))), " ")
-		widths[i] = min(22, ansi.StringWidth(labels[i])+6) // Border, padding, check.
+		plan.answered[i] = (len(answer.Choices) > 0 || strings.TrimSpace(answer.Text) != "") && validateDraft(q, d) == nil
+		plan.labels[i] = strings.Join(strings.Fields(safe(questionTabLabel(q, i))), " ")
+		widths[i] = min(22, ansi.StringWidth(plan.labels[i])+3+plan.marker) // End caps, gap, marker.
 		total += widths[i]
 	}
-	overflow := total > end-x
-	if overflow {
-		end -= 4 // Three-cell overflow button and its leading gap.
+	plan.overflow = total > plan.end-plan.x
+	if plan.overflow {
+		plan.end -= 4 // Three-cell overflow button and its leading gap.
 	}
-	for _, slot := range questionTabWindow(widths, active, max(0, end-x)) {
-		mark := ""
-		if answered[slot.index] {
-			mark = " ✓"
+	plan.slots = questionTabWindow(widths, plan.active, max(0, plan.end-plan.x))
+	return plan
+}
+
+func (m *Model) renderQuestionTabs(f *frame, r shell.Rect, req protocol.Request) {
+	p := m.colors()
+	plan := m.questionTabPlan(req, r)
+	f.fill(r, p, p.panel)
+	if plan.active > 0 {
+		f.compactButton(m, r.X, r.Y, questionArrowWidth, m.icon("previous"), "question-back", action{Kind: "question", Index: -1}, false, normalControl)
+		f.hits[len(f.hits)-1].Label = "Previous question"
+	}
+	x := plan.x
+	for _, slot := range plan.slots {
+		mark, status := strings.Repeat(" ", plan.marker), ""
+		if plan.answered[slot.index] {
+			mark, status = fit(m.icon("check"), plan.marker), " · answered"
 		}
-		label := ansi.Truncate(labels[slot.index], max(1, slot.width-4-ansi.StringWidth(mark)), "…") + mark
+		label := fit(ansi.Truncate(plan.labels[slot.index], max(1, slot.width-3-plan.marker), "…"), max(1, slot.width-3-plan.marker)) + " " + mark
 		key := fmt.Sprint("question-page:", slot.index)
-		f.compactButton(m, x, r.Y, slot.width, label, key, action{Kind: "question-index", Index: slot.index}, slot.index == active, normalControl)
-		f.hits[len(f.hits)-1].Label = fmt.Sprintf("Question %d of %d · %s%s", slot.index+1, len(labels), labels[slot.index], mark)
+		m.questionTab(f, x, r.Y, slot.width, label, key, action{Kind: "question-index", Index: slot.index}, slot.index == plan.active)
+		f.hits[len(f.hits)-1].Label = fmt.Sprintf("Question %d of %d · %s%s", slot.index+1, len(plan.labels), plan.labels[slot.index], status)
 		x += slot.width + 1
 	}
-	if overflow {
-		f.compactButton(m, end+1, r.Y, 3, m.icon("more-vertical"), "question-tabs", action{Kind: "question-tabs"}, false, normalControl)
+	if plan.overflow {
+		f.compactButton(m, plan.end+1, r.Y, 3, m.icon("more-vertical"), "question-tabs", action{Kind: "question-tabs"}, false, normalControl)
 		f.hits[len(f.hits)-1].Label = "All questions"
 	}
-	if active+1 < len(req.Questions) {
+	if plan.active+1 < len(req.Questions) {
 		f.compactButton(m, r.X+r.W-questionArrowWidth, r.Y, questionArrowWidth, m.icon("next"), "question-next", action{Kind: "question", Index: 1}, false, normalControl)
 		f.hits[len(f.hits)-1].Label = "Next question"
 	}
+}
+
+// questionTab paints a left-aligned tab label (label, gap, marker cell) so
+// its position is independent of the answered marker.
+func (m *Model) questionTab(f *frame, x, y, width int, label, key string, a action, selected bool) {
+	if width < 3 {
+		return
+	}
+	p := m.colors()
+	v := m.componentStyle(squareFill, m.controlState(selected, key), p.text, p.input)
+	f.compactControl(m, x, y, width, fit(label, width-2), v)
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: a, Label: label, Key: key})
 }

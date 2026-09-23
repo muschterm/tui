@@ -188,9 +188,11 @@ func TestQuestionHistoryToggleHitboxStaysInsideItsCard(t *testing.T) {
 	if initial.Key == "" || initial.Action.Kind != "question-history-toggle" {
 		t.Fatal("compact question history has no explicit toggle target")
 	}
-	inset := min(12, f.transcript.W/6)
-	if initial.Rect.X != f.transcript.X+inset || initial.Rect.W != f.transcript.W-inset || !within(initial.Rect, f.transcript) {
-		t.Fatalf("toggle hitbox escaped its right-aligned card: %#v transcript=%#v", initial.Rect, f.transcript)
+	// The card spans the prompt outline's extent, one cell beyond the
+	// transcript column on each side; the toggle is its interior label, after
+	// the blank padding cell that holds the focus mark and before the border.
+	if initial.Rect.X != f.transcript.X+1 || initial.Rect.W != f.transcript.W-2 || !within(initial.Rect, f.geom.Center) {
+		t.Fatalf("toggle hitbox escaped its card: %#v transcript=%#v", initial.Rect, f.transcript)
 	}
 	initialRow := ansi.Strip(cutCells(f.rows[initial.Rect.Y], initial.Rect.X, initial.Rect.X+initial.Rect.W))
 	if !strings.Contains(initialRow, "Expand") {
@@ -246,7 +248,9 @@ func TestReviewBelowMinimumSizeNothingButCommandsIsReachable(t *testing.T) {
 }
 
 func TestReviewDividerDragIsClampedAndReversible(t *testing.T) {
-	m := sizedModel(120, 40)
+	// 41 rows keep the stored bottom height beside the fixture question card,
+	// whose header now takes an interior row.
+	m := sizedModel(120, 41)
 	m.activate(action{Kind: "open", Value: "plan"})
 	m.activate(action{Kind: "bottom"})
 	m.configureInputs()

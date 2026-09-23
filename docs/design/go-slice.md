@@ -5,8 +5,12 @@ Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite pers
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
 actionable Send errors and App Settings / Agents defaults. This supersedes older
-Codex-form limitations below; Claude effort and native answer receipts remain
-unavailable.
+Codex-form limitations below; native answer receipts remain unavailable.
+[Claude effort](../research/claude-effort-2026-09-23.md) was added on 2026-09-23:
+the bridge offers only catalogue-reported levels per model, applies them through
+`apply_flag_settings` and accepts a change only after `get_settings` reports it.
+Model rows keep Claude's own names, and neither pinned resolved IDs nor legacy
+entries the runtime already lists are repeated.
 
 The [built-in Go bridge checkpoint](../implementation/go-adapter-checkpoint.md)
 records the replacement of external adapters with Go implementations around
@@ -58,7 +62,9 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 | Tab / Shift+Tab | Traverse visible controls |
 | Enter | Send from composer; activate focused control |
 | Shift+Enter / Ctrl+J | Insert a composer newline |
-| Ctrl+S | Alternate submit binding |
+| Ctrl+S | Alternate submit binding; inside a question card it submits that answer, never the prompt |
+| Enter / Shift+Enter / Esc in a question answer | Next question or validated Submit / newline / back to the question's controls |
+| 1–9 on a question option, tab or header | Select or toggle that choice |
 | Delete in a tab menu row | Close that surface |
 | Ctrl+Q / Ctrl+C without a selection | Detach TUI |
 | Ctrl+Z | Suspend |
@@ -70,7 +76,7 @@ Pointer paths include visible controls, divider dragging, wheel scrolling and te
 
 Controls use Nerd Font Codicons by default; configure a patched font in your terminal. Settings › Appearance › Symbols switches this client to the ASCII fallback and back without restarting; `TUI_GO_ICONS=ascii ./bin/tui-go` is the environment default for a client that has not saved a choice (2026-09-22). Pane glyphs reflect visible open/closed state. Tabs contain an icon and name; hovering a tab or focusing its icon reveals the close action. Only the icon slot closes it. The overflow control appears only when some tabs are hidden, with one row per surface and Delete as a keyboard close path.
 
-The composer starts at two editable rows inside its outline and grows with wrapped text and newlines to eight rows where space permits. Short layouts reduce the cap while keeping fixed controls visible. Additional text scrolls and remains intact. Scrollbars appear for overflowing transcript, inspector, request text, composer/answer, navigation, bottom output and menus. Click the track to page or drag the thumb; one-cell tracks have no drag travel, so use wheel/keyboard. Reading older input lines does not move the insertion cursor; typing returns to it. See [controls validation and captures](../research/go-controls-2026-09-19.md).
+The composer starts at two editable rows inside its outline, below one blank tinted padding row, with the placeholder "Ask to do anything", and grows with wrapped text and newlines to eight rows where space permits. Short layouts reduce the cap while keeping fixed controls visible. Additional text scrolls and remains intact. Scrollbars appear for overflowing transcript, inspector, request text, composer/answer, navigation, bottom output and menus. Click the track to page or drag the thumb; one-cell tracks have no drag travel, so use wheel/keyboard. Reading older input lines does not move the insertion cursor; typing returns to it. See [controls validation and captures](../research/go-controls-2026-09-19.md).
 
 Input routing measures controls without painting. The runtime combines pending
 visual updates at up to 60 frames per second while processing every input and
@@ -207,15 +213,16 @@ Back/Next arrows, vertical radio/checkbox choices,
 optional Other text, and open-ended text. Single-choice selection advances;
 checkbox selection does not. Every submission remains explicit. Controls and
 scrolling follow the [question contract](questions.md#question-card-refinement--2026-09-20).
-The maximum card is 12 rows, reduced in short windows; answer text grows to three
-rows. Structured answers preserve selected choices separately from free text.
+The maximum card is 13 rows with its interior header (12 before 2026-09-23),
+reduced in short windows; answer text grows to three rows. Structured answers preserve selected choices separately from free text.
 Legacy question and command JSON remains readable, including persisted retry
 identities. Old server processes must be restarted to accept the new structured
 answer field. Existing saved requests retain their original question shapes;
 only a fresh application home seeds the new mixed-question fixture.
 
-Drafts for prior request revisions remain in named-client storage; automatic
-import into changed questions is deliberately avoided. An interactive recovery
+Drafts for prior question schemas remain in named-client storage while their
+request is pending; automatic import into changed questions is deliberately
+avoided. A revision-only bump keeps the draft (2026-09-23). An interactive recovery
 picker for these older drafts is still outstanding. No real provider support or
 new terminal capability is implied by this presentation work.
 
@@ -309,7 +316,7 @@ of wrapping. The settings ellipsis stays directly after the left-hand fields.
 Usage has a separate ellipsis at the far left of the right-hand group; it opens
 context occupancy/capacity/percentage, billing, limits and cost (currently all
 unavailable/unknown). Send and active Stop retain priority. The typing area has
-a complete outline, with the settings/actions row below it. Hidden settings and
+a complete outline, with one padding row above it and the settings/actions row below it. Hidden settings and
 recovery actions remain accessible; differing running settings or recovery
 actions tint the settings ellipsis amber. Tab/Enter or pointer
 activation opens the menu; resize preserves its selection and the prompt draft.
@@ -334,7 +341,8 @@ actions use single-row square fills. Square outlines remain available. Rest and
 hover use distinct neutral shades; selection uses accent plus bold, and keyboard
 focus independently paints a mark in the cell before the control (2026-09-22,
 replacing the underline; see below). Status colors remain semantic.
-Question content remains scrollable inside its 12-row maximum. Tab edges select;
+Question content remains scrollable inside its 13-row maximum (12 before the
+[2026-09-23 card refinement](questions.md#question-card-refinement--2026-09-23)). Tab edges select;
 the separate icon closes. Incremental painting bounds retained ANSI styling.
 The [earlier control experiments](../research/go-prompt-corners-2026-09-20.md)
 remain historical evidence and do not validate the new component states.
@@ -742,3 +750,21 @@ confirmation. Codex forms/steering, general MCP/URL forms, child questions,
 true asynchronous questions, fallback scheduling and Answered history remain
 unavailable. See the [implementation checkpoint](../implementation/native-question-checkpoint.md)
 for exact limits and [validation evidence](../research/native-questions-2026-09-22.md).
+
+### Question actions and option descriptions — 2026-09-23
+
+Contract fields added (all `omitempty`, so older snapshots, commands and retry
+fingerprints are unchanged):
+
+| Field | Meaning |
+| --- | --- |
+| `Question.OptionDescriptions []string` | Supplied option detail, parallel to `Options` (empty entries allowed); any other length fails validation. Populated by the Claude and Codex parsers instead of appending to `Text` |
+| `Request.Actions []string` | Non-answer responses the upstream contract supports: `decline`, `cancel`. Claude/ACP elicitation: both; Codex: none; fixture `question-blocking`: both, `question-async`: none |
+| `Request.Action string` | The action a client chose; empty for answers and for the server's own withdrawal |
+| `Command.RequestAction string` | On `request.answer`, declines or cancels instead of answering; answers must be empty and the action offered |
+
+The fixture resolves a decline or cancel as it resolves an answer
+(`resolved`/`fixture-confirmed`). An ACP decline or cancel is answered to the
+peer as `{"action":"decline"|"cancel"}` with no content and stays unconfirmed.
+See [question actions](questions.md#question-actions-and-option-descriptions--2026-09-23)
+and the [implementation note](../implementation/question-actions-2026-09-23.md).

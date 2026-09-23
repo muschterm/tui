@@ -129,8 +129,13 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 	}
 	p := m.colors()
 	b := componentBorder(roundedOutline, m.plainIcons)
-	boxWidth := width - min(12, width/6) // the same reserved inset as a user transcript row
-	boxWidth = max(2, boxWidth)
+	// One uniform rest outline, the prompt's and pending card's, on all four
+	// sides: the delivery status is carried by the header text, never by
+	// tinting one edge. Border cells sit on the canvas like componentBox's.
+	outline := m.containerStyle(false, p.text, p.panel).border
+	// The outline spans the transcript column plus one cell on each side: the
+	// prompt outline's extent, shared with the user message box.
+	boxWidth := width + 2
 	contentWidth := max(1, boxWidth-4)
 
 	rows := m.questionHistoryRows(request, positionUnknown)
@@ -142,17 +147,17 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 
 	lines := make([]contentLine, 0, len(displayed)+3)
 	appendBorder := func(left, middle, right string, fg, bg string) {
-		lines = append(lines, contentLine{text: left + strings.Repeat(middle, boxWidth-2) + right, fg: fg, bg: bg, rightAligned: true})
+		lines = append(lines, contentLine{text: left + strings.Repeat(middle, boxWidth-2) + right, fg: fg, bg: bg, outset: true})
 	}
 	appendRow := func(text, fg string) {
 		for _, wrapped := range questionHistoryWrap(text, contentWidth) {
 			lines = append(lines, contentLine{
 				text: b.Left + " " + fit(wrapped, contentWidth) + " " + b.Right,
-				fg:   fg, bg: p.panel, rightAligned: true,
+				fg:   fg, bg: p.panel, outset: true, border: outline,
 			})
 		}
 	}
-	appendBorder(b.TopLeft, b.Top, b.TopRight, p.line, p.canvas)
+	appendBorder(b.TopLeft, b.Top, b.TopRight, outline, p.canvas)
 	for _, row := range displayed {
 		appendRow(row.text, row.fg)
 	}
@@ -163,11 +168,11 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 		}
 		lines = append(lines, contentLine{
 			text: b.Left + " " + fit(label, contentWidth) + " " + b.Right,
-			fg:   p.blue, bg: p.panel, rightAligned: true,
+			fg:   p.blue, bg: p.panel, outset: true, border: outline,
 			action: action{Kind: "question-history-toggle", ID: request.ID},
 		})
 	}
-	appendBorder(b.BottomLeft, b.Bottom, b.BottomRight, p.line, p.canvas)
+	appendBorder(b.BottomLeft, b.Bottom, b.BottomRight, outline, p.canvas)
 	return lines
 }
 
@@ -189,6 +194,14 @@ func (m *Model) questionHistoryRows(request protocol.Request, positionUnknown bo
 		}
 		if prompt := questionHistoryPrompt(question); prompt != "" {
 			rows = append(rows, questionHistoryRow{text: prompt, fg: p.text})
+		}
+		if request.Action != "" {
+			// A decline or cancel keeps the original question and its offered
+			// labels, all unselected, and records no answer.
+			for _, option := range question.Options {
+				rows = append(rows, questionHistoryRow{text: m.questionMarker(protocol.QuestionKind(question), false) + " " + option, fg: p.muted})
+			}
+			continue
 		}
 		var answer protocol.Answer
 		if i < len(answers) {
@@ -213,9 +226,12 @@ func (m *Model) questionHistoryRows(request protocol.Request, positionUnknown bo
 			}
 		}
 		if strings.TrimSpace(answer.Text) != "" {
+			// A free-text Other answer is a selected choice: it takes the same
+			// radio/checkbox marker as its siblings. Only an open-ended answer,
+			// which has no choice control, keeps the answered check.
 			label := m.icon("check") + " " + answer.Text
 			if len(question.Options) > 0 {
-				label = m.icon("check") + " Other · " + answer.Text
+				label = m.questionMarker(protocol.QuestionKind(question), true) + " Other · " + answer.Text
 			}
 			rows = append(rows, questionHistoryRow{text: label, fg: p.text})
 		} else if len(answer.Choices) == 0 {
@@ -245,6 +261,10 @@ func (m *Model) questionHistoryPreviewRows(request protocol.Request, width int, 
 	for i, question := range request.Questions {
 		prompt := questionHistoryPrompt(question)
 		rows = append(rows, questionHistoryRow{text: questionHistoryPreview("Q · "+prompt, width), fg: p.text})
+		if request.Action != "" {
+			hiddenOptions += len(question.Options)
+			continue
+		}
 		var answer protocol.Answer
 		if i < len(answers) {
 			answer = answers[i]
@@ -284,29 +304,42 @@ func questionHistoryVisualRows(rows []questionHistoryRow, width int) int {
 	return count
 }
 
+// questionHistoryStatus names the recorded outcome. A decline or cancel
+// replaces "Answered"/"Submitted" with "Declined"/"Cancelled" and keeps the
+// same delivery sub-status, so an unconfirmed decline never reads as settled.
 func questionHistoryStatus(request protocol.Request) (string, bool) {
-	if request.State == "resolved" && deliveryConfirmed(request.Delivery) {
-		return "Answered", true
+	confirmed := request.State == "resolved" && deliveryConfirmed(request.Delivery)
+	outcome, pending := "Answered", "Submitted"
+	if request.Action != "" {
+		outcome = questionActionOutcome(request.Action)
+		pending = outcome
+	}
+	if confirmed {
+		return outcome, true
 	}
 	switch request.Delivery {
 	case "acp-accepted":
-		return "Submitted · accepted by server, upstream unconfirmed", false
+		return pending + " · accepted by server, upstream unconfirmed", false
 	case "acp-unconfirmed":
-		return "Submitted · provider confirmation unavailable", false
+		return pending + " · provider confirmation unavailable", false
 	case "acp-delivered":
-		return "Submitted · legacy delivery status unconfirmed", false
+		return pending + " · legacy delivery status unconfirmed", false
 	case "acp-uncertain":
-		return "Submitted · delivery uncertain", false
+		return pending + " · delivery uncertain", false
 	case "acp-undeliverable":
-		return "Submitted · not delivered", false
+		return pending + " · not delivered", false
 	case "acp-cancelled":
-		return "Submitted · cancelled before confirmation", false
+		return pending + " · cancelled before confirmation", false
 	default:
-		return "Submitted · delivery status unknown", false
+		return pending + " · delivery status unknown", false
 	}
 }
 
 func questionHistoryStatusColor(request protocol.Request, confirmed bool, p palette) string {
+	if confirmed && request.Action != "" {
+		// A confirmed decline or cancel is settled but not an answer: neutral.
+		return p.muted
+	}
 	if confirmed {
 		return p.green
 	}
@@ -359,7 +392,7 @@ func (m *Model) questionHistoryAnswerPreview(question protocol.Question, answer 
 		return ""
 	}
 	marker := m.icon("check")
-	if len(answer.Choices) > 0 {
+	if len(answer.Choices) > 0 || len(question.Options) > 0 {
 		marker = m.questionMarker(protocol.QuestionKind(question), true)
 	}
 	return marker + " " + strings.Join(values, " · ")
@@ -394,6 +427,22 @@ func questionHistoryWrap(text string, width int) []string {
 	return strings.Split(ansi.Wrap(text, max(1, width), ""), "\n")
 }
 
+// copiedQuestionMarker is the clipboard form of a choice marker and its gap:
+// Unicode radio and ballot boxes, independent of the user's font, so a copied
+// selected Other reads like its selected siblings. The check stays reserved
+// for open-ended answers, which have no choice control.
+func copiedQuestionMarker(kind string, selected bool) string {
+	switch {
+	case kind == "multiple" && selected:
+		return "☑ "
+	case kind == "multiple":
+		return "☐ "
+	case selected:
+		return "◉ "
+	}
+	return "○ "
+}
+
 // questionHistoryText returns the complete, selectable plain-text card for
 // transcript copying and read-only inspection.
 func questionHistoryText(request protocol.Request) string {
@@ -416,25 +465,29 @@ func questionHistoryText(request protocol.Request) string {
 		for _, choice := range answer.Choices {
 			selected[choice] = true
 		}
+		kind := protocol.QuestionKind(question)
 		for _, option := range question.Options {
-			mark := "· "
-			if selected[option] {
-				mark = "✓ "
-			}
 			builder.WriteString("\n")
-			builder.WriteString(mark)
+			builder.WriteString(copiedQuestionMarker(kind, selected[option]))
 			builder.WriteString(safe(option))
+		}
+		if request.Action != "" {
+			continue
 		}
 		for _, choice := range answer.Choices {
 			if !slices.Contains(question.Options, choice) {
-				builder.WriteString("\n✓ ")
+				builder.WriteString("\n")
+				builder.WriteString(copiedQuestionMarker(kind, true))
 				builder.WriteString(safe(choice))
 			}
 		}
 		if strings.TrimSpace(answer.Text) != "" {
-			builder.WriteString("\n✓ ")
+			builder.WriteString("\n")
 			if len(question.Options) > 0 {
+				builder.WriteString(copiedQuestionMarker(kind, true))
 				builder.WriteString("Other · ")
+			} else {
+				builder.WriteString("✓ ")
 			}
 			builder.WriteString(safe(answer.Text))
 		} else if len(answer.Choices) == 0 {

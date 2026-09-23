@@ -136,13 +136,17 @@ type Child struct {
 }
 
 // Question is one question inside a request; empty Options means free text.
+// OptionDescriptions, when present, parallels Options: entry i is supplied
+// detail for Options[i] and may be empty. It is display text only; answers
+// always carry the exact option value.
 type Question struct {
-	ID, Text   string
-	Label      string `json:"Label,omitempty"`
-	Kind       string `json:"Kind,omitempty"`
-	AllowOther bool   `json:"AllowOther,omitempty"`
-	Required   *bool  `json:"Required,omitempty"`
-	Options    []string
+	ID, Text           string
+	Label              string `json:"Label,omitempty"`
+	Kind               string `json:"Kind,omitempty"`
+	AllowOther         bool   `json:"AllowOther,omitempty"`
+	Required           *bool  `json:"Required,omitempty"`
+	Options            []string
+	OptionDescriptions []string `json:"OptionDescriptions,omitempty"`
 }
 
 // Answer is a draft or accepted answer to one Question.
@@ -167,6 +171,12 @@ type Request struct {
 	SubmissionID                                 string `json:"SubmissionID,omitempty"`
 	SubmittedRevision                            int64  `json:"SubmittedRevision,omitempty"`
 	ApprovalChoiceID                             string `json:"ApprovalChoiceID,omitempty"`
+	// Actions lists the non-answer responses the upstream contract supports
+	// for this question request ("decline", "cancel"); empty offers none.
+	// Action records the one a client chose instead of answering; it is
+	// empty for answers and for the server's own withdrawal of a request.
+	Actions []string `json:"Actions,omitempty"`
+	Action  string   `json:"Action,omitempty"`
 	// SourcePayload retains bounded source provenance, never a replayable route.
 	SourcePayload json.RawMessage `json:"SourcePayload,omitempty"`
 }
@@ -208,6 +218,9 @@ type Command struct {
 	Attachments                                  []Attachment
 	Order, Answers                               []string
 	QuestionAnswers                              []Answer `json:"QuestionAnswers,omitempty"`
+	// RequestAction declines or cancels a question request (request.answer)
+	// instead of answering it; answers must then be empty.
+	RequestAction string `json:"RequestAction,omitempty"`
 }
 
 // Receipt records the outcome of an accepted or rejected Command.

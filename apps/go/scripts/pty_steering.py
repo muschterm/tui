@@ -60,7 +60,7 @@ def main():
             a = Terminal(binary, home, 'steer-a', artifacts)
             terminals.append(a)
             a.click_label('Review key')
-            a.click_label('Ask a follow-up')
+            a.click_label('Ask to do anything')
             a.send(b'\x1b[200~Retain my ordinary draft\x1b[201~')
             b = Terminal(binary, home, 'steer-b', artifacts)
             terminals.append(b)

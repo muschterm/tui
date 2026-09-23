@@ -242,7 +242,17 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 			if agent.IsACP(t.AgentID) && (r.DeliveryRoute != "native-response" || (r.Kind != "approval" && (r.Kind != "question" || (t.AgentID != "claude" && t.AgentID != "codex") || len(r.SourcePayload) == 0))) {
 				return "", failure("unsupported_request", "this agent request has no supported answer delivery route")
 			}
-			if r.Kind == "approval" {
+			if c.RequestAction != "" {
+				// A decline or cancel replaces the answer: it must be one the
+				// upstream contract offered for this request, and it carries none.
+				if r.Kind != "question" || c.ApprovalChoiceID != "" {
+					return "", failure("invalid", "only a question request can be declined or cancelled")
+				}
+				if err := protocol.ValidateRequestAction(*r, c.RequestAction, c.QuestionAnswers, c.Answers); err != nil {
+					return "", failure("unsupported_action", err.Error())
+				}
+				r.Action, r.QuestionAnswers, r.Answers = c.RequestAction, nil, nil
+			} else if r.Kind == "approval" {
 				choice, err := approvalChoice(*r, c)
 				if err != nil {
 					return "", err

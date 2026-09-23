@@ -70,6 +70,14 @@ func (s scrollbar) DragTo(row, grab int) int {
 // reserve that column. Hits are emitted even in measurement-only frames, with
 // the target identity and track-relative row needed by the input router.
 func (f *frame) scrollbar(m *Model, r shell.Rect, target string, total, viewport, offset int, bg string) scrollbar {
+	return f.scrollbarTrack(m, r, target, total, viewport, offset, bg, "│")
+}
+
+// scrollbarTrack paints the scrollbar with a chosen track glyph. The track owns
+// its column: callers place it beside boxes and outlines, never on them. A
+// blank track leaves only the thumb visible, for a column that abuts a pane
+// divider, and still pages when clicked.
+func (f *frame) scrollbarTrack(m *Model, r shell.Rect, target string, total, viewport, offset int, bg, track string) scrollbar {
 	s := newScrollbar(total, viewport, offset, r.H)
 	if r.W <= 0 || !s.Visible() {
 		return s
@@ -81,7 +89,7 @@ func (f *frame) scrollbar(m *Model, r shell.Rect, target string, total, viewport
 	p := m.colors()
 	key := "scrollbar-" + target
 	for row := 0; row < s.TrackRows; row++ {
-		glyph, fg, part := "│", p.line, "track"
+		glyph, fg, part := track, p.line, "track"
 		if row >= s.ThumbStart && row < s.ThumbStart+s.ThumbRows {
 			glyph, fg, part = "█", p.muted, "thumb"
 			if m.hover == key || m.focus == key {

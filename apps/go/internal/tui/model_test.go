@@ -45,8 +45,9 @@ func TestQuestionNavigationNeverSubmitsAndRemoteResolutionKeepsIdentity(t *testi
 	if m.answer.Value() != "" {
 		t.Fatal("resolved request draft leaked into next request")
 	}
-	if m.questionDraft(first, 0).Choices[0] != "Keyboard flow" {
-		t.Fatal("old draft lost")
+	// A resolved request's draft is pruned; nothing was submitted from it.
+	if len(m.questionDraft(first, 0).Choices) != 0 || m.busy != nil {
+		t.Fatal("resolved request draft was retained or submitted")
 	}
 }
 

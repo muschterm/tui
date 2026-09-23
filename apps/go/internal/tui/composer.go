@@ -7,6 +7,9 @@ const (
 	maxPromptRows = 8
 )
 
+// One placeholder serves new-thread drafts and existing threads alike.
+const promptPlaceholder = "Ask to do anything"
+
 // inputScroll describes visual rows, including soft wraps and the cursor's
 // trailing cell. Offset and CursorRow are zero-based content row positions.
 type inputScroll struct {

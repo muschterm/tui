@@ -3,8 +3,10 @@
 **Latest continuation:** [UI and native question fixes](../research/ui-bugs-2026-09-22.md)
 add selectable provider permissions, Codex blocking/continued-work questions,
 correlated native resolution, and revisioned new-thread defaults. This supersedes
-earlier Codex-questions-unavailable notes below. Claude effort remains unavailable;
-native answer receipts and the other documented capability gaps remain open.
+earlier Codex-questions-unavailable notes below. Claude effort was resolved on
+2026-09-23 through the `get_settings` readback
+([record](../research/claude-effort-2026-09-23.md)); native answer receipts and
+the other documented capability gaps remain open.
 
 **Start here for the next agent.** This records the user's latest accepted
 direction after reviewing the ACP prototype and the UCF direct-CLI code.

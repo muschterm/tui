@@ -32,7 +32,12 @@ var icons = map[string]struct{ glyph, plain string }{
 	"previous": {"◀", "<"}, "next": {"▶", ">"},
 	// fa-circle_arrow_up, fa-stop_circle and fa-paperclip.
 	"send": {"\uf0aa", "^"}, "stop": {"\uf28d", "o"}, "attach": {"\uf0c6", "+"},
-	// fa-circle_o, fa-dot_circle_o, fa-square_o, fa-square_check.
+	// Choice markers: fa-circle_o (U+F10C), fa-dot_circle_o (U+F192, the
+	// filled-dot circle), fa-square_o (U+F096) and fa-check_square (U+F14A),
+	// Nerd Fonts v3.4.0, each one cell wide by ansi.StringWidth. Every selected
+	// single choice, Other… included, uses radio-on in the pending card, the
+	// answered card and its preview; multiple choice uses checkbox-on. "check"
+	// below marks an answered tab or open-ended answer, never a chosen option.
 	"radio": {"\uf10c", "( )"}, "radio-on": {"\uf192", "(*)"},
 	"checkbox": {"\uf096", "[ ]"}, "checkbox-on": {"\uf14a", "[x]"},
 	"thread": {"\uea6b", "o"}, "trash": {"\uea81", "x"},
@@ -40,6 +45,8 @@ var icons = map[string]struct{ glyph, plain string }{
 	"context":   {"\ueb15", "+"},
 	"attention": {"\ueaa2", "!"}, "tool": {"\ueb6d", "T"},
 	"mcp": {"\ueb15", "M"}, "check": {"\ueab2", "+"},
+	// cod-question and cod-shield: the pending question and approval card headers.
+	"question": {"\ueb32", "?"}, "approval": {"\ueb53", "!"},
 	"reopen": {"\U000f17b3", "<"}, // md-arrow_u_left_top, matching T3's Undo2 un-settle row action
 	// Keyboard focus: a plain Unicode bullet in the cell before the focused
 	// control, translating T3's focus ring without moving the control.

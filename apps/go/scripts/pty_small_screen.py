@@ -73,6 +73,8 @@ def main():
                     term.click_label('Keyboard flow')
                     term.click_label('Clarity')
                     term.click_label('▶')
+                    # Next keeps focus on navigation; Down enters the answer field.
+                    term.send(b'\x1b[B', .4)
                     term.send(b'Preserve answer draft', 1.1)
                     before = state()
                     resize(width, 22)

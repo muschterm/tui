@@ -97,7 +97,7 @@ func TestClaudeQuestionResponseValidationAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, response := range []string{`{"action":"cancel"}`, `{"action":"decline","content":{}}`} {
+	for _, response := range []string{`{"action":"cancel"}`, `{"action":"decline"}`, `{"action":"cancel","content":{}}`, `{"action":"decline","content":{}}`} {
 		updated, err := claudeQuestionAnswer(input, questions, json.RawMessage(response))
 		if err != nil || updated != nil {
 			t.Fatalf("%s => %s, %v", response, updated, err)

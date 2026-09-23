@@ -24,7 +24,7 @@ Ordinary user and agent messages use alignment and tint to establish role withou
 
 | Content | Revision 3 treatment | Detail access |
 | --- | --- | --- |
-| User message | Inset, end-aligned blue-tinted message and optional attachment; no repeated author header | Open attachment preview |
+| User message | Tinted box spanning the prompt outline's width, with padded rows above and below, and optional attachment; no repeated author header | Open attachment preview |
 | Agent response | Readable prose with distinct alignment/tint; no repeated agent header | Select/copy text; inspect supplied content |
 | Plan | Compact current step and progress fixed above the prompt | Singleton Plan surface with full plan and retained revisions |
 | Tools/MCP | One concise related-activity group with status and supplied MCP count | Individual call identities, arguments, output, errors |

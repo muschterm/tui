@@ -109,8 +109,9 @@ func TestStateReviewTypingFollowsRequestIdentity(t *testing.T) {
 	if r, _ := m.request(); r.ID != "question-c" || m.focus == "answer" || m.questionDraft(c, 0).Text != "" || m.busy != nil {
 		t.Fatalf("neighbor received input or was submitted: focus=%s draft=%q", m.focus, m.questionDraft(c, 0).Text)
 	}
-	if m.questionDraft(b, 0).Text != "xy" {
-		t.Fatal("resolved request draft lost")
+	// Resolution prunes the draft; it was never submitted from here.
+	if m.questionDraft(b, 0).Text != "" || m.busy != nil {
+		t.Fatal("resolved request draft retained or submitted")
 	}
 }
 

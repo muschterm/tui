@@ -67,6 +67,9 @@ func (m *Model) submitApproval(a action) tea.Cmd {
 }
 
 func requestDeliveryDescription(delivery string) string {
+	if delivery == "acp-turn-confirmed" {
+		return "Answer taken by provider · turn completed"
+	}
 	if deliveryConfirmed(delivery) {
 		return delivery + " · confirmed"
 	}

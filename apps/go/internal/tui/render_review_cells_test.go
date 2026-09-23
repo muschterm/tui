@@ -42,7 +42,9 @@ func assertRowWidths(t *testing.T, m *Model, context string) {
 
 func TestReviewOverlaysKeepRowsCellAccurateOverWideText(t *testing.T) {
 	for width := 60; width <= 140; width++ {
-		m := wideModel(t, width, 26)
+		// 27 rows leave the transcript more than the user box's padding row
+		// beside the fixture's queue and interior-header question card.
+		m := wideModel(t, width, 27)
 		assertRowWidths(t, m, "transcript")
 
 		m.openCommands()

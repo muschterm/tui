@@ -36,8 +36,9 @@ func (m *Model) renderQueue(f *frame, r shell.Rect) int {
 	}
 	p := m.colors()
 	queue := m.thread().Queue
-	state := componentState{Hovered: queueControlKey(m.hover), Focused: queueControlKey(m.focus)}
-	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, state, p.text, p.panel), p.canvas)
+	// The outline takes the focused ink while keyboard focus is inside the
+	// queue; hovering it or its controls never recolors the frame.
+	f.componentBox(m, r, roundedOutline, m.containerStyle(queueControlKey(m.focus), p.text, p.panel), p.canvas)
 	x, w := r.X+2, max(1, r.W-4)
 	header := fmt.Sprintf(" %d queued ", len(queue))
 	if hidden := len(queue) - m.queueVisibleRows(); hidden > 0 {

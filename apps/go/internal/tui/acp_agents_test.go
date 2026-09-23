@@ -369,7 +369,7 @@ func TestApprovalCardShowsAgentChoices(t *testing.T) {
 	if !strings.Contains(view, "Tool: write · Location: /work/alpha/src/main.go") {
 		t.Fatalf("approval detail missing:\n%s", view)
 	}
-	if !strings.Contains(view, "Approval required · Claude") {
+	if !strings.Contains(view, "Claude · Approval required") {
 		t.Fatalf("approval origin missing:\n%s", view)
 	}
 	m.activate(action{Kind: "approve", ID: "perm-1", Value: "Allow once", Revision: 4})

@@ -6,8 +6,9 @@ The deliverable is a shared behavior specification and three complete native ser
 
 The [latest UI fixes](docs/research/ui-bugs-2026-09-22.md) add native permission
 selection, Codex question/answer delivery, local clipboard copying, actionable
-Send errors, and App Settings / Agents defaults. Claude effort selection remains
-unavailable pending a verified runtime control.
+Send errors, and App Settings / Agents defaults. Claude effort became selectable
+on 2026-09-23 through the runtime's settings readback; see
+[the Claude effort record](docs/research/claude-effort-2026-09-23.md).
 The [conversation refinement](docs/implementation/conversation-polish-2026-09-22.md)
 adds persistent Q&A cards, one outlined composer, conversation activity status,
 versioned/legacy Claude choices, model-scoped speed and native usage telemetry.

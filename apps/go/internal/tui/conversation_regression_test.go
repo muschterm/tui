@@ -64,8 +64,11 @@ func TestConversationRegressionPlacesLegacyQuestionAndRendersMarkdown(t *testing
 				lines := m.transcriptLines(*thread, frame.transcript.W)
 				visible := make([]string, 0, len(lines))
 				for i, line := range lines {
-					width := ansi.StringWidth(line.text)
-					if width > frame.transcript.W {
+					width, limit := ansi.StringWidth(line.text), frame.transcript.W
+					if line.outset {
+						limit += 2 // Answered cards span the prompt outline's extent.
+					}
+					if width > limit {
 						t.Errorf("transcript line %d is %d cells wide for a %d-cell viewport: %q", i, width, frame.transcript.W, ansi.Strip(line.text))
 					}
 					visible = append(visible, ansi.Strip(line.text))

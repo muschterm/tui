@@ -81,11 +81,22 @@ func TestPromptOutlineContainsTypingAndControls(t *testing.T) {
 			row         int
 			left, right string
 		}{
-			{f.prompt.Y - 1, "╭", "╮"}, {bottom, "╰", "╯"},
+			{f.prompt.Y - 2, "╭", "╮"}, {bottom, "╰", "╯"},
 		} {
 			line := ansi.Strip(f.rows[edge.row])
 			if !strings.Contains(line, edge.left) || !strings.Contains(line, edge.right) {
 				t.Fatal("incomplete prompt outline", line)
+			}
+		}
+		// One blank prompt-tinted row separates the top border from typing.
+		outlineX, outlineW := f.geom.Center.X+1, f.geom.Center.W-2
+		padding := f.rows[f.prompt.Y-1]
+		if got := ansi.Strip(ansi.Cut(padding, outlineX+1, outlineX+outlineW-1)); strings.TrimSpace(got) != "" {
+			t.Fatalf("%v: prompt padding row is not blank: %q", size, got)
+		}
+		for x := outlineX + 1; x < outlineX+outlineW-1; x++ {
+			if !cellHasBackground(padding, x, m.colors().input) {
+				t.Fatalf("%v: prompt padding cell %d lacks the prompt background: %q", size, x, ansi.Cut(padding, x, x+1))
 			}
 		}
 		if send.Rect.Y >= bottom {
@@ -96,6 +107,50 @@ func TestPromptOutlineContainsTypingAndControls(t *testing.T) {
 			t.Fatal("prompt scrollbar overlaps outer border")
 		}
 	}
+}
+
+func TestPromptPlaceholderRendersForThreadsAndDrafts(t *testing.T) {
+	m := testModel()
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.setFocus("prompt")
+	m.configureInputs()
+	f := m.render()
+	if got := ansi.Strip(f.rows[f.prompt.Y]); !strings.Contains(got, "Ask to do anything") || strings.Contains(got, "…") {
+		t.Fatalf("existing thread placeholder: %q", got)
+	}
+	m.beginThreadDraft(m.snapshot.Projects[0].ID)
+	m.configureInputs()
+	if !m.creatingThread() {
+		t.Fatal("expected a new-thread draft")
+	}
+	f = m.render()
+	if got := ansi.Strip(f.rows[f.prompt.Y]); !strings.Contains(got, "Ask to do anything") {
+		t.Fatalf("new-thread placeholder: %q", got)
+	}
+}
+
+// cellHasBackground inspects only the SGR sequences that precede the cell's
+// character; ansi.Cut may also carry the next cell's opening sequence.
+func cellHasBackground(row string, x int, hex string) bool {
+	rgb := parseHex(hex)
+	if rgb == nil {
+		return false
+	}
+	cell := ansi.Cut(row, x, x+1)
+	head := cell
+	for i := 0; i < len(cell); {
+		if cell[i] != 0x1b {
+			head = cell[:i]
+			break
+		}
+		end := strings.IndexByte(cell[i:], 'm')
+		if end < 0 {
+			break
+		}
+		i += end + 1
+	}
+	last := strings.LastIndex(head, "48;")
+	return last >= 0 && strings.HasPrefix(head[last:], fmt.Sprintf("48;2;%d;%d;%d", rgb[0], rgb[1], rgb[2]))
 }
 
 func TestComposerManualScrollSurvivesSnapshotsAndKeepsInsertion(t *testing.T) {

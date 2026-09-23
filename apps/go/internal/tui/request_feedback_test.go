@@ -84,7 +84,7 @@ func TestQuestionValidationRemainsVisibleUnderSubmitHover(t *testing.T) {
 		m.mouse(tea.MouseClickMsg{X: h.Rect.X, Y: h.Rect.Y, Button: tea.MouseLeft})
 		f := m.render()
 		submit := controlHit(t, f, "answer-submit")
-		if !strings.Contains(ansi.Strip(f.rows[submit.Rect.Y-1]), "Question 1: answer is required") || m.busy != nil || m.prompt.Value() != "preserved" {
+		if !strings.Contains(requestNoticeText(f, submit), "Question 1: answer is required") || m.busy != nil || m.prompt.Value() != "preserved" {
 			t.Fatalf("%v: invalid Submit appeared inert or lost draft", size)
 		}
 		if submit.Rect.Y >= f.request.Y+f.request.H || f.prompt.Y <= submit.Rect.Y || f.request.H > maxQuestionCardRows {
@@ -113,7 +113,7 @@ func TestQuestionSubmissionFeedbackAndRevisionIsolation(t *testing.T) {
 	m.Update(commandMsg{command: c, err: &protocol.Error{Code: "invalid", Message: "server rejected answer"}})
 	f := m.render()
 	h := controlHit(t, f, "answer-submit")
-	if !strings.Contains(ansi.Strip(f.rows[h.Rect.Y-1]), "server rejected answer") || m.busy != nil {
+	if !strings.Contains(requestNoticeText(f, h), "server rejected answer") || m.busy != nil {
 		t.Fatal("server rejection hidden by hover")
 	}
 	changed := r
@@ -144,4 +144,10 @@ func TestQuestionSubmitDoesNotImplicitlyResumeOrSendOffline(t *testing.T) {
 			t.Fatal("blocked submission attempted work or hid reason")
 		}
 	}
+}
+
+// requestNoticeText is the card's notice: inline on the Submit row when it
+// fits between Options… and Submit, otherwise on its own row above.
+func requestNoticeText(f frame, submit hit) string {
+	return ansi.Strip(f.rows[submit.Rect.Y-1]) + "\n" + ansi.Strip(cutCells(f.rows[submit.Rect.Y], 0, submit.Rect.X))
 }

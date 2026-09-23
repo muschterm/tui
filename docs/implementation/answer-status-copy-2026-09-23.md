@@ -73,3 +73,13 @@ Native GUI clipboard behavior remains unverified: computer-use tooling refused
 access to Ghostty for safety reasons, and no Omarchy desktop is available in
 this macOS environment. The Linux clipboard helper path is implemented but has
 not been exercised on an Omarchy desktop.
+
+## Follow-up: delivery evidence
+
+Records answered before a restart were later shown as **delivery uncertain**,
+because restart recovery downgraded completed-turn answers. That downgrade is
+now limited to turns in flight, and affected records are repaired to
+unconfirmed on load. Built-in bridges now provide a pinned delivery receipt.
+A blocking answer with that receipt, followed by a normal end of the same turn,
+is recorded as `resolved`/`acp-turn-confirmed`. See
+[question delivery](question-delivery-2026-09-23.md).

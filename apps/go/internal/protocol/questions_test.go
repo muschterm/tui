@@ -73,3 +73,58 @@ func TestLegacyCommandEncodingUnchanged(t *testing.T) {
 		t.Fatalf("legacy command identity changed: %s", got)
 	}
 }
+
+func TestOptionDescriptionsParallelOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		descriptions []string
+		ok           bool
+	}{
+		{"absent", nil, true},
+		{"parallel", []string{"First detail", ""}, true},
+		{"short", []string{"First detail"}, false},
+		{"long", []string{"a", "b", "c"}, false},
+	} {
+		q := Question{Kind: "single", Options: []string{"A", "B"}, OptionDescriptions: tc.descriptions}
+		if err := ValidateQuestion(q); (err == nil) != tc.ok {
+			t.Fatalf("%s: ValidateQuestion = %v", tc.name, err)
+		}
+		if err := ValidateAnswer(q, Answer{Choices: []string{"A"}}); (err == nil) != tc.ok {
+			t.Fatalf("%s: ValidateAnswer = %v", tc.name, err)
+		}
+	}
+}
+
+func TestRequestActionNormalization(t *testing.T) {
+	r := Request{Kind: "question", Actions: []string{RequestActionDecline, RequestActionCancel}, Questions: []Question{{Options: []string{"A"}}}}
+	for _, action := range []string{RequestActionDecline, RequestActionCancel} {
+		if err := ValidateRequestAction(r, action, nil, nil); err != nil {
+			t.Fatalf("%s rejected: %v", action, err)
+		}
+		// Empty answer slices are equivalent to none; any answer is refused.
+		if err := ValidateRequestAction(r, action, []Answer{}, []string{}); err != nil {
+			t.Fatalf("%s with empty answers rejected: %v", action, err)
+		}
+		if err := ValidateRequestAction(r, action, []Answer{{Choices: []string{"A"}}}, nil); err == nil {
+			t.Fatalf("%s carried structured answers", action)
+		}
+		if err := ValidateRequestAction(r, action, nil, []string{"A"}); err == nil {
+			t.Fatalf("%s carried legacy answers", action)
+		}
+	}
+	for name, tc := range map[string]struct {
+		r      Request
+		action string
+	}{
+		"accept":       {r, "accept"},
+		"unknown":      {r, "retry"},
+		"not offered":  {Request{Kind: "question", Actions: []string{RequestActionDecline}}, RequestActionCancel},
+		"none offered": {Request{Kind: "question"}, RequestActionDecline},
+		"duplicate":    {Request{Kind: "question", Actions: []string{RequestActionDecline, RequestActionDecline}}, RequestActionDecline},
+		"approval":     {Request{Kind: "approval", Actions: []string{RequestActionDecline}}, RequestActionDecline},
+	} {
+		if err := ValidateRequestAction(tc.r, tc.action, nil, nil); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}

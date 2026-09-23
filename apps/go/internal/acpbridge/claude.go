@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,27 +18,38 @@ import (
 const maxFrame = 8 << 20
 
 type claudeModel struct {
-	Value            string `json:"value"`
-	ResolvedModel    string `json:"resolvedModel"`
-	Name             string `json:"displayName"`
-	Description      string `json:"description"`
-	SupportsAutoMode bool   `json:"supportsAutoMode"`
-	SupportsFastMode bool   `json:"supportsFastMode"`
+	Value            string   `json:"value"`
+	ResolvedModel    string   `json:"resolvedModel"`
+	Name             string   `json:"displayName"`
+	Description      string   `json:"description"`
+	SupportsEffort   bool     `json:"supportsEffort"`
+	EffortLevels     []string `json:"supportedEffortLevels"`
+	SupportsAutoMode bool     `json:"supportsAutoMode"`
+	SupportsFastMode bool     `json:"supportsFastMode"`
+	// Legacy marks a documented full model ID absent from the runtime
+	// catalogue; its capabilities are verified by Claude, never assumed.
+	Legacy bool `json:"-"`
 }
+
+// claudeEffortLevels is the documented order of Claude Code's effort levels
+// (its initialize catalogue schema and --effort help). Only levels a model
+// reports in supportedEffortLevels are offered; nothing is inferred from names.
+var claudeEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
 // Claude Code accepts full model IDs through set_model even when its picker
 // initialize list includes only aliases. These versions are documented by
 // Claude Code and the T3 Code versioned catalog; account/provider policy can
 // still reject one at selection or execution time. Keep this list separate
-// from the native discovery result so the UI can label it honestly.
+// from the native discovery result so the UI can label it honestly. An entry
+// the runtime itself lists, by value or resolved ID, is never repeated.
 var claudeLegacyModels = []claudeModel{
-	{Value: "claude-fable-5", Name: "Legacy · Fable 5"},
-	{Value: "claude-opus-5", Name: "Legacy · Opus 5"},
-	{Value: "claude-opus-4-8", Name: "Legacy · Opus 4.8"},
-	{Value: "claude-opus-4-7", Name: "Legacy · Opus 4.7"},
-	{Value: "claude-opus-4-6", Name: "Legacy · Opus 4.6"},
-	{Value: "claude-opus-4-5", Name: "Legacy · Opus 4.5"},
-	{Value: "claude-sonnet-4-6", Name: "Legacy · Sonnet 4.6"},
+	{Value: "claude-fable-5", Name: "Legacy · Fable 5", Legacy: true},
+	{Value: "claude-opus-5", Name: "Legacy · Opus 5", Legacy: true},
+	{Value: "claude-opus-4-8", Name: "Legacy · Opus 4.8", Legacy: true},
+	{Value: "claude-opus-4-7", Name: "Legacy · Opus 4.7", Legacy: true},
+	{Value: "claude-opus-4-6", Name: "Legacy · Opus 4.6", Legacy: true},
+	{Value: "claude-opus-4-5", Name: "Legacy · Opus 4.5", Legacy: true},
+	{Value: "claude-sonnet-4-6", Name: "Legacy · Sonnet 4.6", Legacy: true},
 }
 
 type controlResult struct {
@@ -51,6 +63,9 @@ type claudeTurn struct {
 	result      chan controlResult
 	interrupted bool
 	streamed    bool
+	// answered holds AskUserQuestion tool IDs whose accepted answer was
+	// written to Claude in this turn, awaiting Claude's own tool result.
+	answered map[string]bool
 }
 type claude struct {
 	h                              *host
@@ -67,12 +82,17 @@ type claude struct {
 	models                         []claudeModel
 	usage                          providerUsageState
 	model                          string
-	fast, fastAvailable            bool
-	fastUnavailable                string
-	permissionMode                 string
-	turn                           *claudeTurn
-	readDone                       chan struct{}
-	retired                        bool
+	// effort is the level Claude reported through get_settings after the
+	// last confirmed change; effortReadback records whether this runtime
+	// offers that readback at all. Without it no effort control is offered.
+	effort              string
+	effortReadback      bool
+	fast, fastAvailable bool
+	fastUnavailable     string
+	permissionMode      string
+	turn                *claudeTurn
+	readDone            chan struct{}
+	retired             bool
 }
 
 func newClaude(h *host) backend {
@@ -139,7 +159,7 @@ func (c *claude) Handle(ctx context.Context, method string, raw json.RawMessage)
 		active := c.turn != nil
 		models := append([]claudeModel(nil), c.models...)
 		models = append(models, claudeLegacyModels...)
-		currentModel, currentMode, currentFast := c.model, c.permissionMode, c.fast
+		currentModel, currentMode, currentFast, effortReadback := c.model, c.permissionMode, c.fast, c.effortReadback
 		c.mu.Unlock()
 		if active {
 			return nil, invalid(errors.New("settings are read-only during a turn"))
@@ -183,6 +203,20 @@ func (c *claude) Handle(ctx context.Context, method string, raw json.RawMessage)
 				return nil, invalid(errors.New("selected model does not support Claude Auto permissions"))
 			}
 			control = map[string]any{"subtype": "set_permission_mode", "mode": req.Value}
+		case "effort":
+			// apply_flag_settings acknowledges unknown levels without applying
+			// them and Claude silently downgrades levels a model lacks, so an
+			// effort change is only accepted after get_settings reports it.
+			if !effortReadback {
+				return nil, invalid(errors.New("claude does not report effective effort on this runtime"))
+			}
+			if currentModel == "" {
+				return nil, invalid(errors.New("select a model before effort"))
+			}
+			if !claudeModelSupportsEffort(models, currentModel, req.Value) {
+				return nil, invalid(errors.New("selected Claude model does not report the requested effort level"))
+			}
+			control = map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": req.Value}}
 		default:
 			return nil, invalid(errors.New("unsupported setting"))
 		}
@@ -213,16 +247,46 @@ func (c *claude) Handle(ctx context.Context, method string, raw json.RawMessage)
 				return nil, internal(fmt.Errorf("claude model changed but Fast could not be disabled: %w", err))
 			}
 		}
+		// A model change re-derives Claude's effort (a model without effort
+		// reports null; a capped model reports the downgrade), and an effort
+		// change is only real once Claude reports it. Both read the same state.
+		appliedEffort := ""
+		if effortReadback && (req.ConfigID == "model" || req.ConfigID == "effort") {
+			applied, ok, err := c.readEffort(ctx)
+			if err != nil || !ok {
+				if err == nil {
+					err = errors.New("get_settings reported no applied effort")
+				}
+				c.Close() // Native state changed but its effective effort is unknown.
+				return nil, internal(fmt.Errorf("claude did not confirm effective effort: %w", err))
+			}
+			appliedEffort = applied
+			if req.ConfigID == "effort" && applied != req.Value {
+				c.mu.Lock()
+				c.effort = applied
+				c.mu.Unlock()
+				if applied == "" {
+					applied = "no effort"
+				}
+				return nil, invalid(fmt.Errorf("claude applied %s instead of effort %q for the selected model", applied, req.Value))
+			}
+		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if req.ConfigID == "model" {
+		switch req.ConfigID {
+		case "model":
 			c.model = req.Value
 			if modeReset {
 				c.permissionMode = "default"
 			}
-		} else if req.ConfigID == "mode" {
+			if effortReadback {
+				c.effort = appliedEffort
+			}
+		case "mode":
 			c.permissionMode = req.Value
-		} else {
+		case "effort":
+			c.effort = appliedEffort
+		default:
 			c.fast = req.Value == "fast"
 		}
 		return map[string]any{"configOptions": c.options()}, nil
@@ -322,9 +386,21 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 		}
 		info.FastModeState = "off"
 	}
+	// A runtime without get_settings (or one that omits applied effort) gets
+	// no effort control rather than an invented one; only the catalogue's own
+	// levels are offered when the readback exists.
+	effort, effortReadback, err := c.readEffort(ctx)
+	if err != nil {
+		if c.p.ctx.Err() != nil {
+			c.Close()
+			return nil, internal(fmt.Errorf("claude exited during settings readback: %w", err))
+		}
+		effort, effortReadback = "", false
+	}
 	c.mu.Lock()
 	c.models = info.Models
 	c.model = ""
+	c.effort, c.effortReadback = effort, effortReadback
 	c.permissionMode = info.Mode
 	c.fast = info.FastModeState == "on"
 	c.fastAvailable = info.FastModeState == "on" || info.FastModeState == "off" && (info.FastModeDisabledReason == "" || info.FastModeDisabledReason == "sdk_opt_in_required")
@@ -337,30 +413,32 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 
 // options requires c.mu. No effort/speed/capacity setting is invented from a
 // model name; unsupported controls remain unavailable in the common composer.
+// Model rows keep Claude's own display names; the resolved ID goes into the
+// description. Resolved IDs are accepted by set_config_option for captured
+// settings but are not listed as separate rows, which only duplicated aliases.
 func (c *claude) options() []any {
 	values := []any{}
 	seen := make(map[string]bool, len(c.models)*2)
 	for _, m := range c.models {
-		name := m.Name
-		if m.ResolvedModel != "" {
-			name += " (" + m.ResolvedModel + ")"
+		name, description := claudeModelLabel(m)
+		entry := map[string]any{"value": m.Value, "name": name}
+		if description != "" {
+			entry["description"] = description
 		}
-		values = append(values, map[string]any{"value": m.Value, "name": name})
+		values = append(values, entry)
 		seen[m.Value] = true
+		if m.ResolvedModel != "" {
+			seen[m.ResolvedModel] = true
+		}
 	}
+	legacyIDs := []string{}
 	for _, m := range claudeLegacyModels {
 		if seen[m.Value] {
 			continue
 		}
 		seen[m.Value] = true
+		legacyIDs = append(legacyIDs, m.Value)
 		values = append(values, map[string]any{"value": m.Value, "name": m.Name, "description": "Documented full model ID; account/provider availability is verified by Claude when selected"})
-	}
-	for _, m := range c.models {
-		if m.ResolvedModel == "" || seen[m.ResolvedModel] {
-			continue
-		}
-		seen[m.ResolvedModel] = true
-		values = append(values, map[string]any{"value": m.ResolvedModel, "name": m.ResolvedModel + " (pinned)"})
 	}
 	modeValues := []any{
 		map[string]any{"value": "default", "name": "Supervised", "description": "Ask before tools that require permission"},
@@ -368,10 +446,12 @@ func (c *claude) options() []any {
 	}
 	autoModels := make([]string, 0, len(c.models)*2)
 	for _, model := range c.models {
-		if model.SupportsAutoMode {
-			autoModels = append(autoModels, model.Value)
-			if model.ResolvedModel != "" {
-				autoModels = append(autoModels, model.ResolvedModel)
+		if !model.SupportsAutoMode {
+			continue
+		}
+		for _, id := range []string{model.Value, model.ResolvedModel} {
+			if id != "" && !slices.Contains(autoModels, id) {
+				autoModels = append(autoModels, id)
 			}
 		}
 	}
@@ -383,6 +463,36 @@ func (c *claude) options() []any {
 	options := []any{
 		map[string]any{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": c.model, "options": values},
 		map[string]any{"id": "mode", "name": "Permissions", "category": "mode", "type": "select", "currentValue": c.permissionMode, "options": modeValues},
+	}
+	if c.effortReadback {
+		effortModels := make(map[string][]string, len(claudeEffortLevels))
+		for _, model := range c.models {
+			if !model.SupportsEffort {
+				continue
+			}
+			for _, level := range model.EffortLevels {
+				if !claudeEffortLevel(level) {
+					continue
+				}
+				for _, id := range []string{model.Value, model.ResolvedModel} {
+					if id != "" && !slices.Contains(effortModels[level], id) {
+						effortModels[level] = append(effortModels[level], id)
+					}
+				}
+			}
+		}
+		// Legacy IDs have no catalogue entry, so every catalogue level stays
+		// selectable for them; the get_settings readback decides what Claude
+		// actually applies, and a downgrade is rejected rather than claimed.
+		effortValues := []any{}
+		for _, level := range claudeEffortLevels {
+			if models := effortModels[level]; len(models) != 0 {
+				effortValues = append(effortValues, map[string]any{"value": level, "name": effortLabel(level), "_meta": map[string]any{"tui-go.models": append(models, legacyIDs...)}})
+			}
+		}
+		if len(effortValues) != 0 {
+			options = append(options, map[string]any{"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": c.effort, "options": effortValues})
+		}
 	}
 	{
 		fastModels := make([]string, 0, len(c.models)*2)
@@ -427,6 +537,79 @@ func claudeModelSupportsAuto(models []claudeModel, value string) bool {
 		}
 	}
 	return false
+}
+
+// claudeModelLabel chooses the row name from Claude's own strings. The
+// catalogue varies between launches of the same CLI: one shape names rows by
+// version ("Opus 5.5") and another by alias ("Opus (1M context)", "Fable",
+// "Sonnet") while putting the versioned identity first in the description
+// ("Opus 5.5 with 1M context · Best for everyday, complex tasks"). That
+// identity segment becomes the name so the version stays visible; the alias
+// label moves into the description with the resolved ID. "Default
+// (recommended)" keeps its name because it follows Claude's own default rather
+// than naming one model. Nothing is derived from model IDs.
+func claudeModelLabel(m claudeModel) (name, description string) {
+	name, description = m.Name, m.Description
+	if m.Value != "default" {
+		if identity, rest, ok := strings.Cut(m.Description, " · "); ok && identity != "" && identity != m.Name {
+			name, description = identity, m.Name
+			if rest != "" {
+				description += " · " + rest
+			}
+		}
+	}
+	if m.ResolvedModel != "" && m.ResolvedModel != m.Value {
+		if description != "" {
+			description += " · "
+		}
+		description += m.ResolvedModel
+	}
+	return name, description
+}
+
+func claudeEffortLevel(level string) bool { return slices.Contains(claudeEffortLevels, level) }
+
+// claudeModelSupportsEffort reports whether the runtime catalogue lists the
+// level for the model. A documented legacy ID carries no catalogue entry, so
+// any catalogue level may be attempted and the readback decides; nothing is
+// inferred from a model name.
+func claudeModelSupportsEffort(models []claudeModel, value, level string) bool {
+	if !claudeEffortLevel(level) {
+		return false
+	}
+	for _, model := range models {
+		if model.Value != value && (model.ResolvedModel == "" || model.ResolvedModel != value) {
+			continue
+		}
+		return model.Legacy || model.SupportsEffort && slices.Contains(model.EffortLevels, level)
+	}
+	return false
+}
+
+// readEffort asks get_settings for the effort Claude will send on its next
+// request, after environment overrides, organisation caps and model-support
+// downgrades. apply_flag_settings only ACKs, so this is the effective state.
+// ok is false when the runtime answers without an applied block.
+func (c *claude) readEffort(ctx context.Context) (effort string, ok bool, err error) {
+	raw, err := c.control(ctx, map[string]any{"subtype": "get_settings"})
+	if err != nil {
+		return "", false, err
+	}
+	var state struct {
+		Applied *struct {
+			Effort *string `json:"effort"`
+		} `json:"applied"`
+	}
+	if json.Unmarshal(raw, &state) != nil || state.Applied == nil {
+		return "", false, nil
+	}
+	if state.Applied.Effort == nil {
+		return "", true, nil
+	}
+	if !claudeEffortLevel(*state.Applied.Effort) {
+		return "", false, fmt.Errorf("claude reported unknown effort %q", *state.Applied.Effort)
+	}
+	return *state.Applied.Effort, true, nil
 }
 
 func claudeModelSupportsFast(models []claudeModel, value string) bool {
@@ -799,6 +982,15 @@ func (c *claude) event(raw json.RawMessage) {
 			if b.IsError {
 				status = "failed"
 			}
+			c.mu.Lock()
+			answered := m.Type == "user" && t.answered[b.ToolUseID]
+			delete(t.answered, b.ToolUseID)
+			c.mu.Unlock()
+			if answered && !b.IsError {
+				// Claude ran AskUserQuestion with the answer we supplied. A
+				// failed result, denial or missing result never becomes a receipt.
+				_ = c.h.questionDelivered(c.session, b.ToolUseID, "claude-tool-result")
+			}
 			_ = c.h.update(c.h.ctx, c.session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": b.ToolUseID, "status": status, "rawOutput": b.Content})
 		}
 	}
@@ -819,9 +1011,20 @@ func (c *claude) request(id string, raw json.RawMessage) {
 	go func() {
 		defer func() { cancel(); c.mu.Lock(); delete(c.requests, id); c.mu.Unlock() }()
 		response, err := c.permission(ctx, id, raw)
+		answer := ""
+		if err == nil {
+			answer = answeredQuestionTool(raw, response)
+		}
 		c.writeMu.Lock()
 		c.mu.Lock()
 		live := c.turn == t && ctx.Err() == nil
+		if live && answer != "" && len(t.answered) < 32 {
+			// Mark before the write: Claude's tool result can follow it at once.
+			if t.answered == nil {
+				t.answered = map[string]bool{}
+			}
+			t.answered[answer] = true
+		}
 		c.mu.Unlock()
 		if !live {
 			c.writeMu.Unlock()
@@ -834,9 +1037,26 @@ func (c *claude) request(id string, raw json.RawMessage) {
 		err = c.write(map[string]any{"type": "control_response", "response": r})
 		c.writeMu.Unlock()
 		if err != nil {
+			c.mu.Lock()
+			delete(t.answered, answer)
+			c.mu.Unlock()
 			c.Close()
 		}
 	}()
+}
+
+// answeredQuestionTool returns the AskUserQuestion tool ID when response
+// carries a user's accepted answer rather than a decline or ordinary approval.
+func answeredQuestionTool(raw json.RawMessage, response any) string {
+	var r struct {
+		Tool   string `json:"tool_name"`
+		ToolID string `json:"tool_use_id"`
+	}
+	allowed, ok := response.(map[string]any)
+	if !ok || allowed["behavior"] != "allow" || allowed["updatedInput"] == nil || json.Unmarshal(raw, &r) != nil || r.Tool != "AskUserQuestion" || len(r.ToolID) > 512 {
+		return ""
+	}
+	return r.ToolID
 }
 
 func (c *claude) permission(ctx context.Context, id string, raw json.RawMessage) (any, error) {

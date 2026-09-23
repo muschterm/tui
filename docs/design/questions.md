@@ -35,9 +35,10 @@ hover stronger neutral, and selection accent plus bold. Keyboard focus adds its
 mark in the leading cap independently (2026-09-22; previously an underline).
 Selected tabs keep their treatment when a neighbor is
 hovered. Reserved bracket end cells preserve compact controls in monochrome.
-The Go card remains bounded to 12 rows, with scrollable content; plain and
-limited-color modes preserve geometry and hit regions. See the accepted
-[component rule](components.md).
+The Go card is bounded to 13 rows including its interior header (12 before the
+[2026-09-23 refinement](#question-card-refinement--2026-09-23)), with scrollable
+content; plain and limited-color modes preserve geometry and hit regions. See the
+accepted [component rule](components.md).
 
 Pending questions appear immediately above the prompt, alongside the fixed current-plan and active-subagent controls. This area is outside transcript scrolling. The prompt stays present and editable with its settings and usage; a question must not replace it or consume its draft. Keep its controls usable when the right surface is maximized. At short heights, collapse the optional bottom panel and bound/scroll question content before sacrificing answer navigation or the prompt.
 
@@ -154,6 +155,28 @@ All attached clients see the same resolved state. Reconcile submission identity 
 
 Reattaching to a running server restores current questions and drafts without answering or restarting work. After server restart, retained requests are history until revalidated during explicit Resume; old RPC identifiers do not automatically become live. Preserve drafts while reconciling changed or newly issued requests. No automatic answer follows from reconnect, timeout, focus changes, preselection, no connected clients, or Next. If a provider itself expires or auto-resolves a request, report that event honestly and disable stale submission controls.
 
+**Delivery evidence (2026-09-23):** an answer's delivery status reflects the
+evidence available when its turn ends, and a restart never rewrites the outcome
+of a turn that had already ended.
+
+| Evidence | Recorded status |
+| --- | --- |
+| Answer accepted, not yet handed to the connection | Accepted; uncertain if the turn fails or the server restarts |
+| Handed to the connection, no further evidence | Unconfirmed: provider confirmation unavailable |
+| Blocking question, built-in bridge receipt, then the same turn ends without error or cancellation | Resolved: Answered |
+| Handed off, then the turn fails or the server restarts mid-turn | Uncertain |
+| Handed off, then the turn is cancelled | Unconfirmed |
+| Decline or cancel handed off, then the same turn ends normally | Unconfirmed: receipts cover accepted answers only (the failure and restart rows still apply) |
+
+A built-in bridge sends the pinned `tui-go.question-delivery.v1` receipt only
+after the provider took the answer: Claude reports its own successful
+`AskUserQuestion` tool result; Codex's response is written to a native request
+that App Server has not resolved or withdrawn. The receipt precedes the turn's
+prompt response on the ordered ACP stream. Neither the receipt nor turn
+completion alone settles delivery. A continued-work question can outlive its
+turn's normal end, so it stays unconfirmed. Receipts from other adapters are
+ignored.
+
 ## Integration requirements
 
 Represent structured questions, multi-question payloads, choice/free-text formats, blocking behavior, continued-work asynchronous behavior, turn-ending fallback, and late-answer delivery as separate capabilities. Native blocking and true asynchronous behavior remain required product targets for the initial agent examples; the fallback does not satisfy them. Unsupported adapters remain recorded integration gaps before claiming parity.
@@ -199,12 +222,157 @@ shapes and missing required values. A checked Other field must contain text or
 be deselected, including on an otherwise optional question. Selection, navigation,
 reconnect and draft restoration never send a response.
 
-Drafts retain request identity, revision and question schema separately from the
-accepted server answer. A changed revision/schema uses a fresh draft; the prior
-draft remains in client storage for recovery, rather than being attached silently
-to a changed question. Older text drafts are upgraded once at load. Provider
+Drafts retain request identity and question schema separately from the
+accepted server answer. A changed schema uses a fresh draft; the prior draft
+remains in client storage for recovery while the request is pending, rather than
+being attached silently to a changed question. (Refined 2026-09-23: a
+revision-only change keeps the draft, and the revision guards submission only;
+see [below](#question-card-refinement--2026-09-23).) Older text drafts are upgraded once at load. Provider
 question schemas, real asynchronous delivery and connection-bound identities
 remain integration work; fixture acceptance proves only this local contract.
+
+## Question-card refinement — 2026-09-23
+
+Accepted by the parent session from a review of the Go card, informed by T3
+Code; this repository's specification governs. It keeps the rounded outline,
+fixed-slot Back/Next arrows, vertical radio/checkbox rows, indented Other field,
+explicit Submit and bounded drafts, and changes the following.
+
+- **Interior header.** The source row moves inside the outline as its first
+  interior row: an icon slot (question or approval glyph; `?`/`!` in the plain
+  symbol set), the agent's display name, then ` · ` and the mode in muted ink.
+  Blocking modes (Waiting for answer, Approval required, Awaiting Resume) stay
+  gold. The top border is an unbroken rounded run again. The header still opens
+  request details; it is an unfilled text control: hover and focus embolden and
+  lift it, and keyboard focus marks the gutter cell before its icon. Its right
+  end holds the Requests N selector when several requests are pending, or
+  otherwise, only while the tab row hides tabs, a muted `n of N` counter.
+- **Tabs.** Each question tab is ` <label> <mark> `: the answered-marker cell is
+  always reserved, so answering never moves the label. The marker uses the
+  check icon and its plain fallback. Selected tabs keep accent fill plus bold;
+  keyboard focus marks the leading end cap.
+- **Question and choices.** The question text is bold. Each choice keeps the
+  gutter cell for the focus mark, then its glyph, one gap and its label, with a
+  hanging indent for wrapped rows. At rest the glyph is muted; selection is an
+  accent glyph plus bold label. Hover and keyboard focus fill only the
+  glyph-to-label extent with the stronger neutral, never the full row, and a
+  selected row keeps its treatment under hover. The same extent is the hit
+  target.
+- **Answer field.** When Other is chosen, or for an open-ended question, the
+  one-to-three-row field sits below, indented under Other's label (or the
+  question text), on the input background. Its scrollbar shares the body's
+  scrollbar column.
+- **Actions.** The last interior row holds Options… at the left when choices are
+  offscreen, the notice beside Submit when it fits (otherwise on its own row
+  above), and the primary Submit at the right. Submit renders disabled — muted,
+  without hover fill or primary ink — while the thread needs Resume, the client
+  is disconnected or an answer submission is in flight, and the notice names the
+  reason. Activation still reports that reason and sends nothing.
+- **Bound.** The Go card is at most 13 rows; short windows shrink the content
+  viewport first, keeping at least one content row and one answer row.
+- **Answered history.** Answered/submitted cards in the transcript span the
+  prompt outline's extent, like the user message box, instead of the former
+  end-aligned inset. When the transcript overflows, its scrollbar takes the
+  pane's gutter column to the right of that extent; it never paints over a
+  card's border or a user box's tint, so their right edges stay aligned with
+  the prompt outline. Where that gutter abuts the right pane divider, only the
+  thumb is drawn (the blank track still pages), so the two never form a double
+  rule.
+- **Choice markers.** A selected choice is marked the same way wherever it is
+  shown — pending card, answered card, its compact preview and copied text.
+  Single choice, Other… included, uses the filled-dot radio (Nerd Font
+  `fa-dot_circle_o`, `(*)` in the plain symbol set; `◉`/`○` when copied);
+  multiple choice uses the checked box (`fa-check_square`, `[x]`; `☑`/`☐` when
+  copied). A free-text Other answer therefore reads `◉ Other · <text>` beside
+  `○` siblings. The check icon is reserved for a tab's answered marker and for
+  an open-ended question's answer, which has no choice control. Earlier Go
+  builds marked a free-text Other answer in history with the check.
+- **Outlines.** The pending card and answered card use the prompt's rounded
+  outline: one ink on all four sides, border cells on the canvas and a stable
+  interior fill inside them. The pending card's outline is the rest ink, or the
+  prompt's focused ink while keyboard focus is inside the card; hovering or
+  focusing its inner controls never recolors it, since those controls carry
+  their own state. The answered card always uses the rest ink; its delivery
+  status colours only the header text (green Answered, gold/red/muted
+  Submitted states), never one edge. Its Expand/Collapse row keeps a blank
+  padding cell after the border for the focus mark.
+
+Keyboard bindings in the card (prototype choices, like the rest of the Go
+bindings):
+
+| Focus | Key | Result |
+| --- | --- | --- |
+| Back, Next, a tab or the header | Enter | Navigate only; focus stays on the control, or moves to the active tab when the arrow disappears at an end |
+| Answer field | Enter | Next question when one follows; otherwise validated Submit (an invalid answer shows the notice and sends nothing) |
+| Answer field | Shift+Enter / Ctrl+J | Insert a newline |
+| Answer field | Esc | Return to Other's row, or to the active tab/header for open-ended questions; the draft is kept |
+| Anywhere in the card | Ctrl+S | Validated Submit of this request; never sends the ordinary prompt. An approval card asks for an explicit choice instead |
+| An option row, a tab or the header | 1–9 | Select (radio) or toggle (checkbox) option N, following the same advance rule as a click; Other focuses its field. Digits type normally in text fields and the composer |
+| First option / active tab or header | Up / Down | Move between the options and the tab (or header when there are no tabs) |
+| Last option | Down | The visible answer field, otherwise Submit; Down on the field's last row reaches Submit and Up from Submit returns |
+
+Tab/Shift+Tab traversal and F6 are unchanged. Drafts are keyed by request
+identity and question schema: a revision-only bump (for example fixture Resume)
+keeps the draft, while the revision still guards the submission. Drafts of the
+loaded revision under the former revision-bound key migrate once at load; other
+legacy drafts are dropped with pruning. After each snapshot, drafts whose request
+is no longer live (pending or submitted) are pruned; a changed schema of a still-pending request
+keeps the previous draft for recovery. A stale question index is clamped, so the
+card renders the last question rather than failing. Decline/Cancel actions and
+structured option descriptions follow in the
+[actions refinement](#question-actions-and-option-descriptions--2026-09-23). See the
+[implementation note](../implementation/question-card-2026-09-23.md).
+
+## Question actions and option descriptions — 2026-09-23
+
+Accepted by the parent session; it extends the card refinement above.
+
+- **Offered actions.** A question request lists the non-answer responses its
+  upstream contract supports (`Request.Actions`, from `decline` and `cancel`).
+  Only offered actions are shown; a request that offers none shows only Submit.
+  ACP form elicitation (Claude) offers both. Codex `request_user_input` offers
+  none (see [Built-in Codex native questions](#built-in-codex-native-questions--2026-09-22)).
+- **Actions row.** Decline sits directly left of Submit. Cancel sits left of
+  Decline while the row has room; otherwise it moves into a More… menu, and
+  when even Decline does not fit beside Submit both move there. Submit is never
+  displaced. Decline, Cancel and More… use Submit's disabled rules (Resume
+  needed, disconnected, answer in flight) and its busy gate, feedback path and
+  hidden-work refusal. They are reached by Tab/Shift+Tab and activated with
+  Enter; Up from them returns to the answer field or last option as from Submit.
+  No new chord is added.
+- **No answer, drafts kept.** A decline or cancel sends `request.answer` with
+  `RequestAction` and no answers. Every question draft is left untouched, so a
+  rejected or failed action can be followed by an ordinary answer; drafts are
+  pruned only when the request itself stops being live, as after an answer.
+- **Server rules.** The action must be one the request offers, carry no
+  structured or legacy answers, and target a pending request at its current
+  revision; it uses the same submission identity, retry dedupe, durable
+  acceptance and delivery states as an answer. The chosen action is recorded on
+  the request (`Request.Action`). The server's own withdrawal of a request
+  (stale callback, disconnect, cancelled turn) also answers the peer
+  `{"action":"cancel"}` but records no `Action`; it is not a user choice.
+- **Delivery evidence.** The built-in bridge receipt covers accepted answers
+  only, so a decline or cancel stays at its handed-off status (unconfirmed)
+  even when its blocking turn completes. The fixture resolves it as it resolves
+  an answer.
+- **Option descriptions.** Supplied option detail is structured
+  (`Question.OptionDescriptions`, parallel to `Options`) instead of being
+  appended to the question text. The card paints each non-empty description as
+  a muted, wrapped row under its option, indented to the label column. These
+  rows count in the card's row budget and scroll with the body; they carry no
+  hover, focus or hit target, so an option's fill stays on its glyph-to-label
+  extent. The Options… menu and answered history list labels only. A
+  description slice that is not parallel to `Options` is rejected by
+  validation and ignored by the client.
+- **History.** A declined or cancelled request keeps its answered-history card
+  with the original questions and their offered labels, all unselected, and no
+  answer rows. Its header reads Declined or Cancelled in muted (not green) ink
+  once resolved, and otherwise keeps the delivery sub-status of the answer
+  copy: for example `Declined · provider confirmation unavailable` or
+  `Cancelled · not delivered` (red). Activity detail adds
+  `Response: Declined · no answer sent`.
+
+See the [implementation note](../implementation/question-actions-2026-09-23.md).
 
 ## Submit feedback and older-server compatibility
 
@@ -242,17 +410,25 @@ selection, optional Other text and explicit optional omissions. Single choice
 plus a separate note is not supported; choose the option or Other. Multi-choice
 plus Other is additive. Previews, required/constraint-bearing alternate schemas,
 URL/MCP/general forms and child questions are rejected rather than weakened.
-The original question and option descriptions remain readable; original source
-bytes are retained privately. Labels are wire values in this pinned adapter, so
+The original question and option descriptions remain readable (descriptions as
+structured option detail since the 2026-09-23 actions refinement); original
+source bytes are retained privately. Labels are wire values in this pinned adapter, so
 duplicate values and repeated original question text are rejected as ambiguous.
 
-Submission durably records the response before callback handoff. The UI reports
-upstream confirmation unavailable and never creates an Answered history card
-from callback return, a pipe write, generic tool output or turn completion.
+Submission durably records the response before callback handoff. The UI never
+creates an Answered history card from callback return, a pipe write, generic
+tool output or turn completion alone. The 2026-09-23
+[delivery evidence](#server-authority-and-recovery) rule settles a blocking
+answer only on a bridge receipt followed by normal completion of the same turn.
 Withdrawal/cancellation preserves any accepted response without replay; a new
 connection cannot revive the callback. Explicit Submit remains the only answer
 action in this slice; omission is represented in the accepted form, and Stop
-cancels the active turn. Separate per-request Decline/Cancel controls remain open.
+cancels the active turn. The 2026-09-23
+[actions refinement](#question-actions-and-option-descriptions--2026-09-23) adds
+explicit Decline and Cancel: the elicitation answers `{"action":"decline"}` or
+`{"action":"cancel"}` with no content, and the built-in bridge denies the
+`AskUserQuestion` tool for either (Claude's `can_use_tool` result has no
+separate decline and cancel outcomes). No delivery receipt follows a denial.
 
 ## Built-in Codex native questions — 2026-09-22
 
@@ -269,8 +445,22 @@ remain explicitly unsupported. The native IDs and source payload are retained.
 A bounded native request ledger correlates `serverRequest/resolved` to its
 request. Resolution after our response keeps the connection alive; external
 withdrawal prevents a late answer and conservatively retires the connection.
-Acceptance, native write and provider completion remain distinct: the current
-slice reports an unconfirmed answer rather than inventing an authoritative
-Answered receipt. Live Luna-low evidence covers answer/retry, Stop, late-answer
+Acceptance, native write and provider completion remain distinct. A
+continued-work answer stays unconfirmed; a blocking one follows the 2026-09-23
+[delivery evidence](#server-authority-and-recovery) rule. Live Luna-low evidence covers answer/retry, Stop, late-answer
 rejection and restart without replay in the
 [bug-fix report](../research/ui-bugs-2026-09-22.md).
+
+**Decline/cancel (2026-09-23).** Codex questions offer no Decline or Cancel.
+The installed CLI's own schema (`codex app-server generate-json-schema`,
+codex-cli 0.156.0; the bridge pins 0.155.1) defines
+`ToolRequestUserInputResponse` as only `{"answers": {<question id>:
+{"answers": [string]}}}`, with no action, status or decline field, while the
+same schema's `McpServerElicitationRequestResponse` does define
+`accept`/`decline`/`cancel`. An empty answers map is schema-valid but its
+meaning is undocumented, and returning one was the question-semantics loss
+recorded against an earlier adapter; a JSON-RPC error is not a documented
+decline either. The bridge therefore still refuses a non-accept response, and
+the server rejects a decline or cancel command for a Codex request. Stop
+remains the way to abandon the turn. Option descriptions are carried as
+structured option detail.

@@ -47,7 +47,7 @@ func TestClaudeQuestionsRoundTrip(t *testing.T) {
 			t.Fatalf("bad form: %+v", form)
 		}
 		q := form.Request.Questions[0]
-		if q.ID != "question_0" || protocol.QuestionRequired(q) || !q.AllowOther || q.Text != "Where should it go?\n\nFirst: First detail" {
+		if q.ID != "question_0" || protocol.QuestionRequired(q) || !q.AllowOther || q.Text != "Where should it go?" || !reflect.DeepEqual(q.OptionDescriptions, []string{"First detail", ""}) || !reflect.DeepEqual(form.Request.Actions, []string{"decline", "cancel"}) {
 			t.Fatalf("question: %+v", q)
 		}
 		answer := protocol.Answer{Choices: []string{"Second"}}
@@ -241,5 +241,35 @@ func TestClaudeQuestionsQuestionCountBounds(t *testing.T) {
 		if (err == nil) != (count == 4) {
 			t.Fatalf("count %d: %v", count, err)
 		}
+	}
+}
+
+func TestClaudeQuestionDeclineAndCancelCarryNoContent(t *testing.T) {
+	form, err := ParseClaudeQuestions("req", claudeQuestionRaw(t, claudeQuestionFixture(false, true)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"decline", "cancel"} {
+		response, err := form.Respond(action, nil)
+		if err != nil || !reflect.DeepEqual(response, map[string]any{"action": action}) {
+			t.Fatalf("%s => %+v, %v", action, response, err)
+		}
+	}
+	if _, err := form.ActionResponse("accept"); err == nil {
+		t.Fatal("accept became an answerless action")
+	}
+	if _, err := form.ActionResponse("retry"); err == nil {
+		t.Fatal("unknown action accepted")
+	}
+	form.Request.Actions = []string{"decline"}
+	if _, err := form.ActionResponse("cancel"); err == nil {
+		t.Fatal("cancel sent although only decline was offered")
+	}
+	// Options without any description stay without the parallel slice.
+	plain := claudeQuestionFixture(false, false)
+	plain["requestedSchema"].(map[string]any)["properties"].(map[string]any)["question_0"].(map[string]any)["oneOf"] = []any{map[string]any{"const": "A", "title": "A"}, map[string]any{"const": "B", "title": "B"}}
+	form, err = ParseClaudeQuestions("req", claudeQuestionRaw(t, plain))
+	if err != nil || form.Request.Questions[0].OptionDescriptions != nil {
+		t.Fatalf("undescribed options gained descriptions: %+v %v", form, err)
 	}
 }

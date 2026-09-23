@@ -28,6 +28,12 @@ func (m *Model) clearRequestFeedback(threadID, requestID string, revision int64,
 func (m *Model) requestNotice(r protocol.Request) (string, bool) {
 	if c := m.busy; c != nil && c.Kind == "request.answer" && c.ThreadID == m.state.Active && c.TargetID == r.ID && c.Revision == r.Revision {
 		if m.inFlight {
+			switch c.RequestAction {
+			case protocol.RequestActionDecline:
+				return "Declining…", false
+			case protocol.RequestActionCancel:
+				return "Cancelling…", false
+			}
 			return "Submitting answer…", false
 		}
 		return "Delivery unconfirmed · F4 → Retry pending command", true
@@ -40,11 +46,4 @@ func (m *Model) requestNotice(r protocol.Request) (string, bool) {
 		return f.Text, true
 	}
 	return "", false
-}
-
-func (m *Model) requestNoticeRows(r protocol.Request) int {
-	if message, _ := m.requestNotice(r); message != "" {
-		return 1
-	}
-	return 0
 }

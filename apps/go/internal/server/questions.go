@@ -167,7 +167,7 @@ func (r *acpRun) validateQuestionAnswer(t *protocol.Thread, requestID string) er
 	} // Approval validation is separate.
 	for _, request := range t.Requests {
 		if request.ID == requestID {
-			if _, err := p.form.Response(request.QuestionAnswers); err != nil {
+			if _, err := p.form.Respond(request.Action, request.QuestionAnswers); err != nil {
 				return failure("invalid", err.Error())
 			}
 			return nil
@@ -177,7 +177,8 @@ func (r *acpRun) validateQuestionAnswer(t *protocol.Thread, requestID string) er
 }
 
 // finishQuestion persists the accepted snapshot before preparing a response.
-// Neither this return, the SDK's pipe write, nor turn completion is a receipt.
+// Neither this return, the SDK's pipe write, nor turn completion alone is a
+// receipt; finishTurn settles a blocking answer only with a bridge receipt.
 func (r *acpRun) finishQuestion(requestID, submissionID, delivery string) (map[string]any, error) {
 	cancelled := map[string]any{"action": "cancel"}
 	e := r.e
@@ -207,7 +208,7 @@ func (r *acpRun) finishQuestion(requestID, submissionID, delivery string) (map[s
 			r.mu.Lock()
 			form := r.questions[requestID].form
 			r.mu.Unlock()
-			response, deliveryErr = form.Response(request.QuestionAnswers)
+			response, deliveryErr = form.Respond(request.Action, request.QuestionAnswers)
 			if deliveryErr != nil {
 				delivery, response = "acp-undeliverable", cancelled
 			}

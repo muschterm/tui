@@ -171,6 +171,12 @@ func (b *codexBridge) writeNativeResponse(dst io.Writer, frame []byte) (int, err
 	if err == nil && n == len(frame) {
 		request.answered = true
 		b.requests.requests[id] = request
+		if result && request.method == "item/tool/requestUserInput" {
+			// The answer reached a request App Server had not resolved. Emit
+			// the receipt before the reader, blocked on this ledger lock, can
+			// forward turn completion. Error responses never become receipts.
+			_ = b.h.questionDelivered(request.thread, request.item, "codex-native-response")
+		}
 	}
 	return n, err
 }

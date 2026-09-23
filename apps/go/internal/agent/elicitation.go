@@ -5,11 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
+
+// QuestionDeliveryReceipt returns the tool call named by a built-in bridge's
+// pinned delivery receipt. The receipt is evidence for the server to correlate
+// with its own request, turn and connection state; alone it resolves nothing.
+func QuestionDeliveryReceipt(u Update) (string, bool) {
+	if u.Kind != "tui_question_delivery" || len(u.Raw) > 4<<10 {
+		return "", false
+	}
+	var wire struct {
+		Dialect    string `json:"dialect"`
+		ToolCallID string `json:"toolCallId"`
+	}
+	if json.Unmarshal(u.Raw, &wire) != nil || wire.Dialect != acpbridge.QuestionDeliveryDialect || wire.ToolCallID == "" || len(wire.ToolCallID) > 512 {
+		return "", false
+	}
+	return wire.ToolCallID, true
+}
+
+// QuestionToolCallID returns the provider tool call a retained native question
+// payload was presented for, or "" when the payload does not name one.
+func QuestionToolCallID(source json.RawMessage) string {
+	var wire struct {
+		ToolCallID string `json:"toolCallId"`
+	}
+	if json.Unmarshal(source, &wire) != nil {
+		return ""
+	}
+	return wire.ToolCallID
+}
 
 // QuestionForm is the bounded AskUserQuestion form emitted by Claude ACP 0.80.0.
 // It is not a general JSON Schema or MCP elicitation implementation.
@@ -76,7 +107,9 @@ func ParseClaudeQuestions(id string, raw json.RawMessage) (*QuestionForm, error)
 		return nil, fmt.Errorf("unsupported multi-question message")
 	}
 	form := &QuestionForm{SessionID: session, ToolCallID: tool}
-	form.Request = protocol.Request{ID: id, Kind: "question", Mode: "blocking", State: "pending", Revision: 1, Origin: "Agent", Title: "Agent questions", Delivery: "acp-pending", DeliveryRoute: "native-response", SourcePayload: append(json.RawMessage(nil), raw...)}
+	// ACP form elicitation defines accept, decline and cancel responses; the
+	// latter two carry no content.
+	form.Request = protocol.Request{ID: id, Kind: "question", Mode: "blocking", State: "pending", Revision: 1, Origin: "Agent", Title: "Agent questions", Delivery: "acp-pending", DeliveryRoute: "native-response", Actions: []string{protocol.RequestActionDecline, protocol.RequestActionCancel}, SourcePayload: append(json.RawMessage(nil), raw...)}
 	seenText := map[string]bool{}
 	used := 0
 	for i := 0; i < count; i++ {
@@ -153,13 +186,17 @@ func ParseClaudeQuestions(id string, raw json.RawMessage) (*QuestionForm, error)
 			}
 			seen[value] = true
 			q.Options = append(q.Options, value)
+			detail := ""
 			if description, exists := option["description"]; exists {
-				detail, e := questionString(description, 2048, false)
+				detail, e = questionString(description, 2048, false)
 				if e != nil {
 					return nil, e
 				}
-				q.Text += "\n\n" + value + ": " + detail
 			}
+			q.OptionDescriptions = append(q.OptionDescriptions, detail)
+		}
+		if !slices.ContainsFunc(q.OptionDescriptions, func(d string) bool { return d != "" }) {
+			q.OptionDescriptions = nil
 		}
 		if custom, exists := props[key+"_custom"]; exists {
 			used++
@@ -190,6 +227,7 @@ func ParseClaudeQuestions(id string, raw json.RawMessage) (*QuestionForm, error)
 		form.Request.Questions = append(form.Request.Questions, q)
 		private := q
 		private.Options = append([]string(nil), q.Options...)
+		private.OptionDescriptions = append([]string(nil), q.OptionDescriptions...)
 		private.Required = new(bool)
 		form.questions = append(form.questions, private)
 	}
@@ -229,6 +267,27 @@ func (f *QuestionForm) Response(answers []protocol.Answer) (map[string]any, erro
 		}
 	}
 	return map[string]any{"action": "accept", "content": content}, nil
+}
+
+// ActionResponse is the elicitation result for a chosen decline or cancel:
+// the action alone, with no content. The request must offer the action.
+func (f *QuestionForm) ActionResponse(action string) (map[string]any, error) {
+	if f == nil || len(f.questions) == 0 {
+		return nil, fmt.Errorf("missing question form")
+	}
+	if err := protocol.ValidateRequestAction(f.Request, action, nil, nil); err != nil {
+		return nil, err
+	}
+	return map[string]any{"action": action}, nil
+}
+
+// Respond builds the response for a recorded request outcome: the chosen
+// action when one is set, otherwise the accepted answers.
+func (f *QuestionForm) Respond(action string, answers []protocol.Answer) (map[string]any, error) {
+	if action != "" {
+		return f.ActionResponse(action)
+	}
+	return f.Response(answers)
 }
 
 func questionObject(value any, allowed ...string) (map[string]any, error) {

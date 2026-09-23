@@ -108,10 +108,11 @@ func TestQuestionReviewDraftPersistenceAndRevisionIsolation(t *testing.T) {
 	if restored.questionDraft(req, 0).Text != "old unresolved draft" || restored.busy != nil {
 		t.Fatal("restore lost draft or submitted it")
 	}
+	// The revision guards submission only: an unchanged schema keeps its draft.
 	changed := req
 	changed.Revision++
-	if got := restored.questionDraft(changed, 0); got.Text != "" || got.Other {
-		t.Fatal("revision inherited old answer")
+	if got := restored.questionDraft(changed, 0); got.Text != "old unresolved draft" || !got.Other {
+		t.Fatal("revision-only bump discarded the draft")
 	}
 	changed = req
 	changed.Questions = append([]protocol.Question(nil), req.Questions...)
@@ -133,14 +134,14 @@ func TestQuestionReviewTabsProgressAndConditionalControls(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		h := controlHit(t, f, fmt.Sprint("question-page:", i))
-		if h.Rect.Y != f.request.Y+1 {
-			t.Fatal("question tabs are not at top")
+		if h.Rect.Y != f.request.Y+2 {
+			t.Fatal("question tabs are not directly below the header")
 		}
 	}
 	m.chooseAnswer("Compact")
 	f = m.render()
 	tab := controlHit(t, f, "question-page:0")
-	if !strings.Contains(tab.Label, "✓") {
+	if !strings.Contains(tab.Label, "answered") {
 		t.Fatal("answered tab missing progress")
 	}
 	m.selectQuestion(2)
@@ -169,7 +170,7 @@ func TestQuestionReviewScrollAndNarrowGeometry(t *testing.T) {
 		}
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		f := m.render()
-		if f.request.H > 12 || f.request.H < 4 || f.requestMax == 0 || !hasControl(f, "answer-options") {
+		if f.request.H > maxQuestionCardRows || f.request.H < 4 || f.requestMax == 0 || !hasControl(f, "answer-options") {
 			t.Fatalf("%v: missing bounded scrolling card: %+v", size, f.request)
 		}
 		for _, h := range f.hits {
@@ -196,7 +197,7 @@ func TestQuestionReviewCaptures(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"radio", "light-radio", "multi-other", "narrow", "invalid-submit", "light-error", "narrow-error", "many-first", "many-middle", "many-last", "light-many"} {
+	for _, scenario := range []string{"radio", "light-radio", "multi-other", "narrow", "invalid-submit", "light-error", "narrow-error", "many-first", "many-middle", "many-last", "light-many", "hover-focus", "narrow-other", "resume-disabled", "plain-focus-header", "open-ended", "radio-other", "history-other", "decline-description", "narrow-decline", "history-declined"} {
 		m, req := questionReviewModel()
 		if scenario == "light-radio" || scenario == "light-error" {
 			m.state.Light = true
@@ -211,8 +212,85 @@ func TestQuestionReviewCaptures(t *testing.T) {
 			m.storeAnswer(m.answer.Value())
 			m.configureInputs()
 		}
-		if scenario == "narrow" || scenario == "narrow-error" {
+		if scenario == "decline-description" || scenario == "narrow-decline" {
+			// Offered Decline and Cancel, and supplied option descriptions.
+			req.Actions = []string{"decline", "cancel"}
+			req.Questions[0].OptionDescriptions = []string{"Tighter rows that keep the transcript visible on small terminals", ""}
+			m.snapshot.Threads[0].Requests[0] = req
+			m.chooseAnswer("Compact")
+			m.selectQuestion(0)
+			m.setFocus("answer-decline")
+			m.configureInputs()
+		}
+		if scenario == "narrow" || scenario == "narrow-error" || scenario == "narrow-other" || scenario == "narrow-decline" {
 			m.Update(tea.WindowSizeMsg{Width: 48, Height: 22})
+		}
+		switch scenario {
+		case "hover-focus":
+			// Selected checkboxes under hover, and keyboard focus on another row.
+			m.selectQuestion(1)
+			m.chooseAnswer("Files")
+			m.chooseAnswer("Terminal")
+			m.hover = "option:0"
+			m.setFocus("option:1")
+			m.configureInputs()
+		case "narrow-other":
+			m.toggleOther()
+			m.answer.SetValue("A roomier layout for the wide inspector")
+			m.storeAnswer(m.answer.Value())
+			m.configureInputs()
+		case "resume-disabled":
+			m.snapshot.Threads[0].NeedsResume = true
+			m.hover = "answer-submit"
+			m.configureInputs()
+		case "plain-focus-header":
+			m.plainIcons = true
+			m.chooseAnswer("Compact")
+			m.setFocus("request-detail")
+			m.configureInputs()
+		case "radio-other":
+			// A selected single-choice Other… beside unselected siblings.
+			m.toggleOther()
+			m.answer.SetValue("A roomier layout for the wide inspector")
+			m.storeAnswer(m.answer.Value())
+			m.configureInputs()
+		case "history-other":
+			// An answered card whose single choice was Other…, in an
+			// overflowing transcript beside user boxes and the scrollbar.
+			thread := &m.snapshot.Threads[0]
+			answered := protocol.Request{
+				ID: "answered-other", Kind: "question", State: "resolved", Delivery: "fixture-confirmed", SubmissionID: "answer-other",
+				Questions:       []protocol.Question{{ID: "layout", Text: "Which layout should guide the report?", Kind: "single", Options: []string{"Compact", "Roomy"}, AllowOther: true}},
+				QuestionAnswers: []protocol.Answer{{Text: "Wide inspector"}},
+			}
+			thread.Requests = append(thread.Requests, answered)
+			thread.Activity = append([]protocol.Activity{
+				{ID: "history-user", Role: "user", Text: "Choose a layout for the report."},
+				{ID: "question-answer:answered-other:1", Role: "question-answer", RequestID: answered.ID},
+			}, thread.Activity...)
+			m.Update(tea.WindowSizeMsg{Width: 60, Height: 32})
+			m.viewState().Scroll = 0
+			m.configureInputs()
+		case "history-declined":
+			// A declined request keeps its questions and records no answer.
+			thread := &m.snapshot.Threads[0]
+			declined := protocol.Request{
+				ID: "declined", Kind: "question", State: "resolved", Delivery: "fixture-confirmed", Action: "decline",
+				Questions: []protocol.Question{{ID: "layout", Text: "Which layout should guide the report?", Kind: "single", Options: []string{"Compact", "Roomy"}, OptionDescriptions: []string{"Tighter rows", ""}}},
+			}
+			thread.Requests = append(thread.Requests, declined)
+			thread.Activity = append([]protocol.Activity{
+				{ID: "history-user", Role: "user", Text: "Choose a layout for the report."},
+				{ID: "question-answer:declined:1", Role: "question-answer", RequestID: declined.ID},
+			}, thread.Activity...)
+			m.Update(tea.WindowSizeMsg{Width: 60, Height: 32})
+			m.viewState().Scroll = 0
+			m.configureInputs()
+		case "open-ended":
+			m.selectQuestion(2)
+			m.answer.SetValue("Keep the transcript calm")
+			m.storeAnswer(m.answer.Value())
+			m.configureInputs()
 		}
 		if scenario == "invalid-submit" || scenario == "narrow-error" {
 			m.hover = "answer-submit"
@@ -311,11 +389,11 @@ func TestQuestionReviewKeyboardChoicesScrollWithoutMovingTranscript(t *testing.T
 	h := controlHit(t, m.measure(), "option:1")
 	m.Update(tea.MouseMotionMsg{X: h.Rect.X + h.Rect.W - 1, Y: h.Rect.Y})
 	if m.hover != "option:1" {
-		t.Fatal("choice row hover does not cover full width")
+		t.Fatal("choice label end does not hover its option")
 	}
 	clickControl(m, h)
 	if !reflect.DeepEqual(m.questionDraft(req, 1).Choices, []string{"Feature 01"}) || m.viewState().QuestionIndex != 1 || m.viewState().Scroll != before {
-		t.Fatal("full-row activation altered navigation or transcript")
+		t.Fatal("option activation altered navigation or transcript")
 	}
 }
 

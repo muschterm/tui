@@ -30,8 +30,10 @@ func TestCodexQuestionBoundsAndNativeAnswerIdentity(t *testing.T) {
 			t.Fatal("native question ID was lost")
 		}
 	}
+	// ToolRequestUserInputResponse (0.155.1–0.156.0) is only an answers map:
+	// decline and cancel have no native result and never become empty answers.
 	for _, input := range []string{
-		`{"action":"cancel"}`, `{"action":"accept","content":{"question_0":"invented"}}`,
+		`{"action":"cancel"}`, `{"action":"decline"}`, `{"action":"accept","content":{"question_0":"invented"}}`,
 		`{"action":"accept","content":{"question_0":"Small","question_0_custom":"extra"}}`,
 		`{"action":"accept","content":{"question_1":"Small"}}`,
 	} {

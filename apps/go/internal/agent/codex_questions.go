@@ -49,6 +49,8 @@ func ParseBuiltinCodexQuestions(id string, raw json.RawMessage) (*QuestionForm, 
 	if req.ItemID != tool || req.ThreadID != session {
 		return nil, fmt.Errorf("question source identity mismatch")
 	}
+	// ToolRequestUserInputResponse (App Server 0.155.1–0.156.0) has only an
+	// answers map and no decline or cancel result, so Actions stays empty.
 	form := &QuestionForm{SessionID: session, ToolCallID: tool}
 	form.Request = protocol.Request{ID: id, Kind: "question", Mode: "blocking", State: "pending", Revision: 1, Origin: "Agent", Title: "Agent questions", Delivery: "acp-pending", DeliveryRoute: "native-response", SourcePayload: append(json.RawMessage(nil), raw...)}
 	if !req.IsBlocking {
@@ -59,11 +61,14 @@ func ParseBuiltinCodexQuestions(id string, raw json.RawMessage) (*QuestionForm, 
 		if len(native.Options) > 0 {
 			q.Kind, q.AllowOther = "single", native.IsOther
 		}
+		described := false
 		for _, option := range native.Options {
 			q.Options = append(q.Options, option.Label)
-			if option.Description != "" {
-				q.Text += "\n\n" + option.Label + ": " + option.Description
-			}
+			q.OptionDescriptions = append(q.OptionDescriptions, option.Description)
+			described = described || option.Description != ""
+		}
+		if !described {
+			q.OptionDescriptions = nil
 		}
 		form.Request.Questions = append(form.Request.Questions, q)
 		form.questions = append(form.questions, q)

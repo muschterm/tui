@@ -126,8 +126,10 @@ func (m *Model) selectionLive(f frame) bool {
 
 func (m *Model) compact() bool { return m.height < 28 }
 
+// The composer is its rounded outline (two rows), one padding row above the
+// typing area, the typing rows, the settings/actions rows and the checkout row.
 func (m *Model) baseFooterHeight(w int) int {
-	n := 3 + max(1, m.promptRows) + m.composerControlsHeight(w) + m.closedBannerHeight(w)
+	n := 4 + max(1, m.promptRows) + m.composerControlsHeight(w) + m.closedBannerHeight(w)
 	if m.conversationVisible() {
 		n += m.activityStripHeight(w) + m.queueHeight()
 	}
@@ -245,11 +247,16 @@ func (m *Model) compose(paint bool) frame {
 }
 
 type contentLine struct {
-	rightAligned     bool
+	outset           bool // painted across the prompt outline's extent, as answered question cards are
+	boxed            bool // tinted full-width row of a user message box
 	styled           bool // text contains only renderer-generated ANSI, after input sanitization
 	text, fg, bg     string
 	marker, markerFG string
 	action           action
+	// border is the outline ink of an outlined row's first and last cells,
+	// painted on the canvas like componentBox's side cells; the interior
+	// between them uses fg/bg. Border rows themselves carry the ink as fg.
+	border string
 }
 
 func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
@@ -309,17 +316,27 @@ func (m *Model) activityLinesForThread(t protocol.Thread, items []protocol.Activ
 		if !message {
 			lines = append(lines, contentLine{text: header, fg: fg, bg: bg, action: act})
 		}
+		// A user message is a tinted box: its text uses the full transcript
+		// column and renderTranscript extends the tint one cell beyond it on
+		// each side, with one tinted padding row above and below.
+		user := a.Role == "user"
 		wrapWidth := w - 2
-		if a.Role == "user" {
-			wrapWidth -= min(12, w/6)
+		if user {
+			wrapWidth = w
 		}
 		bodyLines := strings.Split(ansi.Wrap(safe(a.Text), max(1, wrapWidth), ""), "\n")
 		formatted := a.Role == "agent"
 		if formatted {
 			bodyLines = markdownLines(a.Text, max(1, wrapWidth), p)
 		}
+		if user {
+			lines = append(lines, contentLine{fg: body, bg: bg, boxed: true})
+		}
 		for _, line := range bodyLines {
-			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, rightAligned: a.Role == "user", styled: formatted})
+			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, boxed: user, styled: formatted})
+		}
+		if user {
+			lines = append(lines, contentLine{fg: body, bg: bg, boxed: true})
 		}
 		lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
 	}
@@ -426,31 +443,76 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 	lines := m.transcriptLines(m.thread(), r.W)
 	f.transcriptMax = max(0, len(lines)-r.H)
 	offset := min(max(0, m.viewState().Scroll), f.transcriptMax)
+	// Boxed rows are tinted one cell beyond the text column on each side (the
+	// prompt outline's extent), bounded by the center pane.
+	boxLeft, boxRight := r.X-1, r.X+r.W+1
+	if c := f.geom.Center; c.W > 0 {
+		boxLeft, boxRight = max(boxLeft, c.X), min(boxRight, c.X+c.W)
+	}
 	for i := 0; i < r.H && offset+i < len(lines); i++ {
 		line := lines[offset+i]
-		inset := 0
-		if line.rightAligned {
-			inset = min(12, r.W/6)
+		x, width := r.X, r.W
+		if line.outset && boxRight > boxLeft {
+			x, width = boxLeft, boxRight-boxLeft
 		}
-		if line.marker != "" {
-			f.text(r.X+inset, r.Y+i, 1, line.marker, line.markerFG, line.bg)
-			f.text(r.X+inset+2, r.Y+i, r.W-inset-2, line.text, line.fg, line.bg)
+		if line.boxed && boxRight > boxLeft {
+			f.fill(shell.Rect{X: boxLeft, Y: r.Y + i, W: boxRight - boxLeft, H: 1}, p, line.bg)
+		}
+		if line.border != "" && width >= 2 {
+			m.renderOutlinedRow(f, x, r.Y+i, width, line, i)
+		} else if line.marker != "" {
+			f.text(x, r.Y+i, 1, line.marker, line.markerFG, line.bg)
+			f.text(x+2, r.Y+i, width-2, line.text, line.fg, line.bg)
 		} else if line.action.Kind != "" {
 			key := "activity:" + line.action.ID + ":" + fmt.Sprint(i)
 			if line.action.Kind == "question-history-toggle" {
 				key = "question-history:" + line.action.ID
 			}
-			f.button(m, r.X+inset, r.Y+i, r.W-inset, line.text, key, line.action, line.fg, line.bg)
+			f.button(m, x, r.Y+i, width, line.text, key, line.action, line.fg, line.bg)
 		} else if line.styled {
 			// Markdown source is sanitized before parsing and decoded text is
 			// sanitized again by its renderer. Preserve only that trusted SGR
 			// here; f.text intentionally strips ANSI from all ordinary strings.
-			f.put(shell.Rect{X: r.X + inset, Y: r.Y + i, W: r.W - inset, H: 1}, style(line.fg, line.bg).Render(fit(line.text, r.W-inset)))
+			f.put(shell.Rect{X: x, Y: r.Y + i, W: width, H: 1}, style(line.fg, line.bg).Render(fit(line.text, width)))
 		} else {
-			f.text(r.X+inset, r.Y+i, r.W-inset, line.text, line.fg, line.bg)
+			f.text(x, r.Y+i, width, line.text, line.fg, line.bg)
 		}
 	}
-	f.scrollbar(m, shell.Rect{X: r.X + r.W, Y: r.Y, W: 1, H: r.H}, "transcript", len(lines), r.H, offset, p.canvas)
+	// The scrollbar owns the gutter column right of the box extent, so it never
+	// replaces a user box's tint or a card's border and those right edges stay
+	// aligned with the prompt outline. Only a pane too narrow for that gutter
+	// falls back to the last column inside it. Beside the right pane divider
+	// the track is blank, so the two never read as a double rule.
+	bar, track := boxRight, "│"
+	if c := f.geom.Center; c.W > 0 && bar >= c.X+c.W {
+		bar = c.X + c.W - 1
+	}
+	if d := f.geom.RightDivider; d.W > 0 && d.X == bar+1 {
+		track = " "
+	}
+	f.scrollbarTrack(m, shell.Rect{X: bar, Y: r.Y, W: 1, H: r.H}, "transcript", len(lines), r.H, offset, p.canvas, track)
+}
+
+// renderOutlinedRow paints one interior row of an outlined transcript card:
+// uniform outline ink on the canvas in both side cells, the stable interior
+// fill between them. An action row keeps one blank padding cell before its
+// label, where keyboard focus paints its mark.
+func (m *Model) renderOutlinedRow(f *frame, x, y, width int, line contentLine, index int) {
+	p := m.colors()
+	tw := ansi.StringWidth(line.text)
+	f.text(x, y, 1, ansi.Cut(line.text, 0, 1), line.border, p.canvas)
+	f.text(x+width-1, y, 1, ansi.Cut(line.text, tw-1, tw), line.border, p.canvas)
+	inner := ansi.Cut(line.text, 1, tw-1)
+	if line.action.Kind == "" || width < 5 {
+		f.text(x+1, y, width-2, inner, line.fg, line.bg)
+		return
+	}
+	f.text(x+1, y, width-2, "", line.fg, line.bg)
+	key := "activity:" + line.action.ID + ":" + fmt.Sprint(index)
+	if line.action.Kind == "question-history-toggle" {
+		key = "question-history:" + line.action.ID
+	}
+	f.button(m, x+2, y, width-4, strings.TrimSpace(inner), key, line.action, line.fg, line.bg)
 }
 
 func (m *Model) renderFooter(f *frame, r shell.Rect) {
@@ -476,11 +538,12 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	f.fill(shell.Rect{X: x, Y: y, W: w, H: max(0, r.Y+r.H-y)}, p, p.canvas)
 	promptHeight := max(1, m.promptRows)
 	controlsHeight := m.composerControlsHeight(w)
-	composerHeight := promptHeight + controlsHeight + 2
+	// Top border, one tinted padding row, typing rows, controls, bottom border.
+	composerHeight := promptHeight + controlsHeight + 3
 	promptStyle := m.componentStyle(roundedOutline, m.controlState(false, "prompt"), p.text, p.input)
 	f.componentBox(m, shell.Rect{X: x, Y: y, W: w, H: composerHeight}, roundedOutline, promptStyle, p.canvas)
 	inset := composerInset(w)
-	f.prompt = shell.Rect{X: x + inset, Y: y + 1, W: max(1, w-2*inset), H: promptHeight}
+	f.prompt = shell.Rect{X: x + inset, Y: y + 2, W: max(1, w-2*inset), H: promptHeight}
 	if f.rows != nil {
 		f.put(f.prompt, style(p.text, p.input).Width(f.prompt.W).Height(f.prompt.H).Render(m.promptView.View(&m.prompt)))
 	}
@@ -606,7 +669,11 @@ func (m *Model) surfaceText(s shell.Surface) string {
 				continue
 			}
 			delivery := requestDeliveryDescription(r.Delivery)
-			fmt.Fprintf(&b, "%s\n%s\nState: %s\nDelivery: %s\nChoices: %s\n\n", r.Title, r.Detail, r.State, delivery, strings.Join(r.Choices, ", "))
+			fmt.Fprintf(&b, "%s\n%s\nState: %s\nDelivery: %s\nChoices: %s\n", r.Title, r.Detail, r.State, delivery, strings.Join(r.Choices, ", "))
+			if r.Action != "" {
+				fmt.Fprintf(&b, "Response: %s · no answer sent\n", questionActionOutcome(r.Action))
+			}
+			b.WriteString("\n")
 		}
 		if b.Len() == 0 {
 			b.WriteString("No retained activity for this selection")

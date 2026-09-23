@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -231,7 +230,7 @@ func newInput(placeholder string) textarea.Model {
 // New builds a model for client id from the current snapshot and that
 // client's stored view document.
 func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *Model {
-	m := &Model{client: c, clientID: id, snapshot: snapshot, ctx: context.Background(), width: 120, height: 40, connected: true, colorProfile: colorprofile.TrueColor, focus: "prompt", keyboard: "legacy keyboard", prompt: newInput("Ask a follow-up…"), answer: newInput("Type an answer…")}
+	m := &Model{client: c, clientID: id, snapshot: snapshot, ctx: context.Background(), width: 120, height: 40, connected: true, colorProfile: colorprofile.TrueColor, focus: "prompt", keyboard: "legacy keyboard", prompt: newInput(promptPlaceholder), answer: newInput("Type an answer…")}
 	m.state = savedView{Layout: shell.NewState(), Threads: map[string]*threadView{}, RecentsCollapsed: true}
 	m.projectInput = newInput("Project name or path…")
 	m.threadSearch = newInput("Search")
@@ -256,6 +255,8 @@ func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *
 		}
 	}
 	m.migrateQuestionDrafts()
+	// Saved with the next real change; loading alone does not dirty the view.
+	m.pruneQuestionDrafts()
 	m.migrateBottomSessions()
 	m.applyIcons()
 	m.busy = m.state.Pending
@@ -380,7 +381,7 @@ func (m *Model) requestBound(a action) bool {
 }
 
 func requestScoped(a action) bool {
-	return a.ID != "" && slices.Contains([]string{"approve", "answer-choice", "answer-other", "question-index"}, a.Kind)
+	return a.ID != "" && slices.Contains([]string{"approve", "answer-choice", "answer-other", "answer-action", "question-index"}, a.Kind)
 }
 
 // reconcileRequests runs after each snapshot. A vanished selection moves to a
@@ -392,7 +393,7 @@ func (m *Model) reconcileRequests() tea.Cmd {
 		v.RequestID = ""
 		v.RequestIndex = max(0, min(v.RequestIndex, len(pending)-1))
 		m.markDirty()
-		if m.focus == "answer" || m.focus == "answer-other" || m.focus == "answer-submit" || strings.HasPrefix(m.focus, "option:") || strings.HasPrefix(m.focus, "approve:") {
+		if m.focus == "answer" || m.focus == "answer-other" || m.focus == "answer-submit" || m.focus == "answer-decline" || m.focus == "answer-cancel" || m.focus == "answer-actions" || strings.HasPrefix(m.focus, "option:") || strings.HasPrefix(m.focus, "approve:") {
 			m.setFocus("request-body")
 		}
 		if len(pending) > 0 {
@@ -408,10 +409,7 @@ func (m *Model) reconcileRequests() tea.Cmd {
 }
 
 func (m *Model) configureInputs() {
-	m.prompt.Placeholder = "Ask a follow-up…"
-	if m.creatingThread() {
-		m.prompt.Placeholder = "Describe a task…"
-	}
+	m.prompt.Placeholder = promptPlaceholder
 	p := m.colors()
 	s := textarea.Styles{}
 	s.Focused = textarea.StyleState{Base: style(p.text, p.input), Text: style(p.text, p.input), Placeholder: style(p.muted, p.input), CursorLine: style(p.text, p.input), Selection: style(p.text, p.selected)}
@@ -714,6 +712,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reconcileThreadMembership()
 		}
 		cmd = m.reconcileRequests()
+		if m.pruneQuestionDrafts() {
+			m.markDirty()
+		}
 		newRequest, _ := m.request()
 		if questionDraftKey(oldRequest) != questionDraftKey(newRequest) || oldPage >= len(newRequest.Questions) {
 			m.viewState().QuestionIndex = 0
@@ -810,6 +811,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.command.Kind == "request.answer" {
 			m.clearRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, false)
 			m.status = "Answer accepted by server · upstream confirmation unavailable"
+			if msg.command.RequestAction != "" {
+				m.status = questionActionLabel(msg.command.RequestAction) + " accepted by server · upstream confirmation unavailable"
+			}
 			cmd = m.showNotice(m.status)
 		}
 		if m.acceptThreadOperation(msg) {
@@ -1065,6 +1069,11 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 	}
+	if m.focus == "answer" {
+		if handled, cmd := m.answerFieldKey(s); handled {
+			return cmd
+		}
+	}
 	switch s {
 	case "esc":
 		if m.state.Edit != nil {
@@ -1082,6 +1091,11 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	case "f8":
 		return m.activate(action{Kind: "theme"})
 	case "ctrl+s":
+		// Inside the request card Ctrl+S answers the request; it never sends
+		// the ordinary prompt from there.
+		if requestControlKey(m.focus) {
+			return m.submitFocusedRequest()
+		}
 		return m.activate(action{Kind: "send"})
 	case "f6":
 		f := m.measure()
@@ -1173,20 +1187,8 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		m.storeAnswer(m.answer.Value())
 		return c
 	}
-	if (strings.HasPrefix(m.focus, "option:") || m.focus == "answer-other") && (s == "up" || s == "down") {
-		index, _ := strconv.Atoi(strings.TrimPrefix(m.focus, "option:"))
-		if m.focus == "answer-other" {
-			if r, ok := m.request(); ok && len(r.Questions) > 0 {
-				index = len(r.Questions[m.viewState().QuestionIndex].Options)
-			}
-		}
-		if s == "up" {
-			index--
-		} else {
-			index++
-		}
-		m.focusQuestionOption(index)
-		return nil
+	if handled, cmd := m.questionCardKey(s); handled {
+		return cmd
 	}
 	if s == "enter" || s == " " || s == "space" {
 		for _, h := range m.measure().hits {

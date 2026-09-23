@@ -216,9 +216,18 @@ func recoverThreads(s *protocol.Snapshot) {
 // Resume; the queue, captures and transcript are preserved untouched.
 //
 // Pending calls belonged to the dead process and become undeliverable. Accepted
-// responses retain their snapshots with uncertain receipt, never blind replay.
-// A future approval requires a newly issued live call; Resume does not create one.
+// responses of the turn in flight retain their snapshots with uncertain
+// receipt, never blind replay. A turn that had already ended recorded its own
+// outcome; restart adds no uncertainty to it. A future approval requires a
+// newly issued live call; Resume does not create one.
 func recoverACPThread(t *protocol.Thread) {
+	inFlight := t.State == "running" || t.State == "waiting"
+	completed := make(map[string]bool)
+	for _, activity := range t.Activity {
+		if activity.Role == "user" && activity.Prompt != nil && activity.ID == activity.Prompt.ID && activity.TurnID == activity.ID && activity.State == "completed" {
+			completed[activity.ID] = true
+		}
+	}
 	// Earlier versions requeued failed in-flight prompts. Only remove a queue
 	// copy when the retained user activity proves that exact capture crossed
 	// dispatch; preserve unmatched/edited captures as queued work.
@@ -257,11 +266,24 @@ func recoverACPThread(t *protocol.Thread) {
 	for j := range t.Requests {
 		r := &t.Requests[j]
 		switch {
-		case r.Delivery == "acp-delivered" || r.Delivery == "acp-unconfirmed" || r.Delivery == "acp-accepted" || r.State == "submitted":
+		case r.State == "submitted" || r.Delivery == "acp-accepted":
+			// Accepted but never handed off: the turn was still live.
 			r.State, r.Delivery = "closed", "acp-uncertain"
 			r.Revision++
+		case r.Delivery == "acp-delivered" || r.Delivery == "acp-unconfirmed":
+			if inFlight && (r.TurnID == "" || r.TurnID == t.TurnID) {
+				r.State, r.Delivery = "closed", "acp-uncertain"
+				r.Revision++
+			}
 		case r.State == "pending":
 			r.State, r.Delivery = "closed", "acp-undeliverable"
+			r.Revision++
+		case r.State == "closed" && r.Delivery == "acp-uncertain" && r.SubmissionID != "" && r.TurnID != "" && completed[r.TurnID]:
+			// Repair records that earlier restarts downgraded after their turn
+			// had completed normally. A failed turn marks its prompt failed and
+			// an interrupted one interrupted, so only restart produced this
+			// pair. Restore the prior truthful state; never mark it delivered.
+			r.Delivery = "acp-unconfirmed"
 			r.Revision++
 		}
 	}

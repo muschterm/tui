@@ -20,6 +20,11 @@ const Version = "0.1.0"
 const ClaudeIdentity = "tui-go-claude " + Version
 const QuestionDialect = "tui-go.claude-questions.v1"
 
+// QuestionDeliveryDialect pins the built-in bridges' answer-delivery receipt.
+// A receipt reports only what the bridge observed at its provider boundary; the
+// application still decides whether that evidence settles a request.
+const QuestionDeliveryDialect = "tui-go.question-delivery.v1"
+
 type backend interface {
 	Handle(context.Context, string, json.RawMessage) (any, *acp.RequestError)
 	Close()
@@ -111,6 +116,17 @@ func (h *host) disconnected() {
 
 func (h *host) update(ctx context.Context, sessionID string, update any) error {
 	return h.conn.SendNotification(ctx, "session/update", map[string]any{"sessionId": sessionID, "update": update})
+}
+
+// questionDelivered reports that a client-accepted answer crossed the provider
+// boundary for toolCallID. It is sent on the ordered ACP stream, so a caller
+// that emits it before the provider can end the turn orders it before the
+// prompt response.
+func (h *host) questionDelivered(sessionID, toolCallID, evidence string) error {
+	if h.conn == nil || sessionID == "" || toolCallID == "" {
+		return errors.New("question delivery receipt has no ACP destination")
+	}
+	return h.update(h.ctx, sessionID, map[string]any{"sessionUpdate": "tui_question_delivery", "dialect": QuestionDeliveryDialect, "toolCallId": toolCallID, "evidence": evidence})
 }
 
 func (h *host) launch(args ...string) (*process, error) {
