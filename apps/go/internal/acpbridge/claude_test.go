@@ -117,6 +117,12 @@ func runFakeClaudeRuntime() int {
 		UUID string `json:"uuid"`
 	}
 	var scanErr error
+	fastMode := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--settings" && strings.Contains(args[i+1], `"fastMode":true`) {
+			fastMode = true
+		}
+	}
 	var activeUserUUID string
 	var activePrompt string
 	writeResult := func(userUUID string, fields map[string]any) error {
@@ -136,8 +142,12 @@ func runFakeClaudeRuntime() int {
 		switch msg.Type {
 		case "control_request":
 			var request struct {
-				Subtype string `json:"subtype"`
-				Model   string `json:"model"`
+				Subtype  string `json:"subtype"`
+				Model    string `json:"model"`
+				Mode     string `json:"mode"`
+				Settings struct {
+					FastMode bool `json:"fastMode"`
+				} `json:"settings"`
 			}
 			_ = json.Unmarshal(msg.Request, &request)
 			logFakeClaude(fakeClaudeLogEntry{Kind: "host_control", Subtype: request.Subtype, RequestID: msg.RequestID, Request: msg.Request})
@@ -147,10 +157,20 @@ func runFakeClaudeRuntime() int {
 			case "initialize":
 				response = map[string]any{
 					"models": []any{
-						map[string]any{"value": "claude-model-live-a", "displayName": "Live model A"},
-						map[string]any{"value": "claude-model-live-b", "displayName": "Live model B"},
+						map[string]any{"value": "claude-model-live-a", "resolvedModel": "claude-model-live-a-v1", "displayName": "Live model A", "supportsAutoMode": true, "supportsFastMode": true},
+						map[string]any{"value": "claude-model-live-b", "displayName": "Live model B", "supportsAutoMode": false},
 					},
-					"current_permission_mode": "default",
+					"current_permission_mode":   "default",
+					"fast_mode_state":           "off",
+					"fast_mode_disabled_reason": "sdk_opt_in_required",
+				}
+				if fastMode {
+					response["fast_mode_state"] = "on"
+					delete(response, "fast_mode_disabled_reason")
+				}
+			case "apply_flag_settings":
+				if os.Getenv("TUI_GO_CLAUDE_TEST_FAST_ACK_ONLY") != "1" || !request.Settings.FastMode {
+					fastMode = request.Settings.FastMode
 				}
 			case "set_model":
 				if request.Model != "" && request.Model == os.Getenv("TUI_GO_CLAUDE_TEST_DELAY_MODEL") {
@@ -159,6 +179,14 @@ func runFakeClaudeRuntime() int {
 				}
 				if request.Model == os.Getenv("TUI_GO_CLAUDE_TEST_REJECT_MODEL") {
 					subtype, message = "error", "model selection rejected by fake runtime"
+				}
+			case "set_permission_mode":
+				response = map[string]any{"mode": request.Mode}
+				if forced := os.Getenv("TUI_GO_CLAUDE_TEST_ACK_MODE"); forced != "" {
+					response = map[string]any{"mode": forced}
+				}
+				if request.Mode == os.Getenv("TUI_GO_CLAUDE_TEST_REJECT_MODE") {
+					subtype, message = "error", "permission selection rejected by fake runtime"
 				}
 			case "interrupt":
 				response = map[string]any{"interrupted": true}
@@ -363,6 +391,16 @@ func (f *claudeFixture) setModel(t *testing.T, model string) error {
 	return err
 }
 
+func (f *claudeFixture) setSpeed(t *testing.T, speed string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	_, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{
+		SessionId: f.session, ConfigId: "speed", Value: acp.SessionConfigValueId(speed),
+	}})
+	return err
+}
+
 func (f *claudeFixture) prompt(ctx context.Context, text string) (acp.PromptResponse, error) {
 	return f.conn.Prompt(ctx, acp.PromptRequest{SessionId: f.session, Prompt: []acp.ContentBlock{{Text: &acp.ContentBlockText{Type: "text", Text: text}}}})
 }
@@ -445,8 +483,8 @@ func modelOptionValues(t *testing.T, options []acp.SessionConfigOption) []string
 func TestClaudeBridgeRequiresDiscoveredAndAcknowledgedModel(t *testing.T) {
 	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_REJECT_MODEL=claude-model-live-a")
 	values := modelOptionValues(t, f.options)
-	if got, want := strings.Join(values, ","), "claude-model-live-a,claude-model-live-b"; got != want {
-		t.Fatalf("discovered model values = %q, want %q", got, want)
+	if len(values) < 3 || values[0] != "claude-model-live-a" || values[1] != "claude-model-live-b" || !stringInSlice(values, "claude-opus-4-8") || !stringInSlice(values, "claude-model-live-a-v1") {
+		t.Fatalf("model values omitted native aliases or documented legacy choices: %v", values)
 	}
 	if err := f.setModel(t, "invented-model"); err == nil {
 		t.Fatal("accepted a model absent from the runtime catalogue")
@@ -458,11 +496,107 @@ func TestClaudeBridgeRequiresDiscoveredAndAcknowledgedModel(t *testing.T) {
 		t.Fatal("prompt ran without an acknowledged explicit model")
 	}
 	entries := readFakeClaudeLog(t, f.logPath)
-	if got := entryCount(entries, "host_control"); got != 2 {
-		t.Fatalf("runtime saw %d controls, want initialize and the one valid set_model request", got)
+	if got := entryCount(entries, "host_control"); got != 4 {
+		t.Fatalf("runtime saw %d controls, want initialize, Standard reset/readback, and one valid set_model request", got)
 	}
 	if got := entryCount(entries, "user"); got != 0 {
 		t.Fatalf("runtime received %d prompt(s) after a failed setting", got)
+	}
+}
+
+func TestClaudeBridgeOffersPinnedAndDocumentedLegacyModelIDs(t *testing.T) {
+	f := startClaudeFixture(t)
+	values := modelOptionValues(t, f.options)
+	for _, value := range []string{"claude-model-live-a-v1", "claude-opus-4-8", "claude-fable-5"} {
+		if !stringInSlice(values, value) {
+			t.Fatalf("missing pinned or legacy %q: %v", value, values)
+		}
+	}
+	if err := f.setModel(t, "claude-model-live-a-v1"); err != nil {
+		t.Fatalf("native bridge rejected runtime resolved model: %v", err)
+	}
+	if err := f.setModel(t, "claude-opus-4-8"); err != nil {
+		t.Fatalf("native bridge rejected documented legacy model: %v", err)
+	}
+	entries := readFakeClaudeLog(t, f.logPath)
+	var selected []string
+	for _, entry := range entries {
+		if entry.Subtype != "set_model" {
+			continue
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(entry.Request, &request)
+		selected = append(selected, request.Model)
+	}
+	if got := strings.Join(selected, ","); got != "claude-model-live-a-v1,claude-opus-4-8" {
+		t.Fatalf("native model controls = %s", got)
+	}
+}
+
+func TestClaudeFastRequiresCapableModelAndNativeReadback(t *testing.T) {
+	f := startClaudeFixture(t)
+	var fastScope []any
+	for _, option := range f.options {
+		if option.Select == nil || option.Select.Id != "speed" || option.Select.Options.Ungrouped == nil {
+			continue
+		}
+		for _, value := range *option.Select.Options.Ungrouped {
+			if value.Value == "fast" {
+				fastScope, _ = value.Meta["tui-go.models"].([]any)
+			}
+		}
+	}
+	if len(fastScope) == 0 {
+		t.Fatal("Fast option has no model applicability metadata")
+	}
+	var hasCapable, hasIncapable bool
+	for _, model := range fastScope {
+		hasCapable = hasCapable || model == "claude-model-live-a"
+		hasIncapable = hasIncapable || model == "claude-model-live-b"
+	}
+	if !hasCapable || hasIncapable {
+		t.Fatalf("Fast scope = %v, want only capable models", fastScope)
+	}
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setSpeed(t, "fast"); err != nil {
+		t.Fatalf("Fast selection was not confirmed: %v", err)
+	}
+	if err := f.setModel(t, "claude-model-live-b"); err != nil {
+		t.Fatalf("switch to non-Fast model: %v", err)
+	}
+	if err := f.setSpeed(t, "fast"); err == nil {
+		t.Fatal("accepted Fast on model without Fast capability")
+	}
+	entries := readFakeClaudeLog(t, f.logPath)
+	var toggles []bool
+	for _, entry := range entries {
+		if entry.Subtype != "apply_flag_settings" {
+			continue
+		}
+		var req struct {
+			Settings struct {
+				FastMode bool `json:"fastMode"`
+			} `json:"settings"`
+		}
+		_ = json.Unmarshal(entry.Request, &req)
+		toggles = append(toggles, req.Settings.FastMode)
+	}
+	if len(toggles) != 3 || toggles[0] || !toggles[1] || toggles[2] {
+		t.Fatalf("native Fast transitions = %v, want startup Standard then on then off", toggles)
+	}
+}
+
+func TestClaudeFastGenericACKDoesNotClaimEffectiveFast(t *testing.T) {
+	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_FAST_ACK_ONLY=1")
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setSpeed(t, "fast"); err == nil {
+		t.Fatal("accepted Fast when native state remained off")
 	}
 }
 
@@ -546,7 +680,7 @@ func TestClaudeBridgeNativePermissionIsOneShotAndDefaultsToDeny(t *testing.T) {
 				t.Fatalf("Claude startup did not use the default, permission-prompting mode: %+v", args)
 			}
 			for _, arg := range args.Args {
-				if strings.Contains(arg, "dangerously-skip-permissions") || strings.Contains(arg, "allow-dangerously") {
+				if arg == "--dangerously-skip-permissions" || arg == "--permission-mode=bypassPermissions" {
 					t.Fatalf("startup bypassed permission prompts with flag %q", arg)
 				}
 			}
@@ -889,4 +1023,139 @@ func containsPair(args []string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+func TestClaudePermissionModesAreAcknowledgedBeforePrompt(t *testing.T) {
+	for _, mode := range []string{"default", "acceptEdits", "auto", "bypassPermissions"} {
+		t.Run(mode, func(t *testing.T) {
+			f := startClaudeFixture(t)
+			if err := f.setModel(t, "claude-model-live-a"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			response, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "mode", Value: acp.SessionConfigValueId(mode)}})
+			if err != nil {
+				t.Fatalf("select %s: %v", mode, err)
+			}
+			if got := selectedMode(response.ConfigOptions); got != mode {
+				t.Fatalf("acknowledged mode = %q, want %q", got, mode)
+			}
+			if _, err := f.prompt(ctx, "safe"); err != nil {
+				t.Fatal(err)
+			}
+			entries := readFakeClaudeLog(t, f.logPath)
+			modeAck, prompt := -1, -1
+			for i, entry := range entries {
+				if entry.Kind == "host_control" && entry.Subtype == "set_permission_mode" {
+					var request struct {
+						Mode string `json:"mode"`
+					}
+					_ = json.Unmarshal(entry.Request, &request)
+					if request.Mode != mode {
+						t.Fatalf("native mode = %q, want %q", request.Mode, mode)
+					}
+					modeAck = i
+				}
+				if entry.Kind == "user" {
+					prompt = i
+				}
+			}
+			if modeAck < 0 || prompt <= modeAck {
+				t.Fatalf("mode was not sent before prompt: %+v", entries)
+			}
+		})
+	}
+}
+
+func TestClaudePermissionModeRejectsUnsupportedAndUnacknowledgedValues(t *testing.T) {
+	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_REJECT_MODE=auto")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, mode := range []string{"unknown", "manual", "auto"} {
+		if _, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "mode", Value: acp.SessionConfigValueId(mode)}}); err == nil {
+			t.Fatalf("%q was accepted", mode)
+		}
+	}
+	if got := selectedMode(f.options); got != "default" {
+		t.Fatalf("initial mode = %q", got)
+	}
+	if got := entryCount(readFakeClaudeLog(t, f.logPath), "user"); got != 0 {
+		t.Fatalf("rejected configuration dispatched %d prompts", got)
+	}
+}
+
+func TestClaudePermissionModeRequiresMatchingNativeAcknowledgment(t *testing.T) {
+	f := startClaudeFixture(t, "TUI_GO_CLAUDE_TEST_ACK_MODE=default")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "mode", Value: "auto"}}); err == nil {
+		t.Fatal("mismatched native permission acknowledgment was accepted")
+	}
+}
+
+func TestClaudeAutoPermissionFollowsModelCapability(t *testing.T) {
+	f := startClaudeFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	selected, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "model", Value: "claude-model-live-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawAuto := false
+	for _, option := range selected.ConfigOptions {
+		if option.Select == nil || option.Select.Id != "mode" || option.Select.Options.Ungrouped == nil {
+			continue
+		}
+		for _, choice := range *option.Select.Options.Ungrouped {
+			if choice.Value == "auto" {
+				sawAuto = true
+				encoded, _ := json.Marshal(choice.Meta["tui-go.models"])
+				if strings.Contains(string(encoded), "claude-model-live-b") || !strings.Contains(string(encoded), "claude-model-live-a") {
+					t.Fatalf("incorrect Auto model scope: %s", encoded)
+				}
+			}
+		}
+	}
+	if !sawAuto {
+		t.Fatal("target-model Auto removed from live catalogue")
+	}
+	if _, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "mode", Value: "auto"}}); err == nil {
+		t.Fatal("Auto accepted for model that reports no Auto support")
+	}
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "mode", Value: "auto"}}); err != nil {
+		t.Fatal("supported model cannot regain Auto", err)
+	}
+
+}
+
+func TestClaudeSwitchFromAutoToUnsupportedModelRestoresSupervised(t *testing.T) {
+	f := startClaudeFixture(t)
+	if err := f.setModel(t, "claude-model-live-a"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "mode", Value: "auto"}}); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := f.conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: f.session, ConfigId: "model", Value: "claude-model-live-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectedMode(selected.ConfigOptions); got != "default" {
+		t.Fatalf("permission mode after model switch = %q, want supervised default", got)
+	}
+}
+
+func selectedMode(options []acp.SessionConfigOption) string {
+	for _, option := range options {
+		if option.Select != nil && option.Select.Id == "mode" {
+			return string(option.Select.CurrentValue)
+		}
+	}
+	return ""
 }

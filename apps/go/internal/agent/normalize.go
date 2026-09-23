@@ -86,16 +86,8 @@ func Normalize(t *protocol.Thread, u Update) {
 			}
 			note(t, "available-commands", fmt.Sprintf("Agent commands available (%d)", len(names)), label(strings.Join(names, ", ")))
 		}
-	case "usage_update":
-		// Agent-supplied context telemetry, recorded as reported. Nothing here
-		// is computed, converted or combined with an external quota source.
-		var usage struct {
-			Used int64 `json:"used"`
-			Size int64 `json:"size"`
-		}
-		if json.Unmarshal(u.Raw, &usage) == nil && usage.Size > 0 {
-			t.Usage = &protocol.Usage{Used: usage.Used, Size: usage.Size, Source: "usage_update", ReportedAt: now()}
-		}
+	case "usage_update", "tui_usage_update":
+		normalizeUsage(t, u)
 	case "session_info_update":
 		var info struct {
 			Title *string `json:"title"`
@@ -173,6 +165,15 @@ func upsert(t *protocol.Thread, a protocol.Activity) *protocol.Activity {
 func appendChunk(t *protocol.Thread, id, role, title, chunk string) {
 	if chunk == "" {
 		return
+	}
+	// A submitted question answer separates the conversation into segments.
+	// Continuing the same native turn must not append its reply above the Q&A.
+	for i := len(t.Activity) - 1; i >= 0; i-- {
+		anchor := t.Activity[i]
+		if anchor.Role == "question-answer" && anchor.TurnID == t.TurnID {
+			id += ":after:" + anchor.ID
+			break
+		}
 	}
 	// Adapters emit trailing chunks after a turn has already been cancelled or
 	// failed. The text is retained, but a settled entry keeps its outcome and a

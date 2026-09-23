@@ -470,19 +470,20 @@ func TestUsageTelemetryDrivesGaugeAndSummary(t *testing.T) {
 	}
 	thread.Usage = &protocol.Usage{Used: 48000, Size: 200000, Source: "claude-agent-acp", ReportedAt: "2026-09-22T10:00:00Z"}
 	want := []string{
-		"Context used: 48000",
-		"Context capacity: 200000",
-		"Context percentage: 24%",
-		"Source: claude-agent-acp · reported 2026-09-22T10:00:00Z",
+		"Context used: 48000 tokens",
+		"Context capacity: 200000 tokens",
+		"Context percentage: 24.0%",
+		"Source: claude-agent-acp",
+		"Observed: 2026-09-22T10:00:00Z",
+		"API cost: unavailable",
 		"Billing mode: unknown",
 		"Subscription limits: unavailable",
-		"API cost: unavailable",
 	}
 	if got := m.usageLines(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("usage summary: %q", got)
 	}
 	gauge, help := m.usageGauge()
-	if gauge != "[━···] 24%" || !strings.Contains(help, "48000 of 200000 reported by claude-agent-acp") {
+	if gauge != "Ctx 24%" || !strings.Contains(help, "48k / 200k tokens") {
 		t.Fatalf("usage gauge: %q / %q", gauge, help)
 	}
 	if !strings.Contains(ansi.Strip(m.View().Content), "24%") {

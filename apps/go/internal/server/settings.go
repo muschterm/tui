@@ -25,7 +25,7 @@ func ensureAppSettings(s *protocol.Snapshot) {
 			s.Projects[i].Revision = 1
 		}
 	}
-	for _, capability := range []string{"app-settings", "project-settings", "restart-continuation", "path-completion", "workspace-file-context"} {
+	for _, capability := range []string{"app-settings", "new-thread-defaults", "project-settings", "restart-continuation", "path-completion", "workspace-file-context"} {
 		if !slices.Contains(s.Capabilities, capability) {
 			s.Capabilities = append(s.Capabilities, capability)
 		}
@@ -53,6 +53,27 @@ func applySettingsResolved(s *protocol.Snapshot, c protocol.Command, resolved *r
 			return "", failure("invalid", "choose current checkout or worktree")
 		}
 		next := *c.AppSettings
+		if next.NewThreadDefaults == nil || reflect.DeepEqual(next.NewThreadDefaults, s.AppSettings.NewThreadDefaults) {
+			next.NewThreadDefaults = s.AppSettings.NewThreadDefaults
+		} else if next.NewThreadDefaults.AgentID == "" {
+			if next.NewThreadDefaults.Settings != (protocol.Settings{}) {
+				return "", failure("invalid", "reset new-thread defaults without settings")
+			}
+			next.NewThreadDefaults = nil
+		} else {
+			if next.NewThreadDefaults.AgentID != agent.FixtureID {
+				record := agent.Find(s, next.NewThreadDefaults.AgentID)
+				if record == nil {
+					return "", failure("unsupported_agent", "new-thread default agent is no longer configured")
+				}
+				if record.Fields.Model == "" || next.NewThreadDefaults.Settings.Model == "" {
+					return "", failure("unsupported_settings", "default agent must offer a selected model")
+				}
+			}
+			if err := validateSettings(s, next.NewThreadDefaults.AgentID, next.NewThreadDefaults.Settings); err != nil {
+				return "", err
+			}
+		}
 		next.ProjectDirectory = nextProjectDirectory(*s, next)
 		if next.ProjectDirectory != s.AppSettings.ProjectDirectory {
 			path, err := resolved.result(next.ProjectDirectory)

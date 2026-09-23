@@ -140,6 +140,49 @@ func TestActivityAnimationUsesOneClockAndStops(t *testing.T) {
 	}
 }
 
+func TestTurnStatusStaysWithConversationAndClearsOnOutcome(t *testing.T) {
+	m := testModel()
+	thread := &m.snapshot.Threads[0]
+	thread.Children, thread.Plan = nil, nil
+	thread.Activity = []protocol.Activity{{ID: "user", Role: "user", Text: "Make a change"}, {ID: "reply", Role: "agent", Text: "Working on it"}}
+	thread.State = "running"
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.viewState().Scroll = m.measure().transcriptMax
+	f := m.render()
+	if f.transcript.H == 0 {
+		t.Fatal("conversation has no row for its latest turn status")
+	}
+	lines := m.transcriptLines(*thread, f.transcript.W)
+	statusY := f.transcript.Y + len(lines) - 1 - min(max(0, m.viewState().Scroll), f.transcriptMax)
+	if !strings.Contains(ansi.Strip(f.rows[statusY]), "Thinking…") || statusY >= f.prompt.Y {
+		t.Fatalf("Thinking is not the last visible conversation row above the composer: transcript=%+v scroll=%d/%d row=%q last=%#v", f.transcript, m.viewState().Scroll, f.transcriptMax, ansi.Strip(f.rows[statusY]), lines[len(lines)-1])
+	}
+	if len(lines) == 0 || lines[len(lines)-1].text != "Thinking…" || lines[len(lines)-1].marker != "●" {
+		t.Fatalf("latest conversation line does not show Thinking: %#v", lines)
+	}
+	if controls, _ := m.activityControls(80); len(controls) != 0 {
+		t.Fatalf("turn status is duplicated beside the composer: %#v", controls)
+	}
+	thread.State = "waiting"
+	lines = m.transcriptLines(*thread, 80)
+	if lines[len(lines)-1].text != "Waiting…" || lines[len(lines)-1].markerFG != m.colors().gold {
+		t.Fatalf("waiting is not distinct from active thinking: %#v", lines[len(lines)-1])
+	}
+	thread.State = "idle"
+	lines = m.transcriptLines(*thread, 80)
+	for _, line := range lines {
+		if line.text == "Thinking…" || line.text == "Waiting…" || line.marker != "" {
+			t.Fatalf("terminal outcome retained a live status: %#v", line)
+		}
+	}
+	thread.State = "running"
+	m.connected = false
+	lines = m.transcriptLines(*thread, 80)
+	if lines[len(lines)-1].text != "Connection lost" {
+		t.Fatalf("disconnected state still claims live thinking: %#v", lines[len(lines)-1])
+	}
+}
+
 func TestAgentsTotalSurvivesCompletionAndHover(t *testing.T) {
 	for _, width := range []int{40, 47, 48, 80, 120} {
 		for _, light := range []bool{false, true} {

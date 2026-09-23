@@ -65,3 +65,29 @@ The compact display must remain legible in narrow terminals. Details need keyboa
 - Missing telemetry causes no additional network calls or pricing lookups.
 
 These are acceptance scenarios for all three reference apps. Implementation, event mappings, and runtime validation are still pending.
+
+## Go telemetry and compact display — 2026-09-22
+
+The composer uses a compact `Ctx n%` control instead of a decorative four-cell
+bar. Unknown context is `Ctx —`; no unavailable cost placeholder consumes the
+control row. A cost appears only when supplied, with an estimate marker where
+applicable. Details retain exact counts, decimal amounts, source, model, scope
+and observation time. A model/session mismatch hides its old percentage rather
+than pairing it with a new limit. Usage remains independently reachable by
+keyboard and pointer when controls overflow.
+
+The built-in bridges advertise `tui-go.usage.v1` and emit bounded
+`tui_usage_update` snapshots through ACP. Missing context values stay absent.
+Codex forwards `thread/tokenUsage/updated.last.totalTokens` with its reported
+model context window, labelled as the last model request; cumulative `total`
+is never used as occupancy. Claude uses the latest main-agent request's input,
+cache-read and cache-creation tokens, labelled as input at the last request.
+Its assistant output token field may be a placeholder and is excluded. Capacity
+comes only from the matching actual model's result `modelUsage` entry;
+compaction clears the old input observation until the next request.
+
+Claude's `total_cost_usd` is an upstream-computed **estimate** and a cumulative
+session snapshot. Replace it, never sum successive results. Preserve decimal
+text and do not call it an authoritative bill or infer billing mode. Codex cost
+and subscription limits stay unavailable when absent. No extra model requests,
+quota APIs or price lookups populate these controls.

@@ -541,7 +541,7 @@ func (r *acpRun) ensureSession(w dispatchWork) (*agent.Session, agent.Info, erro
 	r.mu.Lock()
 	r.generation = generation
 	r.mu.Unlock()
-	handler := &acpHandler{acpRun: r, generation: generation, questions: w.record.ID == "claude"}
+	handler := &acpHandler{acpRun: r, generation: generation, questions: w.record.ID == "claude" || w.record.Command == agent.DefaultCodexCommand}
 	session, err := r.e.launcher()(r.ctx, agent.Options{AgentID: w.record.ID, Command: w.record.Command, Args: w.record.Args, Cwd: abs, Handler: handler, Log: r.e.logf})
 	if err != nil {
 		return nil, agent.Info{}, err

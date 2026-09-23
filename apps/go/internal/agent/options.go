@@ -43,7 +43,11 @@ func MapOptions(options []acp.SessionConfigOption) ([]protocol.ConfigOption, pro
 				if len(mapped.Values) >= maxValues {
 					break
 				}
-				v := protocol.ConfigValue{Value: string(value.Value), Name: label(value.Name)}
+				models, valid := optionModels(value.Meta)
+				if !valid {
+					continue
+				}
+				v := protocol.ConfigValue{Value: string(value.Value), Name: label(value.Name), Models: models}
 				if value.Description != nil {
 					v.Description = label(*value.Description)
 				}
@@ -79,6 +83,38 @@ func flatten(options acp.SessionConfigSelectOptions) []acp.SessionConfigSelectOp
 }
 
 func label(text string) string { return Truncate(Sanitize(text), maxLabel) }
+
+func optionModels(meta map[string]any) ([]string, bool) {
+	raw, ok := meta["tui-go.models"]
+	if !ok {
+		return nil, true
+	}
+	models := make([]string, 0)
+	add := func(model string) {
+		if model == "" || len(model) > maxLabel || len(models) >= maxValues {
+			return
+		}
+		for _, existing := range models {
+			if existing == model {
+				return
+			}
+		}
+		models = append(models, model)
+	}
+	switch values := raw.(type) {
+	case []string:
+		for _, model := range values {
+			add(model)
+		}
+	case []any:
+		for _, value := range values {
+			if model, ok := value.(string); ok {
+				add(model)
+			}
+		}
+	}
+	return models, len(models) != 0
+}
 
 // Fields maps composer settings fields onto option IDs. Option IDs and values
 // are not portable between adapters (the probe recorded claude's
@@ -172,8 +208,29 @@ func ValidateSettings(a protocol.Agent, settings protocol.Settings) error {
 			return fmt.Errorf("%s no longer reports the %s option; probe the agent again", a.Name, pair.field)
 		}
 		found := false
-		for _, value := range mapped.Values {
-			found = found || value.Value == pair.value
+		applicable := false
+		value := pair.value
+		if pair.field == "permissions" && value == Unavailable {
+			value = legacyPermissionBaseline(a.ID)
+		}
+		if pair.field == "speed" && (value == Unavailable || value == "") {
+			value = legacySpeedBaseline(a.ID)
+		}
+		for _, choice := range mapped.Values {
+			if len(choice.Models) != 0 {
+				listed := false
+				for _, model := range choice.Models {
+					listed = listed || model == settings.Model
+				}
+				if !listed {
+					continue
+				}
+			}
+			applicable = true
+			found = found || choice.Value == value
+		}
+		if !applicable && (pair.value == Unavailable || pair.value == "") {
+			continue
 		}
 		if !found {
 			return fmt.Errorf("%s does not offer %q for %s", a.Name, pair.value, pair.field)
@@ -187,13 +244,65 @@ func ValidateSettings(a protocol.Agent, settings protocol.Settings) error {
 func Assignments(a protocol.Agent, settings protocol.Settings) []Assignment {
 	var out []Assignment
 	for _, pair := range pairs(a.Fields, settings) {
-		if pair.id == "" || pair.value == "" || pair.value == Unavailable {
+		if pair.id == "" || pair.value == "" && pair.field != "speed" {
+			continue
+		}
+		value := pair.value
+		if pair.field == "permissions" && value == Unavailable {
+			value = legacyPermissionBaseline(a.ID)
+		}
+		if pair.field == "speed" && (value == Unavailable || value == "") {
+			value = legacySpeedBaseline(a.ID)
+			mapped := option(a.Options, pair.id)
+			found := false
+			if mapped != nil {
+				for _, choice := range mapped.Values {
+					if choice.Value != value {
+						continue
+					}
+					if len(choice.Models) == 0 {
+						found = true
+					}
+					for _, model := range choice.Models {
+						found = found || model == settings.Model
+					}
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		if value == "" || value == Unavailable {
 			continue
 		}
 		mapped := option(a.Options, pair.id)
-		out = append(out, Assignment{Field: pair.field, ConfigID: pair.id, Value: pair.value, Boolean: mapped != nil && mapped.Type == "boolean"})
+		out = append(out, Assignment{Field: pair.field, ConfigID: pair.id, Value: value, Boolean: mapped != nil && mapped.Type == "boolean"})
 	}
 	return out
+}
+
+// Old snapshots had no permission selector. Never let their unavailable value
+// inherit a previous turn's explicit Full access on a reused provider session.
+func legacyPermissionBaseline(agentID string) string {
+	switch agentID {
+	case "claude":
+		return "default"
+	case "codex":
+		return "supervised"
+	}
+	return ""
+}
+
+// Old queued prompts may predate a newly discovered speed selector. Applying
+// Standard explicitly prevents a previous Fast turn from leaking into them.
+func legacySpeedBaseline(agentID string) string {
+	switch agentID {
+	case "claude":
+		return "standard"
+	case "codex":
+		return "default"
+	}
+	return ""
 }
 
 // Defaults returns the agent's currently reported values as composer settings,

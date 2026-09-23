@@ -99,9 +99,12 @@ func (m *Model) optionMenuItems(c agentConfig, field string) []menuItem {
 	}
 	selected := settingValue(m.composerSelection(), field)
 	var items []menuItem
+	if field == "speed" && o.Description != "" {
+		items = append(items, menuItem{safe(o.Description), action{Kind: "noop"}})
+	}
 	for _, v := range o.Values {
 		label := m.questionMarker("single", v.Value == selected) + " " + settingValueLabel(field, v)
-		if description := strings.TrimSpace(singleLine(v.Description)); description != "" {
+		if description := strings.TrimSpace(singleLine(v.Description)); description != "" && field != "effort" {
 			label += " · " + ansi.Truncate(description, maxSettingHelp, "…")
 		}
 		items = append(items, menuItem{label, action{Kind: "setting-field", ID: field, Value: v.Value}})

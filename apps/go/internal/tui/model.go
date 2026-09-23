@@ -41,6 +41,7 @@ type threadView struct {
 	DismissedAgents, DismissedPlan string
 	Answers                        map[string][]string
 	QuestionDrafts                 map[string][]answerDraft
+	QuestionHistoryExpanded        map[string]bool `json:"QuestionHistoryExpanded,omitempty"`
 }
 
 type savedView struct {
@@ -184,6 +185,7 @@ type Model struct {
 	menu                                 []menuItem
 	menuTitle                            string
 	menuIndex                            int
+	contextMenu                          *contextMenuState
 	status                               string
 	notice                               transientNotice
 	connected                            bool
@@ -200,9 +202,15 @@ type Model struct {
 	selectedText                         string
 	selectionRegion                      shell.Rect
 	selectionBasis                       selectionBasis
-	keyboard                             string
-	activityPhase                        int
-	activityTickPending                  bool
+	clipboardGeneration                  uint64
+	// clipboardWrite is injectable for tests; production leaves it nil so the
+	// pinned OS clipboard adapter is used by clipboardCommand.
+	clipboardWrite          func(string) error
+	clipboardRead           func() (string, error)
+	clipboardReadGeneration uint64
+	keyboard                string
+	activityPhase           int
+	activityTickPending     bool
 }
 
 func newInput(placeholder string) textarea.Model {
@@ -642,6 +650,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice.text = ""
 		}
 		return m, nil
+	case clipboardWriteMsg:
+		cmd = m.acceptClipboardWrite(msg)
+	case clipboardReadMsg:
+		cmd = m.acceptClipboardRead(msg)
 	case terminalReplyStarted:
 		return m, tea.Tick(terminalReplyWindow, func(time.Time) tea.Msg { return terminalReplyExpired(msg) })
 	case terminalReplyReplay:
@@ -766,6 +778,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.markDirty()
 			}
 			m.configureInputs()
+			if rejected && (msg.command.Kind == "thread.start" && msg.command.ProjectID == m.state.DraftProjectID ||
+				(msg.command.Kind == "prompt.send" || msg.command.Kind == "prompt.reopen-send") && msg.command.ThreadID == m.state.Active) {
+				return m, m.showSendError(m.status)
+			}
 			if msg.command.Kind == "queue.steer" {
 				message := m.status
 				m.status = ""
@@ -942,17 +958,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	s := k.String()
+	if len(m.menu) == 0 && contextMenuKey(k) {
+		return m.openContextMenuForFocus()
+	}
 	if s == "ctrl+v" {
 		m.status = "Use your terminal’s paste shortcut"
 		return nil
 	}
-	if s == "ctrl+q" || s == "ctrl+c" {
+	if s == "ctrl+q" {
 		return tea.Quit
 	}
 	if s == "ctrl+z" {
 		return tea.Suspend
 	}
-	if s == "f4" {
+	if s == "f4" && m.contextMenu == nil {
 		if m.settingsPage != "" && !m.terminalTooSmall() {
 			m.openSettingsCommands()
 		} else {
@@ -960,14 +979,27 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		}
 		return nil
 	}
-	if s == "ctrl+shift+c" {
+	if s == "ctrl+shift+c" || s == "ctrl+c" || k.Keystroke() == "super+c" {
 		if m.selectionLive(m.measure()) && m.selectedText != "" {
-			return tea.SetClipboard(m.selectedText)
+			return m.copyText(m.selectedText)
 		}
 		if m.focus == "prompt" {
 			normalizeInputSelection(&m.prompt)
-			return m.prompt.CopySelection()
+			if m.prompt.HasSelection() {
+				return m.copyText(m.prompt.SelectedText())
+			}
 		}
+		if m.focus == "answer" {
+			normalizeInputSelection(&m.answer)
+			if m.answer.HasSelection() {
+				return m.copyText(m.answer.SelectedText())
+			}
+		}
+		if s == "ctrl+c" {
+			return tea.Quit
+		}
+		m.status = "No text is selected"
+		return nil
 	}
 	if len(m.menu) > 0 {
 		if m.projectMode != "" {
@@ -975,7 +1007,11 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		}
 		switch s {
 		case "esc":
-			m.menu = nil
+			if m.contextMenu != nil {
+				m.closeContextMenu()
+			} else {
+				m.menu = nil
+			}
 		case "up", "shift+tab":
 			m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
 		case "down", "tab":
@@ -986,6 +1022,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 				return m.activate(action{Kind: "close", ID: item.Action.ID})
 			}
 		case "enter":
+			if m.contextMenu != nil {
+				return m.selectContextMenuItem(m.menuIndex)
+			}
 			a := m.menu[m.menuIndex].Action
 			m.menu = nil
 			return m.activate(a)
@@ -1206,6 +1245,12 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 			m.scrollTo(target, 0, f)
 		}
 	case tea.MouseClickMsg:
+		if p.Button == tea.MouseRight {
+			if len(m.menu) != 0 {
+				return nil
+			}
+			return m.openContextMenuAtPointer(f, p.X, p.Y)
+		}
 		if p.Button != tea.MouseLeft {
 			return nil
 		}
@@ -1235,7 +1280,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 					}
 					return nil
 				}
-				m.setFocus(h.Key)
+				if m.contextMenu == nil {
+					m.setFocus(h.Key)
+				}
 				if h.Key == "project-input" {
 					m.projectInput.BeginSelection(p.X-h.Rect.X, p.Y-h.Rect.Y)
 					return nil
@@ -1329,7 +1376,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 			painted := m.render()
 			if m.selectionLive(painted) {
 				m.selectedText = painted.selection(m.selectionStart, m.selectionEnd, m.selectionRegion)
-				m.status = "Text selected · Ctrl+Shift+C copies via terminal clipboard"
+				m.status = "Text selected · Ctrl+C / Ctrl+Shift+C copies"
+				m.selecting = false
+				return m.showNotice(m.status)
 			}
 			m.selecting = false
 		}

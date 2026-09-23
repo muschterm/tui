@@ -51,8 +51,16 @@ func (m *Model) composerSelection() protocol.Settings {
 		// A replaced catalogue may withdraw fields. Capture their unavailable
 		// state without rewriting the saved preference or inventing a choice.
 		for _, field := range settingFieldOrder {
-			if _, offered := c.option(field); !offered {
+			if option, offered := c.option(field); !offered {
 				setSettingValue(&settings, field, "unavailable")
+			} else if field == "speed" && (settings.Speed == "" || settings.Speed == "unavailable") && (c.agent.ID == "codex" || c.agent.ID == "claude") {
+				baseline := "default"
+				if c.agent.ID == "claude" {
+					baseline = "standard"
+				}
+				if _, valid := optionValue(option, baseline); valid {
+					settings.Speed = baseline
+				}
 			}
 		}
 	}

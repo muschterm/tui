@@ -239,7 +239,7 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 			if r.State != "pending" || r.Revision != c.Revision {
 				return "", failure("stale_request", "request changed or was resolved elsewhere")
 			}
-			if agent.IsACP(t.AgentID) && (r.DeliveryRoute != "native-response" || (r.Kind != "approval" && (r.Kind != "question" || t.AgentID != "claude" || len(r.SourcePayload) == 0))) {
+			if agent.IsACP(t.AgentID) && (r.DeliveryRoute != "native-response" || (r.Kind != "approval" && (r.Kind != "question" || (t.AgentID != "claude" && t.AgentID != "codex") || len(r.SourcePayload) == 0))) {
 				return "", failure("unsupported_request", "this agent request has no supported answer delivery route")
 			}
 			if r.Kind == "approval" {
@@ -279,6 +279,25 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 					if pending.State == "pending" && pending.Mode == "blocking" {
 						t.State = "waiting"
 					}
+				}
+			}
+			if r.Kind == "question" {
+				// The request record owns the accepted question and answer snapshot;
+				// this transcript marker records where it belongs in conversation
+				// chronology without copying or re-submitting the answer.
+				activityID := fmt.Sprintf("question-answer:%s:%d", r.ID, c.Revision)
+				present := false
+				for _, activity := range t.Activity {
+					present = present || activity.ID == activityID
+				}
+				if !present {
+					turnID := r.TurnID
+					if turnID == "" {
+						turnID = t.TurnID
+					}
+					t.Activity = append(t.Activity, protocol.Activity{
+						ID: activityID, Role: "question-answer", RequestID: r.ID, TurnID: turnID,
+					})
 				}
 			}
 			return r.ID, nil

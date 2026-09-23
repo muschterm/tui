@@ -95,9 +95,12 @@ def main():
             term.send(b'\r', 1.2)
             view = get('views/sidebar-review')['data']
             check(view['Active'] == '' and view['DraftProjectID'] == p['ID'], 'new thread starts as local draft')
+            paste(term, 'Settings start')
+            term.send(b'\x13', .8)
+            check('Cannot send message' in '\n'.join(term.screen()) and get('views/sidebar-review')['data']['Active'] == '',
+                  'Send without a model opens an error dialog without creating a thread')
             term.click_label('Choose model')
             term.click_label('Reference · Demo model')
-            paste(term, 'Settings start')
             term.send(b'\r', 1.1)
             thread_id = get('views/sidebar-review')['data']['Active']
             term.pump(9)
@@ -119,6 +122,19 @@ def main():
             term.pump(.8)
             check(snap()['app_settings']['WorkspaceDefault'] == 'worktree', 'app workspace preference persists')
             capture('01-general')
+            category('Agents')
+            term.click_label('Agent: built-in default')
+            term.click_label('Fixture agent')
+            term.click_label('Effort: Medium')
+            term.click_label('High')
+            term.pump(.8)
+            defaults = snap()['app_settings']['NewThreadDefaults']
+            check(defaults['AgentID'] == 'fixture' and defaults['Settings']['Effort'] == 'high',
+                  'Agents category saves provider settings as revisioned new-thread defaults')
+            check(get('views/sidebar-review')['data']['Threads'][thread_id]['Draft'] == 'Keep this unsent draft',
+                  'saving new-thread defaults preserves existing prompt drafts')
+            capture('01-agents')
+            category('General')
             nav_back()
             term.click(20, 2)
             paste(term, 'Sidebar project')

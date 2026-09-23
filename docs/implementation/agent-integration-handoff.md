@@ -1,5 +1,11 @@
 # Agent integration handoff — 2026-09-22
 
+**Latest continuation:** [UI and native question fixes](../research/ui-bugs-2026-09-22.md)
+add selectable provider permissions, Codex blocking/continued-work questions,
+correlated native resolution, and revisioned new-thread defaults. This supersedes
+earlier Codex-questions-unavailable notes below. Claude effort remains unavailable;
+native answer receipts and the other documented capability gaps remain open.
+
 **Start here for the next agent.** This records the user's latest accepted
 direction after reviewing the ACP prototype and the UCF direct-CLI code.
 The original handoff was documentation-only; the continuation checkpoint below

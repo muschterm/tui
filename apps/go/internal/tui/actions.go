@@ -14,6 +14,7 @@ func (m *Model) showMenu(title string, items []menuItem) {
 	m.projectMode = ""
 	m.projectGear = false
 	m.projectInput.Blur()
+	m.contextMenu = nil
 	m.menuTitle = title
 	m.menu = items
 	m.menuIndex = 0
@@ -113,6 +114,10 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		return nil
 	case "menu-close":
+		if m.contextMenu != nil {
+			m.closeContextMenu()
+			return nil
+		}
 		m.menu = nil
 		m.projectMode = ""
 		return m.setFocus("prompt")
@@ -121,6 +126,9 @@ func (m *Model) activate(a action) tea.Cmd {
 		return m.activate(action{Kind: "close", ID: a.ID})
 	case "menu-select":
 		if a.Index >= 0 && a.Index < len(m.menu) {
+			if m.contextMenu != nil {
+				return m.selectContextMenuItem(a.Index)
+			}
 			item := m.menu[a.Index]
 			if item.Action.Kind == "project-submit" || item.Action.Kind == "project-rename-submit" || item.Action.Kind == "project-no-match" || strings.HasPrefix(item.Action.Kind, "path-") {
 				return m.activate(item.Action)
@@ -131,6 +139,10 @@ func (m *Model) activate(a action) tea.Cmd {
 			return m.activate(item.Action)
 		}
 		return nil
+	case "context-copy":
+		return m.copyText(a.Value)
+	case "context-paste":
+		return m.pasteClipboard()
 	case "quit":
 		return tea.Quit
 	case "suspend":
@@ -428,7 +440,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		m.status = "No uncertain command to retry"
 	case "send":
 		if reason := m.sendBlocked(); reason != "" {
-			return m.showNotice(reason)
+			return m.showSendError(reason)
 		}
 		text := strings.TrimSpace(m.prompt.Value())
 		v.Draft = m.prompt.Value()
@@ -658,13 +670,33 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "usage":
 		m.openSurface("activity", "usage")
+	case "question-history-toggle":
+		if request, ok := questionRequestByID(t, a.ID); ok && questionHistoryHasSubmission(request) {
+			v := m.viewState()
+			if v.QuestionHistoryExpanded == nil {
+				v.QuestionHistoryExpanded = make(map[string]bool)
+			}
+			v.QuestionHistoryExpanded[a.ID] = !v.QuestionHistoryExpanded[a.ID]
+		}
 	case "copy-transcript":
 		var b strings.Builder
+		copiedRequests := make(map[string]bool)
 		for _, a := range t.Activity {
+			if a.Role == "question-answer" {
+				if request, ok := questionRequestByID(t, a.RequestID); ok && !copiedRequests[a.RequestID] && questionHistoryHasSubmission(request) {
+					b.WriteString(questionHistoryText(request) + "\n\n")
+					copiedRequests[a.RequestID] = true
+				}
+				continue
+			}
 			fmt.Fprintf(&b, "%s\n%s\n\n", safe(a.Title), safe(a.Text))
 		}
-		m.status = "Transcript sent to terminal clipboard"
-		return tea.SetClipboard(b.String())
+		for _, request := range t.Requests {
+			if !copiedRequests[request.ID] && questionHistoryHasSubmission(request) {
+				b.WriteString(questionHistoryText(request) + "\n\n")
+			}
+		}
+		return m.copyText(b.String())
 	}
 	m.viewState().RightVisible = m.state.Layout.Right
 	m.markDirty()

@@ -55,13 +55,18 @@ Permission requests share this area through distinct [approval cards](activity.m
 
 ## Answered questions in conversation history
 
-**Accepted, 2026-09-20:** after authoritative resolution confirms the submitted
-response, replace the live question form with a compact, read-only **Answered**
-card in the chat conversation. This is shared behavior for all three reference
-apps. The response belongs to the original request and its thread/turn; it is
-not an ordinary prompt, queued message or Steer action. For a declared
-turn-ending fallback, also retain its link to the upstream continuation turn
-without duplicating the user-visible answer in history.
+**Accepted, 2026-09-20; clarified 2026-09-22:** once the server has durably
+accepted a response snapshot, show one compact, read-only card in the chat
+conversation at that submission's recorded chronology point. Label the card
+**Answered** only after authoritative resolution confirms the response. While
+provider delivery or resolution is unconfirmed, show the captured submitted
+answers with a truthful status such as **Submitted · delivery unconfirmed** or
+**Submitted · delivery uncertain**; known delivery failure also retains the
+answers with its failure status. Later evidence updates this same card in place.
+The response belongs to the original request and its thread/turn; it is not an
+ordinary prompt, queued message or Steer action. For a declared turn-ending
+fallback, also retain its link to the upstream continuation turn without
+duplicating the user-visible answer in history.
 
 Use one rounded outlined container with a stable background, following the
 [component rule](components.md). Give it a quiet Answered header and a completion
@@ -70,11 +75,13 @@ with its submitted answer in question order, using spacing and text hierarchy
 without repeated You/Agent labels or nested boxes. Retain meaningful requesting
 child identity when needed to distinguish the source.
 
-Show selected choice labels, every selected value for a multiple-choice answer,
-and the accepted free text, including Other text. Preserve explicit optional
-omissions/skips as such; never display defaults or a losing client's unsent draft
-as the submitted answer. Retain the question wording/options as answered rather
-than relabelling old answers using a newer request schema.
+Show each original question with all of its available choice labels. Mark every
+selected choice, including each selected value for a multiple-choice answer,
+and show the accepted free text, including Other text; recede unselected choices
+without relying on color alone. Preserve explicit optional omissions/skips as
+such; never display defaults or a losing client's unsent draft as the submitted
+answer. Retain the question wording/options as answered rather than relabelling
+old answers using a newer request schema.
 
 Short Q&A stays readable directly in the card. Bound long previews and show Expand
 only when content is hidden, indicating additional questions or text. Expansion
@@ -85,11 +92,13 @@ occupies the fixed pending-request area or reduces the prompt/settings/usage
 footer. Preserve the reading anchor when expanding/collapsing and restore local
 expansion/reading state with the thread.
 
-Place the card at the response's recorded resolution point in conversation
-chronology, retaining its connection to the originating request. Later agent
-work follows normally. Incoming resolution must not steal focus or pull someone
-away from older text they are reading. The card has no answer-editing inputs,
-Submit, queue or Steer controls; viewing it cannot change or resend the answer.
+Place the card at the response's recorded submission point in conversation
+chronology, retaining its connection to the originating request. If later
+evidence confirms resolution, update the existing card rather than inserting a
+second copy. Later agent work follows normally. Incoming resolution must not
+steal focus or pull someone away from older text they are reading. The card has
+no answer-editing inputs, Submit, queue or Steer controls; viewing it cannot
+change or resend the answer.
 
 Submitting, accepted-for-delivery and uncertain/failed delivery must not appear
 as successfully Answered. Keep the existing pending/delivery feedback until the
@@ -106,9 +115,22 @@ or stale local drafts remain separately recoverable. For older records, show
 only preserved content and known ordering; do not invent missing answers,
 request wording, delivery confirmation or timestamps.
 
-**Implementation gap:** the current Go slice saves resolved requests and their
-answers, but does not yet add this Q&A card to the transcript. This section is an
-accepted design requirement, not evidence that the history renderer exists.
+**Implementation evidence (2026-09-22):** the Go slice records a stable
+transcript marker with each accepted question response and renders a read-only
+question/answer card at that position. Server-confirmed fixture resolutions use
+**Answered**; native ACP answers remain visibly submitted while delivery is
+unconfirmed or uncertain. Ordinary submitted records without provider receipts
+use a neutral “Submitted · provider confirmation unavailable” header; this is
+an integration limitation, not a pending action or confirmed failure. Actual
+uncertain and failed delivery retain their distinct warning states. If an older or trimmed snapshot lacks its chronology
+marker, the card follows the last retained activity of its originating turn and
+identifies that its exact earlier position is unavailable. If no activity from
+that turn remains, it appears under Earlier history before the retained
+conversation. It must not follow every newer message at the bottom. Long-card expansion and per-thread
+expansion restoration use a client-local control and saved thread view.
+Preserving the reading position while expanding or collapsing remains
+incomplete; ordinary transcript scrolling exposes the preserved content in the
+current slice.
 
 ## Blocking and asynchronous requests
 
@@ -231,3 +253,24 @@ Withdrawal/cancellation preserves any accepted response without replay; a new
 connection cannot revive the callback. Explicit Submit remains the only answer
 action in this slice; omission is represented in the accepted form, and Stop
 cancels the active turn. Separate per-request Decline/Cancel controls remain open.
+
+## Built-in Codex native questions — 2026-09-22
+
+The Go bridge negotiates `tui-go.codex-questions.v1` and enables the installed
+Codex CLI's `default_mode_request_user_input` feature for a question-capable
+client. App Server `item/tool/requestUserInput` requests route through the same
+server-owned form, explicit Submit, revision guard and durable response path.
+The supplied `isBlocking` selects blocking/Waiting or continued-work/Running;
+ordinary Send remains separate from answering. Supported forms contain 1–4
+questions, single choices or free text, supplied option descriptions, and
+optional Other only when offered. Secret input and automatic-answer timeouts
+remain explicitly unsupported. The native IDs and source payload are retained.
+
+A bounded native request ledger correlates `serverRequest/resolved` to its
+request. Resolution after our response keeps the connection alive; external
+withdrawal prevents a late answer and conservatively retires the connection.
+Acceptance, native write and provider completion remain distinct: the current
+slice reports an unconfirmed answer rather than inventing an authoritative
+Answered receipt. Live Luna-low evidence covers answer/retry, Stop, late-answer
+rejection and restart without replay in the
+[bug-fix report](../research/ui-bugs-2026-09-22.md).

@@ -24,9 +24,13 @@ def main():
     parser.add_argument('--adapter', type=Path, help='explicit external ACP adapter; omit for the shipped Go bridge')
     parser.add_argument('--model', help='explicit model ID from the live catalogue')
     parser.add_argument('--effort', help='explicit effort value from the live catalogue')
+    parser.add_argument('--speed', help='explicit model-supported speed tier')
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--artifacts', type=Path, required=True)
+    parser.add_argument('--questions', action='store_true', help='exercise Codex native questions instead of a text-only reply')
+    parser.add_argument('--permissions', help='explicit discovered permission mode for the harmless test prompts')
     args = parser.parse_args()
+    question_test = args.agent == 'claude' or args.questions
     if os.environ.get('TUI_GO_LIVE_ACP') != '1':
         parser.error('set TUI_GO_LIVE_ACP=1; this check consumes provider allowance')
     binary, runtime = (p.resolve(strict=True) for p in (args.binary, args.runtime))
@@ -135,22 +139,34 @@ def main():
             if agent['State'] != 'ready':
                 report['readiness_detail'] = safe(agent.get('Detail'))
             check(agent['State'] == 'ready', 'adapter ready')
+            report['settings_catalog'] = [{'ID': o['ID'], 'Current': o['Current'], 'Values': o.get('Values', [])} for o in agent['Options']]
             settings = {}
             for field in ('Model', 'Effort', 'Permissions', 'Context', 'Speed'):
                 option = next((o for o in agent['Options'] if o['ID'] == agent['Fields'].get(field)), None)
-                settings[field] = option['Current'] if option else 'unavailable'
+                values = [v for v in option['Values'] if not v.get('Models') or settings.get('Model') in v['Models']] if option else []
+                settings[field] = option['Current'] if option and any(v['Value'] == option['Current'] for v in values) else (values[0]['Value'] if values else 'unavailable')
                 if field == 'Model' and option:
                     selected = args.model or settings[field] or option['Values'][0]['Value']
                     check(any(v['Value'] == selected for v in option['Values']), 'explicit model is discovered')
                     settings[field] = selected
                 if field == 'Effort' and args.effort:
-                    check(option is not None and any(v['Value'] == args.effort for v in option['Values']), 'explicit effort is discovered')
+                    check(option is not None and any(v['Value'] == args.effort for v in values), 'explicit effort is discovered')
                     settings[field] = args.effort
+                if field == 'Speed':
+                    report['speed_options'] = values
+                    if args.speed:
+                        selected_speed = next((v['Value'] for v in values if v['Value'] == args.speed or v.get('Name', '').lower() == args.speed.lower()), None)
+                        check(selected_speed is not None, 'explicit speed is supported by selected model')
+                        settings[field] = selected_speed
+            if args.permissions:
+                option = next((o for o in agent['Options'] if o['ID'] == agent['Fields'].get('Permissions')), None)
+                check(option is not None and any(v['Value'] == args.permissions for v in option['Values']), 'explicit permission mode is discovered')
+                settings['Permissions'] = args.permissions
             report['selected'] = settings
             project_id = command('project.add', Path=str(project))['TargetID']
-            prompt = ('Use AskUserQuestion now to ask exactly one question: Which color? '
+            prompt = ('Use ' + ('AskUserQuestion' if args.agent == 'claude' else 'request_user_input') + ' now to ask exactly one question: Which color? '
                       'Use header Color, single selection, choices Blue and Green with short descriptions. '
-                      'Wait for my answer, then reply with exactly the selected color. Do not use any other tools or change files.') if args.agent == 'claude' else 'Reply with exactly pong. Do not use tools or change files.'
+                      'Wait for my answer, then reply with exactly the selected color. Do not use any other tools or change files.') if question_test else 'Reply with exactly pong. Do not use tools or change files.'
             thread_id = command('thread.start', ProjectID=project_id, Agent=args.agent,
                                 Settings=settings, Text=prompt)['TargetID']
             t = wait(terminal_or_question, 'native question or prompt outcome')
@@ -159,10 +175,11 @@ def main():
                 check(len(t.get('Queue') or []) == 0 and t['NeedsResume'], 'failed dispatched prompt retained outside queue behind Resume')
                 check(any(a.get('Prompt', {}).get('Text') == prompt for a in t['Activity']), 'failed prompt capture retained in history')
                 raise AssertionError('provider failed before requested result')
-            if args.agent == 'claude':
+            if question_test:
                 request = next(r for r in t['Requests'] if r['State'] == 'pending' and r['Kind'] == 'question')
                 report['native_question'] = {'mode': request['Mode'], 'route': request['DeliveryRoute'], 'questions': request['Questions']}
-                check(request['Mode'] == 'blocking' and t['State'] == 'waiting', 'native question is waiting')
+                check((request['Mode'] == 'blocking' and t['State'] == 'waiting') or
+                      (request['Mode'] == 'async' and t['State'] == 'running'), 'native question preserves blocking or continued-work mode')
                 check(len(request['Questions']) == 1 and 'Blue' in request['Questions'][0]['Options'], 'provider supplied requested bounded form')
                 answer = dict(Version=1, ID=uuid.uuid4().hex, Kind='request.answer', ThreadID=thread_id,
                               TargetID=request['ID'], Revision=request['Revision'], QuestionAnswers=[{'Choices': ['Blue']}])
@@ -176,16 +193,24 @@ def main():
             else:
                 check(t['State'] == 'idle' and any(a['Role'] == 'agent' and a.get('Text', '').strip() == 'pong' for a in t['Activity']), 'real pong turn completed')
             report['effective'] = t['Effective']
-            command('prompt.send', ThreadID=thread_id, Settings=settings, Text=prompt if args.agent == 'claude' else
+            usage = t.get('Usage')
+            report['usage'] = usage
+            check(usage is not None and usage.get('Used', -1) >= 0 and usage.get('Source'), 'native context observation reaches persisted thread')
+            if question_test:
+                anchors = [a for a in t['Activity'] if a.get('RequestID') == request['ID']]
+                check(len(anchors) == 1 and anchors[0]['Role'] == 'question-answer', 'answer has one durable conversation anchor')
+            if args.speed:
+                check(t['Effective']['Speed'] == settings['Speed'], 'selected speed acknowledged as effective')
+            command('prompt.send', ThreadID=thread_id, Settings=settings, Text=prompt if question_test else
                     'Write a long numbered list of 1000 imaginary colors. Do not use tools.')
-            if args.agent == 'claude':
+            if question_test:
                 pending = wait(lambda: next((r for r in thread().get('Requests') or [] if r['State'] == 'pending'), None), 'second waiting question')
-                check(thread()['State'] == 'waiting', 'Stop target is waiting on native question')
+                check(thread()['State'] in ('running', 'waiting'), 'Stop target has a live native question')
             else:
                 wait(lambda: thread()['State'] == 'running', 'running cancellation target')
             command('thread.interrupt', ThreadID=thread_id)
             wait(lambda: thread().get('StopReason') == 'cancelled', 'cancel acknowledgement')
-            if args.agent == 'claude':
+            if question_test:
                 try:
                     command('request.answer', ThreadID=thread_id, TargetID=pending['ID'], Revision=pending['Revision'],
                             QuestionAnswers=[{'Choices': ['Blue']}])
@@ -203,12 +228,20 @@ def main():
             cli('server', 'start')
             t = thread()
             check(not t['Queue'], 'restart retains no dispatched queue copies')
-            if args.agent == 'claude':
+            if question_test:
                 check(t['Requests'][0]['Delivery'] == 'acp-uncertain', 'restart retains accepted answer as uncertain')
                 check(api('command', answer) == receipt, 'restart retry returns receipt without replay')
+                check(sum(a.get('RequestID') == request['ID'] for a in t['Activity']) == 1, 'restart retains one question history anchor')
             report['result'] = 'PASS'
         except Exception as error:
             report['result'], report['error'] = 'FAIL', safe(error)
+            if isinstance(error, urllib.error.HTTPError):
+                report['response_error'] = safe(error.read().decode())
+            if thread_id:
+                current = thread()
+                report['failed_state'] = {k: current.get(k) for k in ('State', 'Error', 'StopReason', 'Requests')}
+            if (home / 'server.log').exists():
+                report['diagnostics'] = [safe(line) for line in (home / 'server.log').read_text().splitlines()[-20:]]
         finally:
             try:
                 shutdown()

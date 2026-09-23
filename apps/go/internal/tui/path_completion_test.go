@@ -331,6 +331,10 @@ func TestPathCaptureErrorPersistsAfterNoticeAndClearsOnResolution(t *testing.T) 
 			}
 			command := *m.busy
 			m.Update(commandMsg{command: command, err: &protocol.Error{Code: "invalid_attachment", Message: "Cannot capture missing.txt: file is unavailable"}})
+			if m.menuTitle != "Cannot send message" || len(m.menu) == 0 {
+				t.Fatal("send rejection did not open error dialog")
+			}
+			m.activate(action{Kind: "menu-close"})
 			m.Update(noticeExpired(m.notice.generation))
 			if m.notice.text != "" || m.viewState().ContextError == "" || m.prompt.Value() != "read this file" || len(m.viewState().Attachments) != 1 || !hasControl(m.render(), "context-error") {
 				t.Fatalf("capture failure lost draft or persistent error: %q", m.viewState().ContextError)

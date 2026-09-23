@@ -46,12 +46,13 @@ control (2026-09-22; see [components](components.md#state-feedback)) so focus ne
 moves an icon or label; only controls without such a cell keep an underline.
 
 Center close glyphs within their cell hit areas, including modal headers and tab
-menus. Give the typing area a complete, clearly visible outline, with the
-settings/actions row outside and below its bottom border. Retain the outlined
-input's bounded growth and internal scrollbar. Keep the prompt text and footer
-controls inside shared two-cell side
+menus. Give the prompt and its controls one complete, clearly visible rounded
+outline. The typing area sits above the settings/actions row inside that outline;
+the checkout context row stays below it. Retain bounded input growth and its
+internal scrollbar. Keep the prompt text and controls inside shared two-cell side
 gutters, reducing those gutters only at tiny widths. Selected agent/model/settings
-align left; usage, attachments, Stop and Send align right on the same footer row.
+align left; usage, attachments, Stop and Send align right on the same footer row
+inside the outline.
 Keep this footer to one row. As its available width decreases, first compact
 usage to its clickable gauge with a usage ellipsis, then progressively move
 lower-priority settings into their own vertical ellipsis menu. Show the settings
@@ -99,7 +100,7 @@ not a centered modal. See [components](components.md).
 
 Scrollable content shows a proportional scrollbar only when it overflows. Support wheel and keyboard scrolling, track paging and thumb dragging where cell geometry permits it. Input read-scrolling preserves the insertion cursor and draft; typing follows that cursor again. A one-cell viewport can show a position indicator but has no vertical thumb travel; wheel and keyboard remain available. Keep scroll positions bounded and preserve the input-burst performance correction.
 
-Show Thinking while the reported turn is actively running; clear it when the turn completes, fails or is interrupted. Waiting uses a distinct status and does not claim hidden reasoning. Stop is the user-facing name for interrupt/cancel, available only during an active turn, including waiting for a question or approval; dispatching Stop is not confirmation that work ended. At the far right of the footer, Send uses a blue circle; while active, Stop uses a red circle directly to its left. Put the paperclip directly left of Stop, or Send when Stop is absent, with the context-usage gauge to the left of these controls. Keep keyboard paths and labels/fallbacks. Preserve this footer when the visible right host or empty chooser is maximized.
+Show a blue-circle Thinking status as the latest row in the conversation while the reported turn is actively running; clear the live status when the turn completes, fails or is interrupted. Waiting uses a distinct status and does not claim hidden reasoning. Do not repeat the turn status beside the composer. Stop is the user-facing name for interrupt/cancel, available only during an active turn, including waiting for a question or approval; dispatching Stop is not confirmation that work ended. Inside the composer outline, Send uses a blue circle; while active, Stop uses a red circle directly to its left. Put the paperclip directly left of Stop, or Send when Stop is absent, with the compact context/cost display to the left of these controls. Keep keyboard paths and labels/fallbacks. Preserve the composer when the visible right host or empty chooser is maximized.
 
 ## Background attention
 
@@ -242,3 +243,13 @@ Client focus, scroll position, and active selection are frontend-local. Multiple
 These choices will be resolved through the [interview](interview.md), rather than inferred from the schematic.
 
 Settings replaces the left navigation with categories and the full main workspace with the selected configuration, hiding conversation, right/bottom surfaces and composer. Bottom-left Back restores the prior workspace without losing drafts, reading positions or surface sessions. Compact settings switches categories/form through its hamburger/F2. See [settings](settings.md).
+
+## Send validation feedback — 2026-09-22
+
+An explicit Send blocked by missing/invalid configuration opens a centered,
+rounded error dialog with the reason, a direct setting chooser when applicable,
+and Back to prompt. Keep the prompt and attachments intact. Escape and outside
+click dismiss without submitting. A definitive server rejection for the visible
+composer uses the same dialog; attachment errors also stay visible at their
+source after dismissal. Hidden/undersized composers retain their non-submitting
+notice behavior, and uncertain deliveries retain their existing Retry identity.

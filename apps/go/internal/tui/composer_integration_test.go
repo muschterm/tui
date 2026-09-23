@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
 func TestComposerEnterSendsAndModifiedEnterGrows(t *testing.T) {
@@ -32,7 +33,7 @@ func TestComposerEnterSendsAndModifiedEnterGrows(t *testing.T) {
 }
 
 func TestComposerCapKeepsFooterAndCompleteDraft(t *testing.T) {
-	for _, size := range [][2]int{{160, 50}, {120, 40}, {80, 30}, {60, 24}, {48, 22}} {
+	for _, size := range [][2]int{{160, 50}, {120, 40}, {80, 30}, {60, 24}, {48, 22}, {40, 22}} {
 		for _, light := range []bool{false, true} {
 			m := testModel()
 			m.setFocus("prompt")
@@ -64,27 +65,31 @@ func TestComposerCapKeepsFooterAndCompleteDraft(t *testing.T) {
 	}
 }
 
-func TestPromptOutlineSeparatesTypingFromControls(t *testing.T) {
-	for _, size := range [][2]int{{160, 50}, {80, 30}, {48, 22}} {
+func TestPromptOutlineContainsTypingAndControls(t *testing.T) {
+	for _, size := range [][2]int{{160, 50}, {80, 30}, {48, 22}, {40, 22}} {
 		m := testModel()
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m.setFocus("prompt")
 		m.Update(tea.PasteMsg{Content: strings.Repeat("Keep my draft\n", 12)})
 		f := m.render()
 		send := controlHit(t, f, "send")
-		if send.Rect.Y != f.prompt.Y+f.prompt.H+1 {
-			t.Fatal("footer is not below the prompt outline")
+		if send.Rect.Y != f.prompt.Y+f.prompt.H {
+			t.Fatal("footer is not inside the prompt outline")
 		}
+		bottom := f.prompt.Y + f.prompt.H + m.composerControlsHeight(f.geom.Center.W-2)
 		for _, edge := range []struct {
 			row         int
 			left, right string
 		}{
-			{f.prompt.Y - 1, "╭", "╮"}, {f.prompt.Y + f.prompt.H, "╰", "╯"},
+			{f.prompt.Y - 1, "╭", "╮"}, {bottom, "╰", "╯"},
 		} {
 			line := ansi.Strip(f.rows[edge.row])
 			if !strings.Contains(line, edge.left) || !strings.Contains(line, edge.right) {
 				t.Fatal("incomplete prompt outline", line)
 			}
+		}
+		if send.Rect.Y >= bottom {
+			t.Fatal("footer escaped the prompt outline")
 		}
 		bar, ok := f.scrollbars["prompt"]
 		if !ok || bar.Rect.X >= f.geom.Center.X+f.geom.Center.W-2 {
@@ -126,13 +131,20 @@ func TestPolishedViewCaptures(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, light := range []bool{false, true} {
-		for _, variant := range []string{"tabs", "composer", "overflow", "menu", "narrow", "maximized", "footer-compact", "footer-menu", "footer-minimal", "footer-usage"} {
+		for _, variant := range []string{"tabs", "composer", "overflow", "menu", "narrow", "maximized", "footer-compact", "footer-menu", "footer-minimal", "footer-usage", "conversation-wide", "conversation-compact"} {
 			m := testModel()
 			m.setFocus("prompt")
 			m.state.Light = light
-			m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
-			m.openSurface("files", "")
-			m.openSurface("plan", "")
+			size := [2]int{160, 50}
+			if variant == "conversation-compact" {
+				size = [2]int{60, 32}
+			}
+			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			conversationCapture := strings.HasPrefix(variant, "conversation-")
+			if !conversationCapture {
+				m.openSurface("files", "")
+				m.openSurface("plan", "")
+			}
 			if variant == "tabs" {
 				m.hover = "tab:" + m.viewState().Host.Tabs[0].ID
 			}
@@ -153,6 +165,27 @@ func TestPolishedViewCaptures(t *testing.T) {
 			}
 			if variant == "narrow" {
 				m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+			}
+			if conversationCapture {
+				thread := &m.snapshot.Threads[0]
+				thread.Usage = &protocol.Usage{
+					Used: 4250, Size: 10000, Source: "session/update", ReportedAt: "2026-09-22T14:10:00Z",
+					Model: "fixture-model", Cost: &protocol.UsageCost{
+						Amount: "0.03", Currency: "USD", Source: "fixture", ReportedAt: "2026-09-22T14:10:00Z", Scope: "turn", Estimated: true,
+					},
+				}
+				request := protocol.Request{
+					ID: "answered-review-focus", Kind: "question", State: "resolved", Delivery: "fixture-confirmed",
+					SubmissionID: "fixture-answer-1", Origin: "Demo Agent",
+					Questions:       []protocol.Question{{ID: "review-focus", Label: "Focus", Text: "Which part should the review emphasize?", Kind: "single", Options: []string{"Keyboard navigation", "Compact layout", "Surface workflow"}}},
+					QuestionAnswers: []protocol.Answer{{Choices: []string{"Compact layout"}}},
+				}
+				thread.Requests = append(thread.Requests, request)
+				thread.Activity = append(thread.Activity, protocol.Activity{
+					ID: "question-answer:answered-review-focus", Role: "question-answer", RequestID: request.ID, TurnID: "intro",
+				})
+				m.configureInputs()
+				m.viewState().Scroll = m.measure().transcriptMax
 			}
 			if strings.HasPrefix(variant, "footer-") {
 				m.Update(tea.WindowSizeMsg{Width: 76, Height: 28})

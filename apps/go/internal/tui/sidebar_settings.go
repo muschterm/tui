@@ -70,6 +70,15 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 	switch a.Kind {
 	case "app-settings":
 		m.openSidebarSettings("general", "")
+	case "app-thread-agent", "app-thread-field":
+		return true, m.openNewThreadDefaultMenu(a)
+	case "app-thread-agent-set", "app-thread-field-set", "app-thread-reset":
+		return true, m.saveNewThreadDefault(a)
+	case "app-thread-agent-probe":
+		if !m.hasCapability("agent-probe") {
+			return true, m.settingsUnavailable("agent-probe")
+		}
+		return true, m.command(protocol.Command{Kind: "agent.probe", TargetID: a.ID}, a)
 	case "app-project-directory":
 		if m.settingsProjectID != "" {
 			return true, m.showNotice("Project starting folder is in app General settings")
@@ -333,6 +342,29 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 		if !m.hasCapability("restart-continuation") || !m.hasCapability("app-settings") {
 			gap()
 			paragraph("Update this server to change these settings.")
+		}
+	case "agents":
+		name = "Agents"
+		heading("New thread defaults")
+		button(m.newThreadDefaultAgentLabel(), "agent", action{Kind: "app-thread-agent"})
+		paragraph("Used when a new project draft is first opened. Existing drafts and threads keep their selections.")
+		if saved := m.snapshot.AppSettings.NewThreadDefaults; saved != nil && saved.AgentID != "" {
+			if a, ok := m.agentByID(saved.AgentID); ok {
+				if a.Kind != "fixture" && a.State != "ready" {
+					paragraph("Saved agent is " + agentReadiness(a) + "; refresh its options before using this default.")
+				}
+				for _, field := range settingFieldOrder {
+					label := m.newThreadDefaultFieldLabel(a, field, saved.Settings)
+					button(label, field, action{Kind: "app-thread-field", ID: field})
+				}
+			} else {
+				paragraph("Saved agent is no longer configured; choose another agent.")
+			}
+		}
+		gap()
+		button("Use built-in defaults", "reset", action{Kind: "app-thread-reset"})
+		if !m.hasCapability("new-thread-defaults") {
+			paragraph("Update this server to change new thread defaults.")
 		}
 	case "appearance":
 		name = "Appearance"

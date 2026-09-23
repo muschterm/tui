@@ -99,16 +99,6 @@ func (m *Model) activityControls(width int) ([]activityControl, int) {
 		controls = append(controls, activityControl{kind, x, y, w, s})
 		x += w + 1
 	}
-	if activeTurn(t) {
-		s := activitySummary{Label: "Thinking…", State: "working", Working: t.State == "running"}
-		if t.State == "waiting" {
-			s.Label, s.State = "Waiting…", "waiting"
-		}
-		if !m.connected {
-			s.Label, s.State, s.Working = "Connection lost", "unknown", false
-		}
-		add("thinking", s)
-	}
 	// A failed turn keeps its reported reason visible above the composer while
 	// Send stays available for the next attempt.
 	if t.State == "failed" {
@@ -184,7 +174,7 @@ func (m *Model) activityColor(s activitySummary) string {
 
 // statusOnlyActivity reports a strip entry that reports state and opens
 // nothing: it stays plain text with its indicator, never a control.
-func statusOnlyActivity(kind string) bool { return kind == "thinking" || kind == "failed" }
+func statusOnlyActivity(kind string) bool { return kind == "failed" }
 
 func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 	controls, height := m.activityControls(r.W)

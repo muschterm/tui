@@ -1,0 +1,265 @@
+{
+  "agent": "claude",
+  "checks": [
+    "adapter ready",
+    "explicit model is discovered",
+    "explicit speed is supported by selected model",
+    "explicit permission mode is discovered",
+    "native question preserves blocking or continued-work mode",
+    "provider supplied requested bounded form",
+    "duplicate answer command returns original receipt",
+    "provider turn completed after answer",
+    "generic completion did not become an authoritative answer receipt",
+    "provider reply corroborates selected answer",
+    "native context observation reaches persisted thread",
+    "answer has one durable conversation anchor",
+    "selected speed acknowledged as effective",
+    "Stop target has a live native question",
+    "late answer after Stop rejected",
+    "cancelled waiting question has no accepted answer",
+    "Resume sends no duplicate prompt",
+    "restart retains no dispatched queue copies",
+    "restart retains accepted answer as uncertain",
+    "restart retry returns receipt without replay",
+    "restart retains one question history anchor"
+  ],
+  "result": "PASS",
+  "runtime_version": "2.1.280 (Claude Code)",
+  "adapter_version": "tui-go-claude 0.1.0",
+  "readiness": "ready",
+  "settings_catalog": [
+    {
+      "ID": "model",
+      "Current": "",
+      "Values": [
+        {
+          "Value": "default",
+          "Name": "Default (recommended) (claude-opus-5-5[1m])"
+        },
+        {
+          "Value": "opus[1m]",
+          "Name": "Opus (1M context) (claude-opus-5-5[1m])"
+        },
+        {
+          "Value": "claude-fable-5-1[1m]",
+          "Name": "Fable (claude-fable-5-1)"
+        },
+        {
+          "Value": "sonnet",
+          "Name": "Sonnet (claude-sonnet-5)"
+        },
+        {
+          "Value": "haiku",
+          "Name": "Haiku (claude-haiku-4-5-20251001)"
+        },
+        {
+          "Value": "claude-fable-5",
+          "Name": "Legacy \u00b7 Fable 5",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-opus-5",
+          "Name": "Legacy \u00b7 Opus 5",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-opus-4-8",
+          "Name": "Legacy \u00b7 Opus 4.8",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-opus-4-7",
+          "Name": "Legacy \u00b7 Opus 4.7",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-opus-4-6",
+          "Name": "Legacy \u00b7 Opus 4.6",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-opus-4-5",
+          "Name": "Legacy \u00b7 Opus 4.5",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-sonnet-4-6",
+          "Name": "Legacy \u00b7 Sonnet 4.6",
+          "Description": "Documented full model ID; account/provider availability is verified by Claude when selected"
+        },
+        {
+          "Value": "claude-opus-5-5[1m]",
+          "Name": "claude-opus-5-5[1m] (pinned)"
+        },
+        {
+          "Value": "claude-fable-5-1",
+          "Name": "claude-fable-5-1 (pinned)"
+        },
+        {
+          "Value": "claude-sonnet-5",
+          "Name": "claude-sonnet-5 (pinned)"
+        },
+        {
+          "Value": "claude-haiku-4-5-20251001",
+          "Name": "claude-haiku-4-5-20251001 (pinned)"
+        }
+      ]
+    },
+    {
+      "ID": "mode",
+      "Current": "default",
+      "Values": [
+        {
+          "Value": "default",
+          "Name": "Supervised",
+          "Description": "Ask before tools that require permission"
+        },
+        {
+          "Value": "acceptEdits",
+          "Name": "Auto-accept edits",
+          "Description": "Approve edits; ask for other actions"
+        },
+        {
+          "Value": "auto",
+          "Name": "Auto",
+          "Description": "Claude automatically reviews permission decisions",
+          "Models": [
+            "default",
+            "claude-opus-5-5[1m]",
+            "opus[1m]",
+            "claude-fable-5-1[1m]",
+            "claude-fable-5-1",
+            "sonnet",
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "Value": "bypassPermissions",
+          "Name": "Full access",
+          "Description": "Bypass Claude permission prompts"
+        }
+      ]
+    },
+    {
+      "ID": "speed",
+      "Current": "standard",
+      "Values": [
+        {
+          "Value": "standard",
+          "Name": "Standard",
+          "Models": [
+            "default",
+            "claude-opus-5-5[1m]",
+            "opus[1m]"
+          ]
+        },
+        {
+          "Value": "fast",
+          "Name": "Fast",
+          "Models": [
+            "default",
+            "claude-opus-5-5[1m]",
+            "opus[1m]"
+          ]
+        }
+      ]
+    }
+  ],
+  "speed_options": [
+    {
+      "Value": "standard",
+      "Name": "Standard",
+      "Models": [
+        "default",
+        "claude-opus-5-5[1m]",
+        "opus[1m]"
+      ]
+    },
+    {
+      "Value": "fast",
+      "Name": "Fast",
+      "Models": [
+        "default",
+        "claude-opus-5-5[1m]",
+        "opus[1m]"
+      ]
+    }
+  ],
+  "selected": {
+    "Model": "claude-opus-5-5[1m]",
+    "Effort": "unavailable",
+    "Permissions": "default",
+    "Context": "unavailable",
+    "Speed": "standard"
+  },
+  "first_outcome": {
+    "state": "waiting",
+    "error": "",
+    "queued": 0
+  },
+  "native_question": {
+    "mode": "blocking",
+    "route": "native-response",
+    "questions": [
+      {
+        "ID": "question_0",
+        "Text": "Which color?\n\nBlue: The color blue\n\nGreen: The color green",
+        "Label": "Color",
+        "Kind": "single",
+        "AllowOther": true,
+        "Required": false,
+        "Options": [
+          "Blue",
+          "Green"
+        ]
+      }
+    ]
+  },
+  "request_delivery": "acp-unconfirmed",
+  "effective": {
+    "Model": "claude-opus-5-5[1m]",
+    "Effort": "unavailable",
+    "Permissions": "default",
+    "Context": "unavailable",
+    "Speed": "standard"
+  },
+  "usage": {
+    "Used": 22498,
+    "Size": 0,
+    "Source": "Claude result",
+    "ReportedAt": "2026-09-23T00:53:31.138572Z",
+    "Model": "claude-opus-5-5[1m]",
+    "Scope": "input at last model request",
+    "SessionID": "7e11d758-5c12-4d53-9885-8810ab34df72",
+    "Cost": {
+      "Amount": "0.098196",
+      "Currency": "USD",
+      "Source": "Claude result",
+      "ReportedAt": "2026-09-23T00:53:31.138572Z",
+      "Scope": "session cumulative",
+      "Estimated": true
+    }
+  },
+  "shutdown": "confirmed",
+  "runtime_launches": [
+    {
+      "protocol_flags": [
+        "--input-format",
+        "--output-format"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "--input-format",
+        "--output-format"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "--input-format",
+        "--output-format"
+      ]
+    }
+  ],
+  "owned_processes_reaped": 3
+}

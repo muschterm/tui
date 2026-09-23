@@ -1,12 +1,7 @@
 package tui
 
 import (
-	"fmt"
-	"math"
-	"strings"
-
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muschterm/tui/apps/go/internal/protocol"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
@@ -53,9 +48,8 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 	if t.NeedsResume {
 		settings = append(settings, control("Resume", "resume", "Resume saved work", "gold", action{Kind: "resume"}))
 	}
-	gauge, usageHelp := m.usageGauge()
 	actions = append(actions,
-		control(gauge+"  Cost —", "usage", usageHelp, "muted", action{Kind: "usage-summary"}),
+		control(m.usageCompactLabel(), "usage", "Open usage details", "muted", action{Kind: "usage-summary"}),
 		control(m.icon("attach"), "attach", "Attach context", "blue", action{Kind: "attach"}))
 	actions[1].icon = true
 	if activeTurn(t) {
@@ -93,7 +87,7 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 		// Keep the same key/action so keyboard focus survives compaction.
 		actions[0].label, actions[0].icon = m.icon("more-vertical"), !keep
 		if keep {
-			actions[0].label += " " + gauge
+			actions[0].label += " " + m.usageCompactLabel()
 		}
 		actions[0].width = ansi.StringWidth(actions[0].label) + 2
 	}
@@ -196,67 +190,6 @@ func (m *Model) openComposerOverflow() {
 	}
 }
 
-// usageTelemetry is the selected thread's agent-supplied context measurement.
-// A missing or incoherent report stays unavailable rather than being repaired.
-func (m *Model) usageTelemetry() *protocol.Usage {
-	u := m.thread().Usage
-	if u == nil || u.Size <= 0 || u.Used < 0 {
-		return nil
-	}
-	return u
-}
-
-// usageGauge renders the context gauge and its help from reported telemetry.
-func (m *Model) usageGauge() (string, string) {
-	u := m.usageTelemetry()
-	if u == nil {
-		return usageGauge(nil, nil), "Context usage / billing / cost · unavailable"
-	}
-	source := safe(u.Source)
-	if source == "" {
-		source = "the agent"
-	}
-	return usageGauge(&u.Used, &u.Size), fmt.Sprintf("Context %d of %d reported by %s · billing and cost unavailable", u.Used, u.Size, source)
-}
-
-// usageLines are the requested usage fields. Occupancy comes only from agent
-// telemetry; percentages, money and quota windows are never derived here.
-func (m *Model) usageLines() []string {
-	u := m.usageTelemetry()
-	used, capacity, percentage := "unavailable", "unavailable", "unavailable"
-	source := "no agent telemetry reported"
-	if u != nil {
-		used, capacity = fmt.Sprint(u.Used), fmt.Sprint(u.Size)
-		percentage = fmt.Sprintf("%.0f%%", min(1.0, float64(u.Used)/float64(u.Size))*100)
-		source = safe(u.Source)
-		if source == "" {
-			source = "unnamed agent source"
-		}
-		if reported := safe(u.ReportedAt); reported != "" {
-			source += " · reported " + reported
-		}
-	}
-	return []string{
-		"Context used: " + used,
-		"Context capacity: " + capacity,
-		"Context percentage: " + percentage,
-		"Source: " + source,
-		"Billing mode: unknown",
-		"Subscription limits: unavailable",
-		"API cost: unavailable",
-	}
-}
-
-// Billing and quota telemetry is not supplied by this protocol. Keep every
-// requested field explicit without deriving money or windows from transcripts.
-func (m *Model) openUsageSummary() {
-	var items []menuItem
-	for _, line := range m.usageLines() {
-		items = append(items, menuItem{line, action{Kind: "noop"}})
-	}
-	m.showMenu("Usage", append(items, menuItem{"Usage details", action{Kind: "usage"}}))
-}
-
 func (m *Model) renderComposerControls(f *frame, r shell.Rect, y int) int {
 	controls, height := m.composerControls(r.W)
 	p := m.colors()
@@ -273,23 +206,11 @@ func (m *Model) renderComposerControls(f *frame, r shell.Rect, y int) int {
 			fg = p.muted
 		}
 		if c.icon {
-			f.iconButton(m, r.X+c.x, y+c.y, c.width, centered(c.label, c.width), c.key, c.action, fg, p.canvas)
+			f.iconButton(m, r.X+c.x, y+c.y, c.width, centered(c.label, c.width), c.key, c.action, fg, p.input)
 		} else {
-			f.button(m, r.X+c.x, y+c.y, c.width, c.label, c.key, c.action, fg, p.canvas)
+			f.button(m, r.X+c.x, y+c.y, c.width, c.label, c.key, c.action, fg, p.input)
 		}
 		f.hits[len(f.hits)-1].Label = c.help
 	}
 	return y + height
-}
-
-// usageGauge accepts compatible occupancy/capacity measurements only. Unknown
-// values remain distinct from a valid zero. No production telemetry is supplied
-// by the current protocol; callers must not estimate occupancy from transcript.
-func usageGauge(used, capacity *int64) string {
-	if used == nil || capacity == nil || *used < 0 || *capacity <= 0 {
-		return "[····] —"
-	}
-	ratio := min(1.0, float64(*used)/float64(*capacity))
-	filled := int(math.Round(ratio * 4))
-	return "[" + strings.Repeat("━", filled) + strings.Repeat("·", 4-filled) + "] " + fmt.Sprintf("%.0f%%", ratio*100)
 }

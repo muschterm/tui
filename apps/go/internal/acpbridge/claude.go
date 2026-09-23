@@ -17,9 +17,29 @@ import (
 const maxFrame = 8 << 20
 
 type claudeModel struct {
-	Value string `json:"value"`
-	Name  string `json:"displayName"`
+	Value            string `json:"value"`
+	ResolvedModel    string `json:"resolvedModel"`
+	Name             string `json:"displayName"`
+	Description      string `json:"description"`
+	SupportsAutoMode bool   `json:"supportsAutoMode"`
+	SupportsFastMode bool   `json:"supportsFastMode"`
 }
+
+// Claude Code accepts full model IDs through set_model even when its picker
+// initialize list includes only aliases. These versions are documented by
+// Claude Code and the T3 Code versioned catalog; account/provider policy can
+// still reject one at selection or execution time. Keep this list separate
+// from the native discovery result so the UI can label it honestly.
+var claudeLegacyModels = []claudeModel{
+	{Value: "claude-fable-5", Name: "Legacy · Fable 5"},
+	{Value: "claude-opus-5", Name: "Legacy · Opus 5"},
+	{Value: "claude-opus-4-8", Name: "Legacy · Opus 4.8"},
+	{Value: "claude-opus-4-7", Name: "Legacy · Opus 4.7"},
+	{Value: "claude-opus-4-6", Name: "Legacy · Opus 4.6"},
+	{Value: "claude-opus-4-5", Name: "Legacy · Opus 4.5"},
+	{Value: "claude-sonnet-4-6", Name: "Legacy · Sonnet 4.6"},
+}
+
 type controlResult struct {
 	data json.RawMessage
 	err  error
@@ -45,7 +65,11 @@ type claude struct {
 	session                        string
 	opened, initialized, questions bool
 	models                         []claudeModel
+	usage                          providerUsageState
 	model                          string
+	fast, fastAvailable            bool
+	fastUnavailable                string
+	permissionMode                 string
 	turn                           *claudeTurn
 	readDone                       chan struct{}
 	retired                        bool
@@ -114,36 +138,92 @@ func (c *claude) Handle(ctx context.Context, method string, raw json.RawMessage)
 		c.mu.Lock()
 		active := c.turn != nil
 		models := append([]claudeModel(nil), c.models...)
+		models = append(models, claudeLegacyModels...)
+		currentModel, currentMode, currentFast := c.model, c.permissionMode, c.fast
 		c.mu.Unlock()
 		if active {
 			return nil, invalid(errors.New("settings are read-only during a turn"))
 		}
 		var control map[string]any
+		modeReset := false
 		switch req.ConfigID {
 		case "model":
-			found := false
+			found, supportsAuto := false, false
 			for _, m := range models {
-				found = found || m.Value == req.Value
+				if m.Value == req.Value || m.ResolvedModel != "" && m.ResolvedModel == req.Value {
+					found, supportsAuto = true, m.SupportsAutoMode
+				}
 			}
 			if !found {
 				return nil, invalid(errors.New("model was not discovered"))
 			}
+			if currentMode == "auto" && !supportsAuto {
+				confirmed, err := c.control(ctx, map[string]any{"subtype": "set_permission_mode", "mode": "default"})
+				var state struct {
+					Mode string `json:"mode"`
+				}
+				if err != nil || json.Unmarshal(confirmed, &state) != nil || state.Mode != "default" {
+					c.Close()
+					return nil, internal(errors.New("claude could not confirm supervised permissions before model change"))
+				}
+				modeReset = true
+				currentMode = "default"
+			}
 			control = map[string]any{"subtype": "set_model", "model": req.Value}
+		case "speed":
+			if req.Value == "fast" && !c.fastAvailable || !claudeModelSupportsFast(models, currentModel) || req.Value != "standard" && req.Value != "fast" {
+				return nil, invalid(errors.New("selected Claude model does not support the requested speed"))
+			}
+			control = map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": req.Value == "fast"}}
 		case "mode":
-			if req.Value != "default" {
+			if !claudePermissionMode(req.Value) {
 				return nil, invalid(errors.New("unsupported permission mode"))
 			}
-			control = map[string]any{"subtype": "set_permission_mode", "mode": "default"}
+			if req.Value == "auto" && !claudeModelSupportsAuto(models, currentModel) {
+				return nil, invalid(errors.New("selected model does not support Claude Auto permissions"))
+			}
+			control = map[string]any{"subtype": "set_permission_mode", "mode": req.Value}
 		default:
 			return nil, invalid(errors.New("unsupported setting"))
 		}
-		if _, err := c.control(ctx, control); err != nil {
+		ack, err := c.control(ctx, control)
+		if err != nil {
+			if modeReset {
+				c.Close() // Native permissions changed; retire on uncertain model transition.
+			}
 			return nil, internal(err)
+		}
+		if req.ConfigID == "mode" {
+			var confirmed struct {
+				Mode string `json:"mode"`
+			}
+			if json.Unmarshal(ack, &confirmed) != nil || confirmed.Mode != req.Value {
+				return nil, internal(errors.New("claude did not confirm the selected permission mode"))
+			}
+		}
+		if req.ConfigID == "speed" {
+			if err := c.confirmFast(ctx, req.Value == "fast"); err != nil {
+				c.Close()
+				return nil, internal(err)
+			}
+		}
+		if req.ConfigID == "model" && currentFast && !claudeModelSupportsFast(models, req.Value) {
+			if err := c.setFast(ctx, false); err != nil {
+				c.Close()
+				return nil, internal(fmt.Errorf("claude model changed but Fast could not be disabled: %w", err))
+			}
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if req.ConfigID == "model" {
 			c.model = req.Value
+			if modeReset {
+				c.permissionMode = "default"
+			}
+		} else if req.ConfigID == "mode" {
+			c.permissionMode = req.Value
+		} else {
+			c.fast = req.Value == "fast"
 		}
 		return map[string]any{"configOptions": c.options()}, nil
 	case "session/prompt":
@@ -204,7 +284,9 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 	if json.Unmarshal(raw, &req) != nil || req.ProtocolVersion != 1 {
 		return nil, invalid(errors.New("ACP v1 required"))
 	}
-	p, err := c.h.launch("-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--session-id", c.session)
+	// Claude Code's non-interactive Fast contract requires opt-in at launch.
+	// Reset it before exposing the session so no prompt inherits Fast silently.
+	p, err := c.h.launch("-p", "--settings", `{"fastMode":true}`, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--allow-dangerously-skip-permissions", "--permission-mode", "default", "--session-id", c.session)
 	if err != nil {
 		return nil, internal(err)
 	}
@@ -216,8 +298,10 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 		return nil, internal(err)
 	}
 	var info struct {
-		Models []claudeModel `json:"models"`
-		Mode   string        `json:"current_permission_mode"`
+		Models                 []claudeModel `json:"models"`
+		Mode                   string        `json:"current_permission_mode"`
+		FastModeState          string        `json:"fast_mode_state"`
+		FastModeDisabledReason string        `json:"fast_mode_disabled_reason"`
 	}
 	if json.Unmarshal(r, &info) != nil || len(info.Models) == 0 || len(info.Models) > 128 || info.Mode != "default" {
 		c.Close()
@@ -231,26 +315,176 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 		}
 		seen[m.Value] = true
 	}
+	if info.FastModeState == "on" {
+		if err := c.setFast(ctx, false); err != nil {
+			c.Close()
+			return nil, internal(fmt.Errorf("claude did not confirm Standard startup speed: %w", err))
+		}
+		info.FastModeState = "off"
+	}
 	c.mu.Lock()
 	c.models = info.Models
 	c.model = ""
+	c.permissionMode = info.Mode
+	c.fast = info.FastModeState == "on"
+	c.fastAvailable = info.FastModeState == "on" || info.FastModeState == "off" && (info.FastModeDisabledReason == "" || info.FastModeDisabledReason == "sdk_opt_in_required")
+	c.fastUnavailable = info.FastModeDisabledReason
 	c.questions = len(req.ClientCapabilities.Elicitation) > 0
 	c.initialized = true
 	c.mu.Unlock()
-	return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "tui-go-claude", "version": Version}, "agentCapabilities": map[string]any{"promptCapabilities": map[string]any{"image": true}, "_meta": map[string]any{"questionDialect": QuestionDialect}}, "authMethods": []any{}}, nil
+	return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "tui-go-claude", "version": Version}, "agentCapabilities": map[string]any{"promptCapabilities": map[string]any{"image": true}, "_meta": map[string]any{"questionDialect": QuestionDialect, "usageDialect": UsageDialect}}, "authMethods": []any{}}, nil
 }
 
 // options requires c.mu. No effort/speed/capacity setting is invented from a
 // model name; unsupported controls remain unavailable in the common composer.
 func (c *claude) options() []any {
 	values := []any{}
+	seen := make(map[string]bool, len(c.models)*2)
 	for _, m := range c.models {
-		values = append(values, map[string]any{"value": m.Value, "name": m.Name})
+		name := m.Name
+		if m.ResolvedModel != "" {
+			name += " (" + m.ResolvedModel + ")"
+		}
+		values = append(values, map[string]any{"value": m.Value, "name": name})
+		seen[m.Value] = true
 	}
-	return []any{
+	for _, m := range claudeLegacyModels {
+		if seen[m.Value] {
+			continue
+		}
+		seen[m.Value] = true
+		values = append(values, map[string]any{"value": m.Value, "name": m.Name, "description": "Documented full model ID; account/provider availability is verified by Claude when selected"})
+	}
+	for _, m := range c.models {
+		if m.ResolvedModel == "" || seen[m.ResolvedModel] {
+			continue
+		}
+		seen[m.ResolvedModel] = true
+		values = append(values, map[string]any{"value": m.ResolvedModel, "name": m.ResolvedModel + " (pinned)"})
+	}
+	modeValues := []any{
+		map[string]any{"value": "default", "name": "Supervised", "description": "Ask before tools that require permission"},
+		map[string]any{"value": "acceptEdits", "name": "Auto-accept edits", "description": "Approve edits; ask for other actions"},
+	}
+	autoModels := make([]string, 0, len(c.models)*2)
+	for _, model := range c.models {
+		if model.SupportsAutoMode {
+			autoModels = append(autoModels, model.Value)
+			if model.ResolvedModel != "" {
+				autoModels = append(autoModels, model.ResolvedModel)
+			}
+		}
+	}
+	// Catalogue describes captured target models, not only the previous turn.
+	if len(autoModels) > 0 {
+		modeValues = append(modeValues, map[string]any{"value": "auto", "name": "Auto", "description": "Claude automatically reviews permission decisions", "_meta": map[string]any{"tui-go.models": autoModels}})
+	}
+	modeValues = append(modeValues, map[string]any{"value": "bypassPermissions", "name": "Full access", "description": "Bypass Claude permission prompts"})
+	options := []any{
 		map[string]any{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": c.model, "options": values},
-		map[string]any{"id": "mode", "name": "Permissions", "category": "mode", "type": "select", "currentValue": "default", "options": []any{map[string]any{"value": "default", "name": "Default (ask when required)"}}},
+		map[string]any{"id": "mode", "name": "Permissions", "category": "mode", "type": "select", "currentValue": c.permissionMode, "options": modeValues},
 	}
+	{
+		fastModels := make([]string, 0, len(c.models)*2)
+		seenFast := make(map[string]bool)
+		for _, model := range c.models {
+			if !model.SupportsFastMode {
+				continue
+			}
+			for _, id := range []string{model.Value, model.ResolvedModel} {
+				if id != "" && !seenFast[id] {
+					seenFast[id] = true
+					fastModels = append(fastModels, id)
+				}
+			}
+		}
+		if len(fastModels) != 0 {
+			current := "standard"
+			if c.fast {
+				current = "fast"
+			}
+			choices := []any{map[string]any{"value": "standard", "name": "Standard", "_meta": map[string]any{"tui-go.models": fastModels}}}
+			description := ""
+			if c.fastAvailable {
+				choices = append(choices, map[string]any{"value": "fast", "name": "Fast", "_meta": map[string]any{"tui-go.models": fastModels}})
+			} else {
+				reason := strings.ReplaceAll(c.fastUnavailable, "_", " ")
+				if reason == "" {
+					reason = "runtime did not report an available Fast control"
+				}
+				description = "Fast unavailable · " + reason
+			}
+			options = append(options, map[string]any{"id": "speed", "name": "Speed", "description": description, "category": "model_config", "type": "select", "currentValue": current, "options": choices})
+		}
+	}
+	return options
+}
+
+func claudeModelSupportsAuto(models []claudeModel, value string) bool {
+	for _, model := range models {
+		if model.Value == value || model.ResolvedModel != "" && model.ResolvedModel == value {
+			return model.SupportsAutoMode
+		}
+	}
+	return false
+}
+
+func claudeModelSupportsFast(models []claudeModel, value string) bool {
+	for _, model := range models {
+		if model.Value == value || model.ResolvedModel != "" && model.ResolvedModel == value {
+			return model.SupportsFastMode
+		}
+	}
+	return false
+}
+
+// apply_flag_settings acknowledges accepted keys without echoing effective
+// state. Re-read the native initialize state before telling the client Fast is
+// active or disabled; a generic ACK alone is insufficient.
+func (c *claude) confirmFast(ctx context.Context, enabled bool) error {
+	raw, err := c.control(ctx, map[string]any{"subtype": "initialize"})
+	if err != nil {
+		return err
+	}
+	var state struct {
+		FastModeState  string `json:"fast_mode_state"`
+		DisabledReason string `json:"fast_mode_disabled_reason"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return err
+	}
+	want := "off"
+	if enabled {
+		want = "on"
+	}
+	if state.FastModeState != want {
+		return fmt.Errorf("claude did not confirm Fast mode %s (reported %q)", want, state.FastModeState)
+	}
+	if enabled && state.DisabledReason != "" {
+		return fmt.Errorf("claude Fast is unavailable: %s", state.DisabledReason)
+	}
+	return nil
+}
+
+func (c *claude) setFast(ctx context.Context, enabled bool) error {
+	if _, err := c.control(ctx, map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": enabled}}); err != nil {
+		return err
+	}
+	if err := c.confirmFast(ctx, enabled); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.fast = enabled
+	c.mu.Unlock()
+	return nil
+}
+
+func claudePermissionMode(value string) bool {
+	switch value {
+	case "default", "acceptEdits", "auto", "bypassPermissions":
+		return true
+	}
+	return false
 }
 
 // write requires writeMu. No state mutex is held over pipe I/O.
@@ -506,6 +740,7 @@ func (c *claude) event(raw json.RawMessage) {
 	if t == nil || m.Parent != nil {
 		return
 	}
+	c.emitUsage(raw)
 	if m.Type == "result" {
 		c.writeMu.Lock()
 		t.cancel()

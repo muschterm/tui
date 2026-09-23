@@ -15,6 +15,16 @@ type AppSettings struct {
 	// Empty/omitted on update preserves the current directory; "~" resets it.
 	ProjectDirectory     string
 	ContinueAfterRestart bool
+	// Nil on an update preserves the current default for older clients. An
+	// empty value explicitly restores the built-in new-thread behavior.
+	NewThreadDefaults *NewThreadDefaults `json:"NewThreadDefaults,omitempty"`
+}
+
+// NewThreadDefaults applies only when a client first creates a local draft.
+// Values are agent catalogue IDs, never inferred from display names.
+type NewThreadDefaults struct {
+	AgentID  string
+	Settings Settings
 }
 
 // ProjectSettings are the per-project fields a project.update command may change.

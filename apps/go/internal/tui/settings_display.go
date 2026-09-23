@@ -80,6 +80,7 @@ func permissionDisplayName(value string) string {
 // renames a value the agent did not report.
 func (m *Model) composerSettingDisplays(t protocol.Thread, s protocol.Settings) []settingDisplay {
 	c, ok := m.threadConfig(t)
+	c = c.forModel(s.Model)
 	name := t.Agent
 	if ok {
 		name = c.agent.Name
@@ -87,6 +88,13 @@ func (m *Model) composerSettingDisplays(t protocol.Thread, s protocol.Settings) 
 	items := composerSettings(name, s)
 	if !ok {
 		return items
+	}
+	if o, offered := c.option("speed"); offered && len(o.Values) >= 1 && (s.Speed == "standard" || s.Speed == "default" || s.Speed == "") {
+		label := optionValueName(o, s.Speed)
+		if label == "" {
+			label = "Speed"
+		}
+		items = append(items, settingDisplay{label, "speed"})
 	}
 	for i := range items {
 		field := items[i].field

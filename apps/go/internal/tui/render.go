@@ -245,15 +245,30 @@ func (m *Model) compose(paint bool) frame {
 }
 
 type contentLine struct {
-	rightAligned bool
-	text, fg, bg string
-	action       action
+	rightAligned     bool
+	styled           bool // text contains only renderer-generated ANSI, after input sanitization
+	text, fg, bg     string
+	marker, markerFG string
+	action           action
 }
 
 func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
+	return m.activityLinesForThread(protocol.Thread{}, items, w)
+}
+
+func (m *Model) activityLinesForThread(t protocol.Thread, items []protocol.Activity, w int) []contentLine {
 	p := m.colors()
 	var lines []contentLine
 	for _, a := range items {
+		if t.ID != "" {
+			if history, handled := m.questionHistoryLines(t, a, w); handled {
+				if len(history) > 0 {
+					lines = append(lines, history...)
+					lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
+				}
+				continue
+			}
+		}
 		fg, bg, body := p.text, p.canvas, p.text
 		name := a.Title
 		if name == "" {
@@ -298,8 +313,13 @@ func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
 		if a.Role == "user" {
 			wrapWidth -= min(12, w/6)
 		}
-		for _, line := range strings.Split(ansi.Wrap(safe(a.Text), max(1, wrapWidth), ""), "\n") {
-			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, rightAligned: a.Role == "user"})
+		bodyLines := strings.Split(ansi.Wrap(safe(a.Text), max(1, wrapWidth), ""), "\n")
+		formatted := a.Role == "agent"
+		if formatted {
+			bodyLines = markdownLines(a.Text, max(1, wrapWidth), p)
+		}
+		for _, line := range bodyLines {
+			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, rightAligned: a.Role == "user", styled: formatted})
 		}
 		lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
 	}
@@ -309,12 +329,69 @@ func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
 // transcriptLines are the thread's activity rows followed by the reported
 // outcome of its last turn.
 func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
-	lines := m.activityLines(t.Activity, w)
+	groups := m.questionHistoryFallbackGroups(t, w)
+	fallbackByTurn := make(map[string][]questionHistoryFallbackGroup)
+	var earlierFallback []questionHistoryFallbackGroup
+	for _, group := range groups {
+		if group.TurnID == "" {
+			earlierFallback = append(earlierFallback, group)
+		} else {
+			fallbackByTurn[group.TurnID] = append(fallbackByTurn[group.TurnID], group)
+		}
+	}
+
+	lines := make([]contentLine, 0, len(t.Activity)*4)
+	p := m.colors()
+	appendSpacer := func() {
+		lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
+	}
+	appendHistory := func(group questionHistoryFallbackGroup) {
+		if len(group.Lines) == 0 {
+			return
+		}
+		lines = append(lines, group.Lines...)
+		appendSpacer()
+	}
+	if len(earlierFallback) > 0 {
+		lines = append(lines, contentLine{text: "Earlier history", fg: p.muted, bg: p.canvas})
+		appendSpacer()
+	}
+	for _, group := range earlierFallback {
+		appendHistory(group)
+	}
+	lastActivityByTurn := make(map[string]int)
+	for i, activity := range t.Activity {
+		if activity.TurnID != "" {
+			lastActivityByTurn[activity.TurnID] = i
+		}
+	}
+	for i, activity := range t.Activity {
+		lines = append(lines, m.activityLinesForThread(t, []protocol.Activity{activity}, w)...)
+		if activity.TurnID == "" || lastActivityByTurn[activity.TurnID] != i {
+			continue
+		}
+		for _, group := range fallbackByTurn[activity.TurnID] {
+			appendHistory(group)
+		}
+	}
+	if activeTurn(t) {
+		status := "Thinking…"
+		markerFG := m.activityColor(activitySummary{Working: true})
+		if t.State == "waiting" {
+			status, markerFG = "Waiting…", p.gold
+		} else if !m.connected {
+			status, markerFG = "Connection lost", p.muted
+		}
+		marker := "●"
+		if m.plainIcons {
+			marker = "o"
+		}
+		lines = append(lines, contentLine{text: status, fg: p.text, bg: p.canvas, marker: marker, markerFG: markerFG})
+	}
 	note := stopReasonNote(t)
 	if note == "" {
 		return lines
 	}
-	p := m.colors()
 	for _, line := range strings.Split(ansi.Wrap(safe(note), max(1, w-2), ""), "\n") {
 		lines = append(lines, contentLine{text: line, fg: p.gold, bg: p.canvas})
 	}
@@ -351,13 +428,25 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 	offset := min(max(0, m.viewState().Scroll), f.transcriptMax)
 	for i := 0; i < r.H && offset+i < len(lines); i++ {
 		line := lines[offset+i]
-		if line.action.Kind != "" {
-			f.button(m, r.X, r.Y+i, r.W, line.text, "activity:"+line.action.ID+":"+fmt.Sprint(i), line.action, line.fg, line.bg)
-		} else {
-			inset := 0
-			if line.rightAligned {
-				inset = min(12, r.W/6)
+		inset := 0
+		if line.rightAligned {
+			inset = min(12, r.W/6)
+		}
+		if line.marker != "" {
+			f.text(r.X+inset, r.Y+i, 1, line.marker, line.markerFG, line.bg)
+			f.text(r.X+inset+2, r.Y+i, r.W-inset-2, line.text, line.fg, line.bg)
+		} else if line.action.Kind != "" {
+			key := "activity:" + line.action.ID + ":" + fmt.Sprint(i)
+			if line.action.Kind == "question-history-toggle" {
+				key = "question-history:" + line.action.ID
 			}
+			f.button(m, r.X+inset, r.Y+i, r.W-inset, line.text, key, line.action, line.fg, line.bg)
+		} else if line.styled {
+			// Markdown source is sanitized before parsing and decoded text is
+			// sanitized again by its renderer. Preserve only that trusted SGR
+			// here; f.text intentionally strips ANSI from all ordinary strings.
+			f.put(shell.Rect{X: r.X + inset, Y: r.Y + i, W: r.W - inset, H: 1}, style(line.fg, line.bg).Render(fit(line.text, r.W-inset)))
+		} else {
 			f.text(r.X+inset, r.Y+i, r.W-inset, line.text, line.fg, line.bg)
 		}
 	}
@@ -386,20 +475,20 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	y = m.renderClosedBanner(f, shell.Rect{X: x, Y: y, W: w})
 	f.fill(shell.Rect{X: x, Y: y, W: w, H: max(0, r.Y+r.H-y)}, p, p.canvas)
 	promptHeight := max(1, m.promptRows)
+	controlsHeight := m.composerControlsHeight(w)
+	composerHeight := promptHeight + controlsHeight + 2
 	promptStyle := m.componentStyle(roundedOutline, m.controlState(false, "prompt"), p.text, p.input)
-	f.componentBox(m, shell.Rect{X: x, Y: y, W: w, H: promptHeight + 2}, roundedOutline, promptStyle, p.canvas)
-	y++
+	f.componentBox(m, shell.Rect{X: x, Y: y, W: w, H: composerHeight}, roundedOutline, promptStyle, p.canvas)
 	inset := composerInset(w)
-	f.prompt = shell.Rect{X: x + inset, Y: y, W: max(1, w-2*inset), H: promptHeight}
+	f.prompt = shell.Rect{X: x + inset, Y: y + 1, W: max(1, w-2*inset), H: promptHeight}
 	if f.rows != nil {
 		f.put(f.prompt, style(p.text, p.input).Width(f.prompt.W).Height(f.prompt.H).Render(m.promptView.View(&m.prompt)))
 	}
 	f.hits = append(f.hits, hit{Rect: f.prompt, Action: action{}, Label: "Enter sends · Shift+Enter / Ctrl+J adds a line", Key: "prompt"})
 	promptScroll := m.promptView.Metrics(m.promptMetrics)
 	f.scrollbar(m, shell.Rect{X: f.prompt.X + f.prompt.W, Y: f.prompt.Y, W: 1, H: f.prompt.H}, "prompt", promptScroll.Total, f.prompt.H, promptScroll.Offset, p.input)
-	y += promptHeight
-	y = m.renderComposerControls(f, r, y+1)
-	m.renderCheckoutContext(f, shell.Rect{X: x, Y: y, W: w, H: 1})
+	m.renderComposerControls(f, shell.Rect{X: x, W: w}, f.prompt.Y+f.prompt.H)
+	m.renderCheckoutContext(f, shell.Rect{X: x, Y: y + composerHeight, W: w, H: 1})
 }
 
 func (m *Model) renderSurface(f *frame, r shell.Rect) {
@@ -591,7 +680,11 @@ func (m *Model) renderMenu(f *frame) {
 	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, componentState{Focused: true}, p.text, p.input), p.canvas)
 	f.hits = nil
 	f.scrollbars = nil
-	f.text(r.X+2, r.Y+1, w-7, m.menuTitle, p.violet, p.input)
+	titleInk := p.violet
+	if m.menuTitle == "Cannot send message" {
+		titleInk = p.red
+	}
+	f.text(r.X+2, r.Y+1, w-7, m.menuTitle, titleInk, p.input)
 	f.iconButton(m, r.X+w-4, r.Y+1, 3, centered(m.icon("close"), 3), "menu-close", action{Kind: "menu-close"}, p.muted, p.input)
 	if extra > 0 {
 		input := shell.Rect{X: r.X + 2, Y: r.Y + 2, W: w - 4, H: 1}

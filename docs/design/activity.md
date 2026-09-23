@@ -50,6 +50,17 @@ editable Files integration.
 
 ## Clipboard intake and read-only previews
 
+User-requested refinement, 2026-09-23: right-clicking selected conversation or
+read-only surface text offers Copy. Right-clicking the prompt offers Paste and,
+when prompt text is selected, Copy. Preserve the existing cursor and selection
+when opening the menu. Paste inserts at that cursor or replaces the selected
+range; it never submits. Provide keyboard access to the same menu and preserve
+focus/drafts when dismissing it. Clipboard reads happen only after explicit
+Paste and must not apply to a changed thread, draft, cursor or selection while
+the read is pending. Keep the behavior available on macOS and Linux, including
+Omarchy; terminal-consumed shortcuts and unsupported clipboard access need an
+honest fallback rather than assumed success.
+
 User-requested refinement, 2026-09-19: support pasting images and copied files into the composer as removable context, with thumbnails where possible. A thumbnail or file chip opens a centered floating viewer. Its expand/restore control switches between the default centered size and the available application area, keeping close and restore reachable. This expands the viewer; it does not guarantee one image pixel per screen pixel. Keep image aspect ratio. Use the same viewer for supported attachment previews from history.
 
 The viewer is always read-only, including raw Markdown. It is distinct from the editable Files surface. Markdown supports raw text and rendered preview, with an eyeball icon for preview and an explicit Raw action/label. Give preview, mode switching, expand/restore and close both pointer and keyboard paths. Escape closes and returns focus to the originating control; viewing must preserve the composer draft, selection, attachments and the underlying reading position. Long text remains selectable and scrollable, with the normal scrollbar behavior. Unsupported formats retain useful name/type/size information and an honest unavailable-preview state; viewing must never execute file contents or launch an editor.

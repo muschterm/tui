@@ -77,6 +77,9 @@ func (m *Model) defaultAgent() (protocol.Agent, bool) {
 
 // newDraftView builds a per-project creation draft bound to the default agent.
 func (m *Model) newDraftView() *threadView {
+	if saved := m.snapshot.AppSettings.NewThreadDefaults; saved != nil && saved.AgentID != "" {
+		return &threadView{Agent: saved.AgentID, Settings: saved.Settings}
+	}
 	if a, ok := m.defaultAgent(); ok {
 		return &threadView{Agent: a.ID, Settings: agentConfigFor(a).defaults()}
 	}
@@ -144,6 +147,7 @@ func agentNeedsProbe(a protocol.Agent) bool {
 type agentConfig struct {
 	agent   protocol.Agent
 	options []protocol.ConfigOption
+	model   string
 }
 
 // threadConfig prefers the live session's catalogue: a running session replaces
@@ -161,7 +165,40 @@ func (m *Model) threadConfig(t protocol.Thread) (agentConfig, bool) {
 	return agentConfig{agent: agent, options: options}, true
 }
 
-func (m *Model) composerConfig() (agentConfig, bool) { return m.threadConfig(m.thread()) }
+func (m *Model) composerConfig() (agentConfig, bool) {
+	c, ok := m.threadConfig(m.thread())
+	settings := m.viewState().Settings
+	if (m.state.Edit == nil || m.state.Edit.ThreadID != m.state.Active) && activeTurn(m.thread()) {
+		settings = m.thread().Effective
+	}
+	return c.forModel(settings.Model), ok
+}
+
+func (c agentConfig) forModel(model string) agentConfig { c.model = model; return c }
+
+func (c agentConfig) reconcileModel(s *protocol.Settings) {
+	c = c.forModel(s.Model)
+	for _, field := range settingFieldOrder[1:] {
+		o, ok := c.option(field)
+		if !ok {
+			if settingValue(*s, field) != "" {
+				setSettingValue(s, field, "unavailable")
+			}
+			continue
+		}
+		if _, valid := optionValue(o, settingValue(*s, field)); valid {
+			continue
+		}
+		value := o.Current
+		if _, valid := optionValue(o, value); !valid {
+			value = ""
+			if len(o.Values) > 0 {
+				value = o.Values[0].Value
+			}
+		}
+		setSettingValue(s, field, value)
+	}
+}
 
 // agentConfigFor is the probe-time catalogue, used before a session exists.
 func agentConfigFor(a protocol.Agent) agentConfig { return agentConfig{agent: a, options: a.Options} }
@@ -187,6 +224,16 @@ func (c agentConfig) option(field string) (protocol.ConfigOption, bool) {
 	}
 	for _, o := range c.options {
 		if o.ID == id {
+			var values []protocol.ConfigValue
+			for _, v := range o.Values {
+				if len(v.Models) == 0 || slices.Contains(v.Models, c.model) {
+					values = append(values, v)
+				}
+			}
+			o.Values = values
+			if len(values) == 0 {
+				return protocol.ConfigOption{}, false
+			}
 			return o, true
 		}
 	}
@@ -267,6 +314,9 @@ func (c agentConfig) defaults() protocol.Settings {
 		return protocol.Settings{Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}
 	}
 	var s protocol.Settings
+	if model, ok := c.option("model"); ok {
+		c = c.forModel(model.Current)
+	}
 	for _, field := range settingFieldOrder {
 		if o, ok := c.option(field); ok {
 			setSettingValue(&s, field, o.Current)
@@ -278,6 +328,7 @@ func (c agentConfig) defaults() protocol.Settings {
 // blocked validates a selection against the catalogue in effect. Unmapped
 // fields carry the agent's defaults and are not validated here.
 func (c agentConfig) blocked(s protocol.Settings) string {
+	c = c.forModel(s.Model)
 	for _, field := range settingFieldOrder {
 		o, ok := c.option(field)
 		if !ok {
@@ -364,15 +415,7 @@ func (m *Model) chooseSetting(field, value string) tea.Cmd {
 	v := m.viewState()
 	setSettingValue(&v.Settings, field, value)
 	if field == "model" {
-		for _, dependent := range settingFieldOrder[1:] {
-			option, mapped := c.option(dependent)
-			if !mapped {
-				continue
-			}
-			if _, valid := optionValue(option, settingValue(v.Settings, dependent)); !valid {
-				setSettingValue(&v.Settings, dependent, option.Current)
-			}
-		}
+		c.reconcileModel(&v.Settings)
 	}
 	return nil
 }

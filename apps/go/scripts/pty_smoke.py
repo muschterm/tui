@@ -279,9 +279,9 @@ def main():
             a.pump(.5)
             screen = a.screen()
             row_index, row = next((i, line) for i, line in enumerate(screen) if '\uf0aa' in line)
-            check('╰' in screen[row_index-1] and '╯' in screen[row_index-1],
-                  'complete prompt outline separates typing from the footer controls')
-            a.click(row.rfind('\ueb10'), row_index)  # Separate, right-aligned usage ellipsis.
+            check('╰' in screen[row_index+1] and '╯' in screen[row_index+1] and '│' in row,
+                  'one prompt outline encloses typing and composer controls')
+            a.click(row.index('Ctx') if 'Ctx' in row else row.rfind('\ueb10'), row_index)  # Independent usage control.
             usage_screen = '\n'.join(a.screen())
             check('Context percentage: unavailable' in usage_screen and 'API cost: unavailable' in usage_screen
                   and 'Effort: Medium' not in usage_screen,
@@ -391,7 +391,9 @@ def main():
             restarted = get('snapshot')
             time.sleep(1.2)
             stable = get('snapshot')
-            check(all(t['NeedsResume'] or t['State'] == 'idle' for t in restarted['threads']) and restarted['revision'] == stable['revision'], 'server restart preserves state and waits for explicit Resume of unfinished work')
+            # Startup provider probes may advance the global revision without
+            # resuming fixture work. Compare the execution state itself.
+            check(all(t['NeedsResume'] or t['State'] == 'idle' for t in restarted['threads']) and restarted['threads'] == stable['threads'], 'server restart preserves state and waits for explicit Resume of unfinished work')
             a.send((shlex.quote(str(binary)) + ' --client pty-a\n').encode(), 1.5)
             a.command(6)
             a.pump(1.2)

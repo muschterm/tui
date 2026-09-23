@@ -29,7 +29,7 @@ func (m *Model) settingsCategories() []string {
 	if m.settingsProjectID != "" {
 		return []string{"project", "general", "keybindings"}
 	}
-	return []string{"general", "appearance", "keybindings", "about"}
+	return []string{"general", "agents", "appearance", "keybindings", "about"}
 }
 
 func (m *Model) settingsBreadcrumb() string {

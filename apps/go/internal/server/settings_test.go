@@ -67,6 +67,86 @@ func TestSettingsPersistCASAndRetry(t *testing.T) {
 	}
 }
 
+func TestNewThreadDefaultsValidateAndPreserveOlderSettingsUpdates(t *testing.T) {
+	e := testEngine(t)
+	base := e.snap.AppSettings
+	defaultValue := protocol.NewThreadDefaults{AgentID: "fixture", Settings: protocol.Settings{Model: "fixture-model", Effort: "high", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}}
+	base.NewThreadDefaults = &defaultValue
+	if _, err := e.command(protocol.Command{Version: 1, ID: "defaults", Kind: "settings.update", Revision: base.Revision, AppSettings: &base}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.snap.AppSettings.NewThreadDefaults; got == nil || *got != defaultValue {
+		t.Fatal("default not saved", got)
+	}
+	saved, _, err := e.store.Load()
+	if err != nil || saved.AppSettings.NewThreadDefaults == nil || *saved.AppSettings.NewThreadDefaults != defaultValue {
+		t.Fatal("default not durable", err)
+	}
+	legacy := protocol.AppSettings{WorkspaceDefault: "checkout", ContinueAfterRestart: true}
+	if _, err := e.command(protocol.Command{Version: 1, ID: "legacy", Kind: "settings.update", Revision: e.snap.AppSettings.Revision, AppSettings: &legacy}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.snap.AppSettings.NewThreadDefaults; got == nil || *got != defaultValue {
+		t.Fatal("older client erased default", got)
+	}
+	for _, tc := range []protocol.NewThreadDefaults{
+		{AgentID: "missing", Settings: defaultValue.Settings},
+		{AgentID: "fixture", Settings: protocol.Settings{Model: "invented", Effort: "high", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}},
+	} {
+		next := e.snap.AppSettings
+		next.NewThreadDefaults = &tc
+		if _, err := e.command(protocol.Command{Version: 1, ID: "invalid-" + tc.AgentID + tc.Settings.Model, Kind: "settings.update", Revision: next.Revision, AppSettings: &next}); err == nil {
+			t.Fatal("unsupported default accepted", tc)
+		}
+	}
+	reset := e.snap.AppSettings
+	reset.NewThreadDefaults = &protocol.NewThreadDefaults{}
+	if _, err := e.command(protocol.Command{Version: 1, ID: "reset", Kind: "settings.update", Revision: reset.Revision, AppSettings: &reset}); err != nil || e.snap.AppSettings.NewThreadDefaults != nil {
+		t.Fatal("default reset failed", err)
+	}
+}
+
+func TestNewThreadDefaultsUseOfferedACPValues(t *testing.T) {
+	s := fixture.Initial()
+	ensureAppSettings(&s)
+	s.Agents = append(s.Agents, protocol.Agent{
+		ID: "claude", Name: "Claude", Kind: "acp", State: "ready",
+		Fields: protocol.SettingFields{Model: "model", Effort: "effort", Permissions: "permission"},
+		Options: []protocol.ConfigOption{
+			{ID: "model", Current: "sonnet", Values: []protocol.ConfigValue{{Value: "sonnet"}, {Value: "opus"}}},
+			{ID: "effort", Current: "medium", Values: []protocol.ConfigValue{{Value: "medium"}, {Value: "high"}}},
+			{ID: "permission", Current: "ask", Values: []protocol.ConfigValue{{Value: "ask"}, {Value: "auto"}}},
+		},
+	})
+	requested := protocol.NewThreadDefaults{AgentID: "claude", Settings: protocol.Settings{Model: "opus", Effort: "high", Permissions: "auto"}}
+	next := s.AppSettings
+	next.NewThreadDefaults = &requested
+	cmd := protocol.Command{Kind: "settings.update", Revision: next.Revision, AppSettings: &next}
+	if _, err := apply(&s, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if *s.AppSettings.NewThreadDefaults != requested {
+		t.Fatal("offered selections changed")
+	}
+	stale := s.AppSettings
+	stale.NewThreadDefaults = &protocol.NewThreadDefaults{AgentID: "claude", Settings: protocol.Settings{Model: "invented", Effort: "high", Permissions: "auto"}}
+	if _, err := apply(&s, protocol.Command{Kind: "settings.update", Revision: stale.Revision, AppSettings: &stale}); err == nil {
+		t.Fatal("unoffered model accepted")
+	}
+	s.Agents[len(s.Agents)-1].Options[0].Values = []protocol.ConfigValue{{Value: "sonnet"}}
+	unrelated := s.AppSettings
+	unrelated.ContinueAfterRestart = true
+	if _, err := apply(&s, protocol.Command{Kind: "settings.update", Revision: unrelated.Revision, AppSettings: &unrelated}); err != nil {
+		t.Fatal("withdrawn saved model blocked unrelated setting", err)
+	}
+	s.Agents[len(s.Agents)-1].State = "unprobed"
+	newAgent := s.AppSettings
+	newAgent.NewThreadDefaults = &protocol.NewThreadDefaults{AgentID: "claude", Settings: protocol.Settings{Model: "sonnet", Effort: "high", Permissions: "auto"}}
+	if _, err := apply(&s, protocol.Command{Kind: "settings.update", Revision: newAgent.Revision, AppSettings: &newAgent}); err == nil {
+		t.Fatal("unready catalogue accepted")
+	}
+}
+
 func TestRestartContinuationEligibility(t *testing.T) {
 	base := fixture.Initial().Threads[0]
 	base.Requests = nil

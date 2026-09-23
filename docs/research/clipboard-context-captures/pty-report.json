@@ -1,0 +1,25 @@
+{
+  "harness": "Python OS PTY + isolated clipboard command wrappers",
+  "platform": "darwin",
+  "checks": [
+    "startup invokes no clipboard command",
+    "right-clicking selected transcript text opens its menu without copying",
+    "keyboard selection of Copy invokes only the isolated copy wrapper",
+    "transcript Copy writes the exact selected text to the scratch clipboard",
+    "right-clicking an unselected prompt opens Paste without reading clipboard",
+    "keyboard-selected Paste inserts clipboard text at the prompt cursor",
+    "prompt Paste invokes only the isolated paste wrapper",
+    "selected prompt menu presents Copy then Paste for keyboard navigation",
+    "right-clicking selected prompt text opens Copy without reading or writing clipboard",
+    "Enter copies the selected prompt text through the isolated wrapper",
+    "opening replacement menu does not access the clipboard",
+    "Paste replaces the selected prompt text without changing surrounding text",
+    "replacement Paste invokes only the isolated paste wrapper"
+  ],
+  "result": "PASS",
+  "clipboard_operations": [
+    "pbpaste",
+    "pbcopy",
+    "pbpaste"
+  ]
+}

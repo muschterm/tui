@@ -1,0 +1,125 @@
+{
+  "agent": "codex",
+  "checks": [
+    "adapter ready",
+    "explicit model is discovered",
+    "explicit effort is discovered",
+    "explicit speed is supported by selected model",
+    "explicit permission mode is discovered",
+    "native question preserves blocking or continued-work mode",
+    "provider supplied requested bounded form",
+    "duplicate answer command returns original receipt",
+    "provider turn completed after answer",
+    "generic completion did not become an authoritative answer receipt",
+    "provider reply corroborates selected answer",
+    "native context observation reaches persisted thread",
+    "answer has one durable conversation anchor",
+    "selected speed acknowledged as effective",
+    "Stop target has a live native question",
+    "late answer after Stop rejected",
+    "cancelled waiting question has no accepted answer",
+    "Resume sends no duplicate prompt",
+    "restart retains no dispatched queue copies",
+    "restart retains accepted answer as uncertain",
+    "restart retry returns receipt without replay",
+    "restart retains one question history anchor"
+  ],
+  "result": "PASS",
+  "runtime_version": "codex-cli 0.155.1",
+  "adapter_version": "tui-go-codex 0.1.0",
+  "readiness": "ready",
+  "speed_options": [
+    {
+      "Value": "default",
+      "Name": "Standard",
+      "Models": [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5"
+      ]
+    },
+    {
+      "Value": "priority",
+      "Name": "Fast",
+      "Models": [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5"
+      ]
+    }
+  ],
+  "selected": {
+    "Model": "gpt-6-luna",
+    "Effort": "low",
+    "Permissions": "auto",
+    "Context": "unavailable",
+    "Speed": "priority"
+  },
+  "first_outcome": {
+    "state": "running",
+    "error": "",
+    "queued": 0
+  },
+  "native_question": {
+    "mode": "async",
+    "route": "native-response",
+    "questions": [
+      {
+        "ID": "question_0",
+        "Text": "Which color?\n\nBlue: Choose blue.\n\nGreen: Choose green.",
+        "Label": "Color",
+        "Kind": "single",
+        "AllowOther": true,
+        "Required": false,
+        "Options": [
+          "Blue",
+          "Green"
+        ]
+      }
+    ]
+  },
+  "request_delivery": "acp-unconfirmed",
+  "effective": {
+    "Model": "gpt-6-luna",
+    "Effort": "low",
+    "Permissions": "auto",
+    "Context": "unavailable",
+    "Speed": "priority"
+  },
+  "usage": {
+    "Used": 20464,
+    "Size": 258400,
+    "Source": "Codex thread/tokenUsage/updated",
+    "ReportedAt": "2026-09-23T00:47:13.001278Z",
+    "Model": "gpt-6-luna",
+    "Scope": "last model request",
+    "SessionID": "01a0cbbb-0946-7380-9231-d6bc402ff2ab"
+  },
+  "shutdown": "confirmed",
+  "runtime_launches": [
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    }
+  ],
+  "owned_processes_reaped": 3
+}

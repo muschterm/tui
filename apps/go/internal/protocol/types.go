@@ -61,7 +61,8 @@ type ConfigOption struct {
 // ConfigValue is one selectable option value.
 type ConfigValue struct {
 	Value, Name string
-	Description string `json:"Description,omitempty"`
+	Description string   `json:"Description,omitempty"`
+	Models      []string `json:"Models,omitempty"`
 }
 
 // Settings are the execution settings selected for a prompt or reported as
@@ -103,6 +104,7 @@ type Thread struct {
 // child summary.
 type Activity struct {
 	ID, Role, Title, Text, State, Detail string
+	RequestID                            string  `json:"RequestID,omitempty"`
 	TurnID                               string  `json:"TurnID,omitempty"`
 	Prompt                               *Prompt `json:"Prompt,omitempty"`
 }
@@ -112,6 +114,16 @@ type Activity struct {
 type Usage struct {
 	Used, Size         int64
 	Source, ReportedAt string
+	// A negative Used or zero Size marks that part of context as unavailable.
+	Model, Scope, SessionID string     `json:",omitempty"`
+	Cost                    *UsageCost `json:"Cost,omitempty"`
+}
+
+// UsageCost is a cumulative snapshot, never an increment. Decimal text retains
+// the provider's precision; an estimate is not a verified account charge.
+type UsageCost struct {
+	Amount, Currency, Source, ReportedAt, Scope string
+	Estimated                                   bool
 }
 
 // PlanStep is one entry of an agent-reported plan.

@@ -1,0 +1,83 @@
+{
+  "agent": "codex",
+  "checks": [
+    "adapter ready",
+    "explicit model is discovered",
+    "explicit effort is discovered",
+    "explicit permission mode is discovered",
+    "native question preserves blocking or continued-work mode",
+    "provider supplied requested bounded form",
+    "duplicate answer command returns original receipt",
+    "provider turn completed after answer",
+    "generic completion did not become an authoritative answer receipt",
+    "provider reply corroborates selected answer",
+    "Stop target has a live native question",
+    "late answer after Stop rejected",
+    "cancelled waiting question has no accepted answer",
+    "Resume sends no duplicate prompt",
+    "restart retains no dispatched queue copies",
+    "restart retains accepted answer as uncertain",
+    "restart retry returns receipt without replay"
+  ],
+  "result": "PASS",
+  "runtime_version": "codex-cli 0.155.1",
+  "adapter_version": "tui-go-codex 0.1.0",
+  "readiness": "ready",
+  "selected": {
+    "Model": "gpt-6-luna",
+    "Effort": "low",
+    "Permissions": "auto",
+    "Context": "unavailable",
+    "Speed": "unavailable"
+  },
+  "first_outcome": {
+    "state": "running",
+    "error": "",
+    "queued": 0
+  },
+  "native_question": {
+    "mode": "async",
+    "route": "native-response",
+    "questions": [
+      {
+        "ID": "question_0",
+        "Text": "Which color?\n\nBlue: Select Blue.\n\nGreen: Select Green.",
+        "Label": "Color",
+        "Kind": "single",
+        "AllowOther": true,
+        "Required": false,
+        "Options": [
+          "Blue",
+          "Green"
+        ]
+      }
+    ]
+  },
+  "request_delivery": "acp-unconfirmed",
+  "effective": {
+    "Model": "gpt-6-luna",
+    "Effort": "low",
+    "Permissions": "auto",
+    "Context": "unavailable",
+    "Speed": "unavailable"
+  },
+  "shutdown": "confirmed",
+  "runtime_launches": [
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    },
+    {
+      "protocol_flags": [
+        "app-server"
+      ]
+    }
+  ],
+  "owned_processes_reaped": 3
+}

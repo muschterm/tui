@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muschterm/tui/apps/go/internal/protocol"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
@@ -124,7 +125,7 @@ func TestReviewShortMaximizedSurfaceKeepsHitsInsideAndComposerVisible(t *testing
 		if tc.content && f.detail.H == 0 {
 			t.Fatalf("%s: maximized surface has no content rows: %#v", context, f.geom.Right)
 		}
-		// The original defect: a click on the activity strip closed the tab.
+		// Surface close and selection actions must remain confined to the host.
 		for y := f.geom.Center.Y; y < m.height-1; y++ {
 			for x := 0; x < m.width; x++ {
 				for _, h := range f.hits {
@@ -134,10 +135,12 @@ func TestReviewShortMaximizedSurfaceKeepsHitsInsideAndComposerVisible(t *testing
 				}
 			}
 		}
-		m.Update(tea.MouseClickMsg{X: 3, Y: f.geom.Center.Y, Button: tea.MouseLeft})
-		m.Update(tea.MouseReleaseMsg{X: 3, Y: f.geom.Center.Y, Button: tea.MouseLeft})
+		// The maximized surface has no conversation body; click an inert cell in
+		// its center footer so a status/control target cannot close a host tab.
+		m.Update(tea.MouseClickMsg{X: m.width - 1, Y: f.geom.Center.Y, Button: tea.MouseLeft})
+		m.Update(tea.MouseReleaseMsg{X: m.width - 1, Y: f.geom.Center.Y, Button: tea.MouseLeft})
 		if len(m.viewState().Host.Tabs) != before+1 {
-			t.Fatalf("%s: footer click closed the surface", context)
+			t.Fatalf("%s: conversation status changed the opened surface set", context)
 		}
 		for _, key := range []string{"prompt", "send"} {
 			h := controlHit(t, f, key)
@@ -157,6 +160,57 @@ func TestReviewShortMaximizedSurfaceKeepsHitsInsideAndComposerVisible(t *testing
 	if got := m.measure().request.H; got <= (m.height-2)*2/5 {
 		t.Fatalf("ordinary request budget was capped: %d rows", got)
 	}
+}
+
+func TestQuestionHistoryToggleHitboxStaysInsideItsCard(t *testing.T) {
+	m := sizedModel(120, 40)
+	options := make([]string, 16)
+	for i := range options {
+		options[i] = fmt.Sprintf("Option %02d", i+1)
+	}
+	request := protocol.Request{
+		ID: "long-question-history", Kind: "question", State: "closed", Delivery: "acp-uncertain", SubmissionID: "answer-1",
+		Questions:       []protocol.Question{{ID: "q", Text: "Choose the applicable options", Kind: "multiple", Options: options}},
+		QuestionAnswers: []protocol.Answer{{Choices: []string{options[0], options[8]}}},
+	}
+	thread := &m.snapshot.Threads[0]
+	thread.Requests = append(thread.Requests, request)
+	thread.Activity = append(thread.Activity, protocol.Activity{ID: "question-answer:long", Role: "question-answer", RequestID: request.ID})
+	m.viewState().Scroll = m.measure().transcriptMax
+	f := m.render()
+	var initial hit
+	for _, h := range f.hits {
+		if h.Key == "question-history:"+request.ID {
+			initial = h
+			break
+		}
+	}
+	if initial.Key == "" || initial.Action.Kind != "question-history-toggle" {
+		t.Fatal("compact question history has no explicit toggle target")
+	}
+	inset := min(12, f.transcript.W/6)
+	if initial.Rect.X != f.transcript.X+inset || initial.Rect.W != f.transcript.W-inset || !within(initial.Rect, f.transcript) {
+		t.Fatalf("toggle hitbox escaped its right-aligned card: %#v transcript=%#v", initial.Rect, f.transcript)
+	}
+	initialRow := ansi.Strip(cutCells(f.rows[initial.Rect.Y], initial.Rect.X, initial.Rect.X+initial.Rect.W))
+	if !strings.Contains(initialRow, "Expand") {
+		t.Fatalf("expanded Q&A toggle is missing: %q", initialRow)
+	}
+	m.hover = initial.Key
+	f = m.render()
+	for _, h := range f.hits {
+		if h.Key == initial.Key {
+			if h.Rect != initial.Rect {
+				t.Fatalf("hover moved the Q&A target: %#v -> %#v", initial.Rect, h.Rect)
+			}
+			hoveredRow := ansi.Strip(cutCells(f.rows[h.Rect.Y], h.Rect.X, h.Rect.X+h.Rect.W))
+			if hoveredRow != initialRow {
+				t.Fatalf("hover changed the Q&A card geometry: %q -> %q", initialRow, hoveredRow)
+			}
+			return
+		}
+	}
+	t.Fatal("hover removed the Q&A toggle target")
 }
 
 func TestReviewBelowMinimumSizeNothingButCommandsIsReachable(t *testing.T) {

@@ -33,8 +33,8 @@ func TestComposerControlsFitAndMeasureExactly(t *testing.T) {
 				if h.Key == "send" && h.slot().X+h.slot().W != 3+width-2 {
 					t.Fatal("send not aligned with inset right edge")
 				}
-				if h.Key == "usage" && (!strings.Contains(h.Label, "unavailable") || strings.Contains(h.Label, "0%")) {
-					t.Fatal("invented usage", h)
+				if h.Key == "usage" && h.Label != "Open usage details" {
+					t.Fatal("usage action lost its accessible description", h)
 				}
 			}
 		}
@@ -260,7 +260,7 @@ func TestComposerOverflowStaysWithItsOwnGroup(t *testing.T) {
 					t.Fatalf("width %d: settings ellipsis is not adjacent to its fields", width)
 				}
 			}
-			if !strings.Contains(usage.label, "Cost") && !strings.HasPrefix(strings.TrimSpace(usage.label), m.icon("more-vertical")) {
+			if !strings.Contains(usage.label, "Ctx") && !strings.HasPrefix(strings.TrimSpace(usage.label), m.icon("more-vertical")) {
 				t.Fatalf("width %d: hidden usage detail lacks its own ellipsis", width)
 			}
 		}
@@ -301,19 +301,19 @@ func TestUsageSummaryHasIndependentMouseAndKeyboardAccess(t *testing.T) {
 
 func TestUsageGaugeDistinguishesUnknownZeroAndClamps(t *testing.T) {
 	capacity := int64(100)
-	if got := usageGauge(nil, &capacity); got != "[····] —" {
+	if got := usageGauge(nil, &capacity); got != "Ctx —" {
 		t.Fatal(got)
 	}
 	for _, tt := range []struct {
 		used int64
 		want string
-	}{{0, "[····] 0%"}, {50, "[━━··] 50%"}, {100, "[━━━━] 100%"}, {150, "[━━━━] 100%"}, {-1, "[····] —"}} {
+	}{{0, "Ctx 0%"}, {50, "Ctx 50%"}, {100, "Ctx 100%"}, {150, "Ctx 100%"}, {-1, "Ctx —"}} {
 		if got := usageGauge(&tt.used, &capacity); got != tt.want {
 			t.Errorf("%d: %q", tt.used, got)
 		}
 	}
 	zero := int64(0)
-	if got := usageGauge(&zero, &zero); got != "[····] —" {
+	if got := usageGauge(&zero, &zero); got != "Ctx —" {
 		t.Fatal(got)
 	}
 }

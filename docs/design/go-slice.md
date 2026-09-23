@@ -2,6 +2,12 @@
 
 Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner. Live HTTP checks are recorded separately from terminal validation. Children, general questions and terminal sessions remain fixtures; collaborative files, Git workflows and embedded shells remain incomplete. This does not change the accepted product scope or settle later integration decisions.
 
+The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
+permission selectors, Codex question delivery, system clipboard copying,
+actionable Send errors and App Settings / Agents defaults. This supersedes older
+Codex-form limitations below; Claude effort and native answer receipts remain
+unavailable.
+
 The [built-in Go bridge checkpoint](../implementation/go-adapter-checkpoint.md)
 records the replacement of external adapters with Go implementations around
 installed official CLIs. ACP and the app-owned question contract remain intact.
@@ -54,11 +60,11 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 | Shift+Enter / Ctrl+J | Insert a composer newline |
 | Ctrl+S | Alternate submit binding |
 | Delete in a tab menu row | Close that surface |
-| Ctrl+Q / Ctrl+C | Detach TUI |
+| Ctrl+Q / Ctrl+C without a selection | Detach TUI |
 | Ctrl+Z | Suspend |
 | Alt+Left / Alt+Right | Resize right panel |
 | Alt+Up / Alt+Down | Resize bottom panel |
-| Ctrl+Shift+C | Copy selected text through OSC clipboard |
+| Ctrl+C / Ctrl+Shift+C | Copy selected text to the local system clipboard; SSH uses OSC 52 with unconfirmed terminal acceptance |
 
 Pointer paths include visible controls, divider dragging, wheel scrolling and text selection. Terminal bracketed paste is supported; native Ctrl+V is disabled because its asynchronous widget path can split a grapheme at the input limit. Complex emoji pointer positioning and shortcut remapping remain prototype limitations. Clipboard and enhanced key delivery depend on the host terminal; their presence in the prototype is not evidence of every terminal/SSH/tmux path. The command menu exposes left-pane resizing as well. The shell supplies opened-surface tabs, singleton non-terminal surfaces, repeatable fixture terminals, attention, inspectors and fixed composer-adjacent activity. Fixture usage remains unavailable; ACP context usage appears only when reported. Rich graphics are not claimed.
 

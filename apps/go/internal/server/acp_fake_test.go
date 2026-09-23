@@ -10,6 +10,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/fixture"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
@@ -69,6 +70,7 @@ type fakeAgent struct {
 	stopped          bool
 	cancelRelease    <-chan struct{}
 	nativeQuestions  bool
+	codexQuestions   bool
 	nativeVersion    string
 	elicitationForm  bool
 	questionCancel   context.CancelFunc
@@ -117,11 +119,17 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		if f.nativeVersion != "" {
 			version = f.nativeVersion
 		}
+		meta := map[string]any{}
+		if f.codexQuestions {
+			name, version = "tui-go-codex", acpbridge.Version
+			meta["questionDialect"] = acpbridge.CodexQuestionDialect
+		}
 		f.mu.Unlock()
 		return map[string]any{
 			"protocolVersion": 1,
 			"agentInfo":       map[string]any{"name": name, "version": version},
 			"agentCapabilities": map[string]any{
+				"_meta":               meta,
 				"loadSession":         true,
 				"promptCapabilities":  map[string]any{"embeddedContext": true},
 				"sessionCapabilities": map[string]any{"close": map[string]any{}},
@@ -248,7 +256,11 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 		f.questionCancel = questionCancel
 		f.mu.Unlock()
 		f.update(ctx, session, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "question-call", "title": "AskUserQuestion", "kind": "other", "status": "pending"})
-		response, err := acp.SendRequest[map[string]any](f.conn, questionCtx, "elicitation/create", nativeQuestionWire(session))
+		wire := nativeQuestionWire(session)
+		if f.codexQuestions {
+			wire = codexNativeQuestionWire(session)
+		}
+		response, err := acp.SendRequest[map[string]any](f.conn, questionCtx, "elicitation/create", wire)
 		if err != nil {
 			return nil, acp.NewInternalError(map[string]any{"error": err.Error()})
 		}
@@ -315,6 +327,7 @@ type fakeFleet struct {
 	launchErr            error
 	dropApprovalResponse bool
 	nativeQuestions      bool
+	codexQuestions       bool
 	nativeVersion        string
 	dropQuestionResponse bool
 }
@@ -326,7 +339,7 @@ func (f *fakeFleet) launch(ctx context.Context, o agent.Options) (*agent.Session
 		f.mu.Unlock()
 		return nil, err
 	}
-	fake := &fakeAgent{options: map[string]string{}, authRequired: f.authRequired, rejectValue: f.rejectValue, nativeQuestions: f.nativeQuestions, nativeVersion: f.nativeVersion}
+	fake := &fakeAgent{options: map[string]string{}, authRequired: f.authRequired, rejectValue: f.rejectValue, nativeQuestions: f.nativeQuestions, codexQuestions: f.codexQuestions, nativeVersion: f.nativeVersion}
 	dropApprovalResponse := f.dropApprovalResponse
 	dropQuestionResponse := f.dropQuestionResponse
 	f.agents = append(f.agents, fake)

@@ -62,7 +62,7 @@ func TestProjectSettingsScopeIsIndependentOfThreadAndFilter(t *testing.T) {
 			t.Fatal("project settings changed workspace state")
 		}
 		m.activate(action{Kind: "app-settings"})
-		if m.settingsBreadcrumb() != "Settings / General" || !slices.Equal(m.settingsCategories(), []string{"general", "appearance", "keybindings", "about"}) {
+		if m.settingsBreadcrumb() != "Settings / General" || !slices.Equal(m.settingsCategories(), []string{"general", "agents", "appearance", "keybindings", "about"}) {
 			t.Fatal("app settings retained project context")
 		}
 		controlHit(t, m.measure(), "sidebar-setting:restart")

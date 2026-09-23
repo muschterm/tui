@@ -42,6 +42,8 @@ type codexBridge struct {
 	initErr     error
 	initialized bool
 	closed      bool
+	questions   bool
+	requests    codexRequestLedger
 
 	proc *process
 	conn *acp.Connection
@@ -52,6 +54,8 @@ type codexBridge struct {
 	cwd              string
 	selectedModel    string
 	selectedEffort   string
+	selectedSpeed    string
+	selectedMode     string
 	retired          bool
 	eventSignal      chan struct{}
 	grantSequence    uint64
@@ -90,12 +94,19 @@ type codexOutcome struct {
 }
 
 type codexModel struct {
-	ID                        string `json:"id"`
-	Model                     string `json:"model"`
-	DisplayName               string `json:"displayName"`
-	Description               string `json:"description"`
-	IsDefault                 bool   `json:"isDefault"`
-	DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
+	ID                     string   `json:"id"`
+	Model                  string   `json:"model"`
+	DisplayName            string   `json:"displayName"`
+	Description            string   `json:"description"`
+	IsDefault              bool     `json:"isDefault"`
+	DefaultReasoningEffort string   `json:"defaultReasoningEffort"`
+	DefaultServiceTier     string   `json:"defaultServiceTier"`
+	AdditionalSpeedTiers   []string `json:"additionalSpeedTiers"`
+	ServiceTiers           []struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"serviceTiers"`
 	SupportedReasoningEfforts []struct {
 		ReasoningEffort string `json:"reasoningEffort"`
 		Description     string `json:"description"`
@@ -117,6 +128,7 @@ type codexThreadStartResponse struct {
 	Cwd             string          `json:"cwd"`
 	Model           string          `json:"model"`
 	ReasoningEffort *string         `json:"reasoningEffort"`
+	ServiceTier     *string         `json:"serviceTier"`
 }
 
 type codexTurnInfo struct {
@@ -190,6 +202,15 @@ func (b *codexBridge) Handle(ctx context.Context, method string, params json.Raw
 		if err := req.Validate(); err != nil {
 			return nil, invalid(err)
 		}
+		var extensions struct {
+			ClientCapabilities struct {
+				Elicitation json.RawMessage `json:"elicitation"`
+			} `json:"clientCapabilities"`
+		}
+		_ = json.Unmarshal(params, &extensions)
+		b.mu.Lock()
+		b.questions = len(extensions.ClientCapabilities.Elicitation) > 0
+		b.mu.Unlock()
 		if err := b.ensureInitialized(ctx); err != nil {
 			return nil, internal(err)
 		}
@@ -198,6 +219,7 @@ func (b *codexBridge) Handle(ctx context.Context, method string, params json.Raw
 			ProtocolVersion: acp.ProtocolVersionNumber,
 			AgentInfo:       &acp.Implementation{Name: "tui-go-codex", Title: &title, Version: codexVersion},
 			AgentCapabilities: acp.AgentCapabilities{
+				Meta:               map[string]any{"questionDialect": CodexQuestionDialect, "usageDialect": UsageDialect},
 				LoadSession:        true,
 				PromptCapabilities: acp.PromptCapabilities{Image: false, Audio: false, EmbeddedContext: false},
 			},
@@ -255,11 +277,18 @@ func (b *codexBridge) ensureInitialized(ctx context.Context) error {
 }
 
 func (b *codexBridge) startProvider(ctx context.Context) error {
-	p, err := b.h.launch("app-server")
+	args := []string{"app-server"}
+	b.mu.Lock()
+	questions := b.questions
+	b.mu.Unlock()
+	if questions {
+		args = append(args, "--enable", "default_mode_request_user_input")
+	}
+	p, err := b.h.launch(args...)
 	if err != nil {
 		return fmt.Errorf("start installed Codex App Server: %w", err)
 	}
-	conn := acp.NewConnection(b.handleUpstream, newCodexNativeWriter(p.stdin, p, b), p.stdout)
+	conn := acp.NewConnection(b.handleUpstream, newCodexNativeWriter(p.stdin, p, b), newCodexNativeReader(p.stdout, b))
 	b.mu.Lock()
 	b.proc, b.conn = p, conn
 	b.mu.Unlock()
@@ -365,9 +394,14 @@ func (b *codexBridge) newSession(ctx context.Context, params json.RawMessage) (a
 		return nil, internal(errors.New("codex started the thread in a different working directory"))
 	}
 	model, effort := b.effectiveSettings(resp.Model, resp.ReasoningEffort)
+	if err := b.applySettings(ctx, resp.Thread.ID, "", "", "supervised"); err != nil {
+		return nil, internal(fmt.Errorf("codex did not acknowledge supervised baseline: %w", err))
+	}
 	b.mu.Lock()
 	b.threadID, b.sessionID, b.cwd = resp.Thread.ID, string(resp.Thread.ID), req.Cwd
 	b.selectedModel, b.selectedEffort = model, effort
+	b.selectedSpeed = b.modelSpeed(model, resp.ServiceTier)
+	b.selectedMode = "supervised"
 	options := b.configOptionsLocked()
 	b.mu.Unlock()
 	return acp.NewSessionResponse{SessionId: acp.SessionId(resp.Thread.ID), ConfigOptions: options}, nil
@@ -415,9 +449,14 @@ func (b *codexBridge) loadSession(ctx context.Context, params json.RawMessage) (
 		return nil, internal(errors.New("codex thread working directory does not match the requested checkout"))
 	}
 	model, effort := b.effectiveSettings(resp.Model, resp.ReasoningEffort)
+	if err := b.applySettings(ctx, resp.Thread.ID, "", "", "supervised"); err != nil {
+		return nil, internal(fmt.Errorf("codex did not acknowledge supervised baseline: %w", err))
+	}
 	b.mu.Lock()
 	b.threadID, b.sessionID, b.cwd = resp.Thread.ID, string(req.SessionId), req.Cwd
 	b.selectedModel, b.selectedEffort = model, effort
+	b.selectedSpeed = b.modelSpeed(model, resp.ServiceTier)
+	b.selectedMode = "supervised"
 	options := b.configOptionsLocked()
 	b.mu.Unlock()
 	return acp.LoadSessionResponse{ConfigOptions: options}, nil
@@ -470,7 +509,7 @@ func (b *codexBridge) setConfigOption(ctx context.Context, params json.RawMessag
 		b.mu.Unlock()
 		return nil, invalid(errors.New("codex settings cannot change while a turn is active"))
 	}
-	model, effort := b.selectedModel, b.selectedEffort
+	model, effort, mode, speed := b.selectedModel, b.selectedEffort, b.selectedMode, b.selectedSpeed
 	switch string(configID) {
 	case "model":
 		selected, ok := b.findModel(string(value))
@@ -485,6 +524,12 @@ func (b *codexBridge) setConfigOption(ctx context.Context, params json.RawMessag
 				effort = ""
 			}
 		}
+		if !modelHasSpeed(selected, speed) {
+			speed = ""
+			if modelHasSpeed(selected, "default") {
+				speed = "default"
+			}
+		}
 	case "effort":
 		selected, ok := b.findModel(model)
 		if !ok || !modelHasEffort(selected, string(value)) {
@@ -492,6 +537,19 @@ func (b *codexBridge) setConfigOption(ctx context.Context, params json.RawMessag
 			return nil, invalid(fmt.Errorf("codex model %q does not report reasoning effort %q", model, value))
 		}
 		effort = string(value)
+	case "mode":
+		if b.selectedMode == "" || !codexPermissionMode(string(value)) {
+			b.mu.Unlock()
+			return nil, invalid(fmt.Errorf("codex cannot enforce permission mode %q", value))
+		}
+		mode = string(value)
+	case "speed":
+		selected, ok := b.findModel(model)
+		if !ok || !modelHasSpeed(selected, string(value)) {
+			b.mu.Unlock()
+			return nil, invalid(fmt.Errorf("codex model %q does not report speed tier %q", model, value))
+		}
+		speed = string(value)
 	default:
 		b.mu.Unlock()
 		return nil, invalid(fmt.Errorf("codex cannot enforce configuration option %q", configID))
@@ -501,17 +559,17 @@ func (b *codexBridge) setConfigOption(ctx context.Context, params json.RawMessag
 	if threadID == "" {
 		return nil, invalid(errors.New("no Codex session is active"))
 	}
-	if err := b.applySettings(ctx, threadID, model, effort); err != nil {
+	if err := b.applySettings(ctx, threadID, model, effort, mode, speed); err != nil {
 		return nil, internal(fmt.Errorf("codex did not acknowledge selected settings: %w", err))
 	}
 	b.mu.Lock()
-	b.selectedModel, b.selectedEffort = model, effort
+	b.selectedModel, b.selectedEffort, b.selectedMode, b.selectedSpeed = model, effort, mode, speed
 	options := b.configOptionsLocked()
 	b.mu.Unlock()
 	return acp.SetSessionConfigOptionResponse{ConfigOptions: options}, nil
 }
 
-func (b *codexBridge) applySettings(ctx context.Context, threadID, model, effort string) error {
+func (b *codexBridge) applySettings(ctx context.Context, threadID, model, effort, mode string, speed ...string) error {
 	params := map[string]any{"threadId": threadID}
 	if model != "" {
 		params["model"] = model
@@ -519,10 +577,49 @@ func (b *codexBridge) applySettings(ctx context.Context, threadID, model, effort
 	if effort != "" {
 		params["effort"] = effort
 	}
+	if len(speed) != 0 {
+		if speed[0] == "default" || speed[0] == "" {
+			params["serviceTier"] = nil // Clear any previous thread override.
+		} else {
+			params["serviceTier"] = speed[0]
+		}
+	}
+	if mode != "" {
+		policy, sandbox, reviewer, err := b.permissionPolicy(mode)
+		if err != nil {
+			return err
+		}
+		params["approvalPolicy"], params["sandboxPolicy"], params["approvalsReviewer"] = policy, sandbox, reviewer
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	_, err := acp.SendRequest[json.RawMessage](b.upstream(), requestCtx, "thread/settings/update", params)
 	return err
+}
+
+func codexPermissionMode(mode string) bool {
+	switch mode {
+	case "supervised", "auto", "full":
+		return true
+	}
+	return false
+}
+
+func stringPtr(value string) *string { return &value }
+
+// Values match the installed App Server v2 schema; these are effective runtime
+// controls, not instruction text or an application-owned sandbox.
+func (b *codexBridge) permissionPolicy(mode string) (any, any, string, error) {
+	switch mode {
+	case "supervised":
+		return "on-request", map[string]any{"type": "workspaceWrite"}, "user", nil
+	case "auto":
+		return "on-request", map[string]any{"type": "workspaceWrite"}, "auto_review", nil
+	case "full":
+		return "never", map[string]any{"type": "dangerFullAccess"}, "user", nil
+	default:
+		return nil, nil, "", fmt.Errorf("unsupported Codex permission mode %q", mode)
+	}
 }
 
 func (b *codexBridge) effectiveSettings(model string, effort *string) (string, string) {
@@ -568,6 +665,41 @@ func modelHasEffort(model codexModel, effort string) bool {
 	return false
 }
 
+func modelHasSpeed(model codexModel, speed string) bool {
+	if speed == "default" {
+		return len(model.ServiceTiers) != 0 || len(model.AdditionalSpeedTiers) != 0
+	}
+	if speed == "" {
+		return false
+	}
+	for _, tier := range model.ServiceTiers {
+		if tier.ID == speed {
+			return true
+		}
+	}
+	if len(model.ServiceTiers) == 0 {
+		for _, tier := range model.AdditionalSpeedTiers {
+			if tier == speed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// modelSpeed preserves a reported thread tier only when the selected model
+// advertises it. A missing or unsupported tier starts at explicit standard.
+func (b *codexBridge) modelSpeed(model string, reported *string) string {
+	selected, ok := b.findModel(model)
+	if !ok || !modelHasSpeed(selected, "default") {
+		return ""
+	}
+	if reported != nil && modelHasSpeed(selected, *reported) {
+		return *reported
+	}
+	return "default"
+}
+
 func (b *codexBridge) configOptionsLocked() []acp.SessionConfigOption {
 	modelValues := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(b.models))
 	seenModels := make(map[string]struct{}, len(b.models))
@@ -592,25 +724,36 @@ func (b *codexBridge) configOptionsLocked() []acp.SessionConfigOption {
 		Id: "model", Name: "Model", Category: &modelCategory, CurrentValue: modelCurrent,
 		Options: acp.SessionConfigSelectOptions{Ungrouped: &modelValues}, Type: "select",
 	}}}
-	model, ok := b.findModel(b.selectedModel)
-	if !ok {
-		return options
+	if b.selectedMode != "" {
+		category := acp.SessionConfigOptionCategoryMode
+		modeValues := acp.SessionConfigSelectOptionsUngrouped{
+			{Name: "Supervised", Value: "supervised", Description: stringPtr("Ask the user before actions outside the writable workspace")},
+			{Name: "Auto", Value: "auto", Description: stringPtr("Use Codex auto review for requests outside the writable workspace")},
+			{Name: "Full access", Value: "full", Description: stringPtr("Run without approval prompts or Codex sandbox restrictions")},
+		}
+		options = append(options, acp.SessionConfigOption{Select: &acp.SessionConfigOptionSelect{
+			Id: "mode", Name: "Permissions", Category: &category, CurrentValue: acp.SessionConfigValueId(b.selectedMode),
+			Options: acp.SessionConfigSelectOptions{Ungrouped: &modeValues}, Type: "select",
+		}})
 	}
 	effortValues := make(acp.SessionConfigSelectOptionsUngrouped, 0, maxEfforts)
-	seenEfforts := make(map[string]struct{})
-	for _, effort := range model.SupportedReasoningEfforts {
-		if effort.ReasoningEffort == "" || len(effortValues) >= maxEfforts {
-			continue
+	effortModels := make(map[string][]string)
+	for _, model := range b.models {
+		for _, effort := range model.SupportedReasoningEfforts {
+			value := effort.ReasoningEffort
+			if value == "" {
+				continue
+			}
+			if _, exists := effortModels[value]; !exists && len(effortValues) < maxEfforts {
+				effortValues = append(effortValues, acp.SessionConfigSelectOption{Name: effortLabel(value), Value: acp.SessionConfigValueId(value)})
+			}
+			if len(effortModels[value]) < maxModels {
+				effortModels[value] = append(effortModels[value], codexModelValue(model))
+			}
 		}
-		if _, exists := seenEfforts[effort.ReasoningEffort]; exists {
-			continue
-		}
-		seenEfforts[effort.ReasoningEffort] = struct{}{}
-		name := effort.ReasoningEffort
-		if effort.Description != "" {
-			name = effort.ReasoningEffort + " — " + effort.Description
-		}
-		effortValues = append(effortValues, acp.SessionConfigSelectOption{Name: name, Value: acp.SessionConfigValueId(effort.ReasoningEffort)})
+	}
+	for i := range effortValues {
+		effortValues[i].Meta = map[string]any{"tui-go.models": effortModels[string(effortValues[i].Value)]}
 	}
 	if len(effortValues) != 0 {
 		effortCurrent := acp.SessionConfigValueId(b.selectedEffort)
@@ -620,7 +763,72 @@ func (b *codexBridge) configOptionsLocked() []acp.SessionConfigOption {
 			Options: acp.SessionConfigSelectOptions{Ungrouped: &effortValues}, Type: "select",
 		}})
 	}
+	values := acp.SessionConfigSelectOptionsUngrouped{}
+	speedModels := make(map[string][]string)
+	seen := make(map[string]bool)
+	for _, model := range b.models {
+		if !modelHasSpeed(model, "default") {
+			continue
+		}
+		modelID := codexModelValue(model)
+		speedModels["default"] = append(speedModels["default"], modelID)
+		if !seen["default"] {
+			seen["default"] = true
+			values = append(values, acp.SessionConfigSelectOption{Name: "Standard", Value: "default"})
+		}
+		if len(model.ServiceTiers) != 0 {
+			for _, tier := range model.ServiceTiers {
+				if tier.ID == "" || tier.ID == "default" {
+					continue
+				}
+				speedModels[tier.ID] = append(speedModels[tier.ID], modelID)
+				if !seen[tier.ID] {
+					seen[tier.ID] = true
+					name := tier.Name
+					if name == "" {
+						name = effortLabel(tier.ID)
+					}
+					values = append(values, acp.SessionConfigSelectOption{Name: name, Value: acp.SessionConfigValueId(tier.ID)})
+				}
+			}
+		} else {
+			for _, tier := range model.AdditionalSpeedTiers {
+				if tier == "" || tier == "default" {
+					continue
+				}
+				speedModels[tier] = append(speedModels[tier], modelID)
+				if !seen[tier] {
+					seen[tier] = true
+					values = append(values, acp.SessionConfigSelectOption{Name: effortLabel(tier), Value: acp.SessionConfigValueId(tier)})
+				}
+			}
+		}
+	}
+	if len(values) != 0 {
+		for i := range values {
+			values[i].Meta = map[string]any{"tui-go.models": speedModels[string(values[i].Value)]}
+		}
+		category := acp.SessionConfigOptionCategory("model_config")
+		options = append(options, acp.SessionConfigOption{Select: &acp.SessionConfigOptionSelect{
+			Id: "speed", Name: "Speed", Category: &category, CurrentValue: acp.SessionConfigValueId(b.selectedSpeed),
+			Options: acp.SessionConfigSelectOptions{Ungrouped: &values}, Type: "select",
+		}})
+	}
 	return options
+}
+
+func effortLabel(value string) string {
+	switch value {
+	case "xhigh":
+		return "Extra high"
+	case "max":
+		return "Max"
+	default:
+		if value == "" {
+			return value
+		}
+		return strings.ToUpper(value[:1]) + value[1:]
+	}
 }
 
 func (b *codexBridge) prompt(ctx context.Context, params json.RawMessage) (any, *acp.RequestError) {
@@ -660,9 +868,14 @@ func (b *codexBridge) prompt(ctx context.Context, params json.RawMessage) (any, 
 		b.operationMu.Unlock()
 		return nil, invalid(errors.New("select a model reported by Codex before sending a prompt"))
 	}
-	model, effort, threadID := b.selectedModel, b.selectedEffort, b.threadID
+	model, effort, mode, speed, threadID := b.selectedModel, b.selectedEffort, b.selectedMode, b.selectedSpeed, b.threadID
+	if mode != "" && !codexPermissionMode(mode) {
+		b.mu.Unlock()
+		b.operationMu.Unlock()
+		return nil, invalid(errors.New("selected Codex permission mode is no longer supported"))
+	}
 	selected, ok := b.findModel(model)
-	if !ok || (len(selected.SupportedReasoningEfforts) != 0 && !modelHasEffort(selected, effort)) {
+	if !ok || (len(selected.SupportedReasoningEfforts) != 0 && !modelHasEffort(selected, effort)) || (speed != "" && !modelHasSpeed(selected, speed)) {
 		b.mu.Unlock()
 		b.operationMu.Unlock()
 		return nil, invalid(errors.New("selected Codex model or reasoning effort is no longer supported"))
@@ -674,7 +887,7 @@ func (b *codexBridge) prompt(ctx context.Context, params json.RawMessage) (any, 
 
 	// The App Server must acknowledge the captured settings before any prompt
 	// bytes are sent. Turn/start repeats the values to bind them to this prompt.
-	if err := b.applySettings(ctx, threadID, model, effort); err != nil {
+	if err := b.applySettings(ctx, threadID, model, effort, mode, speed); err != nil {
 		b.finish(a, codexOutcome{err: fmt.Errorf("codex did not acknowledge prompt settings: %w", err)})
 		b.operationMu.Unlock()
 		return nil, internal(err)
@@ -693,8 +906,22 @@ func (b *codexBridge) prompt(ctx context.Context, params json.RawMessage) (any, 
 		"model":       model,
 		codexStartKey: a.startToken,
 	}
+	if mode != "" {
+		policy, sandbox, reviewer, err := b.permissionPolicy(mode)
+		if err != nil {
+			b.finish(a, codexOutcome{err: err})
+			b.operationMu.Unlock()
+			return nil, internal(err)
+		}
+		turnParams["approvalPolicy"], turnParams["sandboxPolicy"], turnParams["approvalsReviewer"] = policy, sandbox, reviewer
+	}
 	if effort != "" {
 		turnParams["effort"] = effort
+	}
+	if speed == "" {
+		turnParams["serviceTierForTurn"] = "default"
+	} else {
+		turnParams["serviceTierForTurn"] = speed
 	}
 	if req.MessageId != nil {
 		turnParams["clientUserMessageId"] = *req.MessageId
@@ -964,12 +1191,20 @@ func (b *codexBridge) handleUpstream(ctx context.Context, method string, params 
 		return b.fileApproval(ctx, method, params)
 	case "item/permissions/requestApproval":
 		return nil, acp.NewMethodNotFound(method)
-	case "item/tool/requestUserInput", "mcpServer/elicitation/request":
+	case "item/tool/requestUserInput":
+		b.mu.Lock()
+		questions := b.questions
+		b.mu.Unlock()
+		if !questions {
+			return nil, acp.NewMethodNotFound(method)
+		}
+		return b.userInput(ctx, params)
+	case "mcpServer/elicitation/request":
 		return nil, acp.NewMethodNotFound(method)
 	case "serverRequest/resolved":
-		b.retirePendingApprovals()
+		// Correlated at the native reader before SDK callback dispatch.
 		return nil, nil
-	case "turn/started", "turn/completed", "item/started", "item/completed",
+	case "turn/started", "turn/completed", "thread/tokenUsage/updated", "item/started", "item/completed",
 		"item/agentMessage/delta", "item/reasoning/summaryTextDelta", "turn/plan/updated", "error":
 		select {
 		case b.eventSignal <- struct{}{}:
@@ -982,9 +1217,9 @@ func (b *codexBridge) handleUpstream(ctx context.Context, method string, params 
 	}
 }
 
-// The App Server's resolved notification is not correlated to the inbound RPC
-// request by acp-go-sdk. Retire even before an asynchronous callback has
-// registered itself, so withdrawal can never be lost at that scheduling edge.
+// A native-reader-correlated withdrawal retires this connection before an
+// asynchronous SDK callback can register itself. Ordinary resolution after
+// a response write is handled by the request ledger without retiring it.
 func (b *codexBridge) retirePendingApprovals() {
 	b.mu.Lock()
 	a := b.active
@@ -1092,6 +1327,13 @@ func (b *codexBridge) dispatchEvent(ctx context.Context, a *codexTurn, event cod
 		return
 	}
 	switch event.method {
+	case "thread/tokenUsage/updated":
+		b.mu.Lock()
+		model := b.selectedModel
+		b.mu.Unlock()
+		if update := codexUsageUpdate(event.params, model); update != nil {
+			b.deliverUpdate(ctx, a, update)
+		}
 	case "item/agentMessage/delta":
 		var p struct {
 			Delta string `json:"delta"`
@@ -1738,7 +1980,7 @@ func (w *codexNativeWriter) run() {
 			w.fail(errors.New("codex App Server process exited"))
 			return
 		case request := <-w.queue:
-			n, err := w.dst.Write(request.frame)
+			n, err := w.bridge.writeNativeResponse(w.dst, request.frame)
 			if err == nil && n != len(request.frame) {
 				err = io.ErrShortWrite
 			}

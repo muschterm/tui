@@ -6,7 +6,7 @@ server's settings capabilities. Other reference apps remain pending.
 ## Navigation and scope
 
 A gear at the bottom-left opens the settings workspace. The left sidebar is
-category navigation: General first, Appearance, Keybindings and About. This is app
+category navigation: General first, Agents, Appearance, Keybindings and About. This is app
 scope, with breadcrumb `Settings / <category>`. A project's picker gear enters
 only that named project, selects Project, and offers Project, General and
 Keybindings. Its breadcrumb is `Settings / <category> / <project name>`; changing
@@ -46,6 +46,21 @@ overrides are unavailable; it does not display the global binding list as a
 project override or offer editable remapping. About shows
 a real module version or development revision/modified state from Go build info,
 never an invented release number.
+
+## New thread defaults
+
+App Agents stores an optional default agent and its model, effort, permissions,
+context and speed values for newly opened thread drafts. The connected server
+owns the setting and its revision. Agent and value choices come from the current
+agent catalogue; a ready agent must expose usable options before its defaults
+can be saved. The Demo agent offers its fixed Reference model, low/medium/high
+effort and simulated permissions. An unavailable or withdrawn agent or value is
+never replaced silently. A saved selection remains visible, and a new draft
+retains it until the user chooses supported values or another agent. Reset
+restores the built-in new-draft behavior. Saving defaults does not alter existing
+drafts, threads, queues or captured prompt settings. An older client that omits
+the new field during another app-settings update preserves the saved default;
+the `new-thread-defaults` capability gates edits from the Go TUI.
 
 ## Workspace default
 

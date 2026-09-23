@@ -17,6 +17,7 @@ SSH or tmux compatibility.
 | `pty_steering.py` | Queued-message steering against the fixture turn |
 | `pty_path_completion.py` | Project folder typeahead and inline `@` file mentions |
 | `pty_colors.py` | Color negotiation with synthetic terminal replies |
+| `pty_clipboard.py` | Right-click Copy/Paste, cursor insertion and selected-range replacement through isolated clipboard utility stand-ins; never accesses the real OS clipboard |
 | `pty_acp.py` | Opt-in real ACP prompt, menus and cancel/resume; requires live login and consumes account quota |
 | `live_agent_recovery.py` | Opt-in live HTTP Claude native question / Codex prompt, exact answer retry, Stop/Resume and restart; selects an installed official runtime explicitly |
 | `render-capture.py` | Rasterizes deterministic Go View captures to PNG for `docs/research/*-captures` (needs Pillow) |
@@ -24,6 +25,11 @@ SSH or tmux compatibility.
 
 Everything except `render-capture.py` and `pty_acp.py` uses only the standard library. Dated
 results and retained artifacts are recorded under `docs/research/`.
+
+`pty_clipboard.py` is a standalone check, outside `make pty`. Run it with the
+same `--binary` and `--artifacts` options. It checks application mouse/key input
+and clipboard utility routing, not whether Ghostty or a Linux desktop forwards
+its own copy shortcut. See the [clipboard/context-menu follow-up](../../../docs/implementation/answer-status-copy-2026-09-23.md).
 
 The live ACP harness is deliberately excluded from `PTY_HARNESSES` and `make
 pty`. It skips unless `TUI_GO_LIVE_ACP=1`. Use the shipped Go bridges with installed
@@ -63,7 +69,9 @@ creates a scratch application home and checkout, and uses an exec wrapper to
 verify which runtime the adapter starts. It never collects credentials or
 grants permissions. Claude asks a synthetic native question, accepts Blue via
 `request.answer`, then cancels a second waiting question and rejects a late
-answer. Codex runs pong and cancels a long reply; its questions remain disabled.
+answer. Codex runs pong and cancels a long reply by default; `--questions`
+exercises native `request_user_input`, including its supplied continued-work
+mode. `--permissions` selects a discovered mode for these harmless prompts.
 Both verify Resume/restart without queue replay and tracked process exit.
 
 ```sh

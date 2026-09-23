@@ -4,6 +4,14 @@ A documented foundation for polished terminal applications in Go, Rust, and Bun.
 
 The deliverable is a shared behavior specification and three complete native server/TUI reference apps. **Go comes first**, using Bubble Tea and the Charm ecosystem; Rust uses Ratatui, and Bun uses TypeScript + React + public Ink with Bun.Terminal. The Go slice supplies a persistent background server, interactive shell and built-in Go ACP bridges around installed Claude/Codex CLIs, alongside fixture activity; [2026-09-22 validation](docs/research/go-acp-2026-09-22.md) distinguishes live HTTP results from terminal evidence. Broader agent, file, Git and terminal integrations remain incomplete; the root Bun entry point remains a bootstrap placeholder. See [current scope and launch instructions](docs/design/go-slice.md).
 
+The [latest UI fixes](docs/research/ui-bugs-2026-09-22.md) add native permission
+selection, Codex question/answer delivery, local clipboard copying, actionable
+Send errors, and App Settings / Agents defaults. Claude effort selection remains
+unavailable pending a verified runtime control.
+The [conversation refinement](docs/implementation/conversation-polish-2026-09-22.md)
+adds persistent Q&A cards, one outlined composer, conversation activity status,
+versioned/legacy Claude choices, model-scoped speed and native usage telemetry.
+
 ## Start here
 
 **Next agent-integration task:** [implementation handoff](docs/implementation/agent-integration-handoff.md)

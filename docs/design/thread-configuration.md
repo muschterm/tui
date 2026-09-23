@@ -27,7 +27,7 @@ The user requires these settings to remain available at the bottom of the prompt
 
 While idle, show the editable selection for the next submission. During active work, including waiting, the settings row and its overflow controls are read-only and show the confirmed effective running configuration. Ordinary Send during work captures that effective configuration. Preserve the client's idle preference and restore it when work becomes idle; the active display must not overwrite that preference. Show matching values once, without “Running with selected settings.” Distinguish meaningful selected/running mismatches in details, and label disconnected last-confirmed values as stale. Never relabel a run before confirmation or imply that a queued item has started.
 
-Each setting has mouse and keyboard access to supported controls or details. Abbreviated labels must retain enough meaning to distinguish model, effort, permissions, context, and speed tier. The 2026-09-20 review supersedes wrapping: progressively move fields into a vertical ellipsis menu directly after the remaining left-aligned fields as width decreases, retaining the model longest and restoring fields as space returns. Usage has a separate menu in the right-aligned group. The typing area has a complete outline above the configuration strip. Overflow items show their values and route to the same supported controls/details; differing selected/running values remain distinguishable. Preserve a compact prompt/configuration footer during ADE surface expansion. Unsupported optional selectors can show fixed, unavailable, or not-applicable values without inventing choices. This strip is distinct from the usage meter, which reports measurements rather than configuration.
+Each setting has mouse and keyboard access to supported controls or details. Abbreviated labels must retain enough meaning to distinguish model, effort, permissions, context, and speed tier. The 2026-09-20 review supersedes wrapping: progressively move fields into a vertical ellipsis menu directly after the remaining left-aligned fields as width decreases, retaining the model longest and restoring fields as space returns. Usage has a separate menu in the right-aligned group. The typing area and configuration/actions share one rounded outline, with controls on its bottom interior row (2026-09-22 refinement). Overflow items show their values and route to the same supported controls/details; differing selected/running values remain distinguishable. Preserve a compact prompt/configuration footer during ADE surface expansion. Unsupported optional selectors can show fixed, unavailable, or not-applicable values without inventing choices. This strip is distinct from the usage meter, which reports measurements rather than configuration.
 
 Use flat clickable values and one coherent settings action instead of placing a dropdown chevron and bordered selector around every field. Hover/focus and the settings action make editability discoverable; visible fields and overflow entries show their values without requiring hover. Agent brand artwork is optional decoration beside its name, sourced from verified official assets. Keep agent identity separate from provider and model identity, and use text when artwork is unavailable.
 
@@ -69,7 +69,7 @@ Use distinct [approval cards](activity.md#approval-cards) in the same area for p
 
 ## Prototype and integration work
 
-Local draft configuration, atomic first-send creation, idle composer selections and explicit editing of queued-item settings are accepted scope. Mutating an already executing run, defaults persistence and preset management remain later design details; do not silently switch the thread's agent or change an active run. Applying each queued item's recorded settings before execution needs adapter validation. Exact bindings are explicitly deferred to the interactive prototype.
+Local draft configuration, atomic first-send creation, idle composer selections and explicit editing of queued-item settings are accepted scope. App-level defaults persistence now initializes only fresh local drafts; see [App Agents settings](settings.md#new-thread-defaults). Existing drafts and queued captures remain independent. Mutating an already executing run and preset management remain later design details; do not silently switch the thread's agent or change an active run. Applying each queued item's recorded settings before execution needs adapter validation. Exact bindings are explicitly deferred to the interactive prototype.
 
 Conformance cases must cover dependent-option invalidation, default visibility, unsupported controls, rejection after selection, effective-value persistence, detached approval requests, two clients answering one request, resume with removed options, and provider-specific permission limitations. Source research and live adapter evidence must stay separate. Real provider conformance has not been run; Demo and renderer checks do not establish it.
 
@@ -80,3 +80,22 @@ Use clean connection and model names, without inventing capabilities from their 
 The fixture footer uses Demo, Reference, Medium and Simulated as display labels for its synthetic selection; other selected fixture efforts retain their corresponding labels. These labels do not establish provider enforcement. Unknown context stays unknown. See [composer action placement](layout.md#controls-and-composer-refinement-2026-09-19).
 
 The Go wire uses `thread.start` with project identity, explicit agent, captured settings, text and attachments. Its receipt names the created thread. `thread.create` remains a legacy API, unused by the new-thread UI. Real Codex/Claude support remains [implementation step 4](implementation.md#vertical-slices).
+
+## Versioned models and model-scoped speed — 2026-09-22
+
+Claude model choices show the runtime-resolved version beside moving aliases
+and offer pinned resolved IDs. Explicit legacy entries come from documented
+provider IDs and a versioned reference catalog; label them Legacy and retain
+native selection errors. A listed legacy ID is not a claim of account access.
+Do not invent model IDs, prices, capacities or capability parity from names.
+Codex continues to use its account/runtime `model/list` catalog.
+
+Effort picker rows use short names (Low, Medium, High and other reported
+levels), with no paragraph embedded in the choice. Model-scoped effort/speed
+values carry their applicability through the bridge and server. Selecting a
+model preserves compatible idle preferences, resets incompatible values to an
+offered choice or unavailable, and never edits queued prompt captures. Standard
+speed remains a visible selectable control when the model also offers Fast;
+responsive overflow retains access. Captured speed is applied and acknowledged
+before dispatch, and native effective-state readback is required where a generic
+control response does not prove that it applied.

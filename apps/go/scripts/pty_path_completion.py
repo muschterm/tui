@@ -112,6 +112,8 @@ def main():
             check(v['Threads'][thread_id]['Draft'] == 'Check @bad.bin ' and len(v['Threads'][thread_id]['Attachments']) == 1,
                   'binary capture failure preserves text and selected file')
             check(v['Pending'] is None, 'rejected capture clears command uncertainty')
+            check('Cannot send message' in '\n'.join(term.screen()), 'rejected capture opens a visible error dialog')
+            term.send(b'\x1b')
             term.click_label('context attachments')
             term.click_label('Remove bad.bin')
             term.send(b'\x1b')

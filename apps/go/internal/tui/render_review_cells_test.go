@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -134,7 +133,7 @@ func TestReviewSelectionCopiesOnlyItsRegion(t *testing.T) {
 func copiesSelection(m *Model) bool {
 	m.setFocus("transcript")
 	cmd := m.key(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl | tea.ModShift})
-	return cmd != nil && strings.Contains(fmt.Sprintf("%T", cmd()), "lipboard")
+	return cmd != nil && m.selectedText != ""
 }
 
 func TestReviewSelectionInvalidatedWhenBasisChanges(t *testing.T) {

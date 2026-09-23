@@ -259,6 +259,10 @@ func questionString(value any, limit int, empty bool) (string, error) {
 // The standard decoder accepts duplicate keys and replaces malformed surrogate
 // strings. Reject those ambiguities before interpreting any actionable schema.
 func readQuestionJSON(dec *json.Decoder, depth int) (any, error) {
+	return readQuestionJSONValue(dec, depth, false)
+}
+
+func readQuestionJSONValue(dec *json.Decoder, depth int, allowNull bool) (any, error) {
 	if depth > 16 {
 		return nil, fmt.Errorf("question JSON nesting exceeds limit")
 	}
@@ -283,7 +287,7 @@ func readQuestionJSON(dec *json.Decoder, depth int) (any, error) {
 				if _, exists := result[key]; exists {
 					return nil, fmt.Errorf("duplicate JSON key")
 				}
-				value, e := readQuestionJSON(dec, depth+1)
+				value, e := readQuestionJSONValue(dec, depth+1, allowNull)
 				if e != nil {
 					return nil, e
 				}
@@ -296,7 +300,7 @@ func readQuestionJSON(dec *json.Decoder, depth int) (any, error) {
 		case '[':
 			result := []any{}
 			for dec.More() {
-				value, e := readQuestionJSON(dec, depth+1)
+				value, e := readQuestionJSONValue(dec, depth+1, allowNull)
 				if e != nil {
 					return nil, e
 				}
@@ -308,6 +312,9 @@ func readQuestionJSON(dec *json.Decoder, depth int) (any, error) {
 			return result, nil
 		}
 	case nil:
+		if allowNull {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("null question field")
 	}
 	return token, nil

@@ -376,6 +376,9 @@ func (s *Session) Initialize(ctx context.Context) (Info, error) {
 			info.Capabilities = append(info.Capabilities, "claude-questions-0.80.0")
 		}
 	}
+	if questions && info.Version == acpbridge.CodexIdentity && resp.AgentCapabilities.Meta["questionDialect"] == acpbridge.CodexQuestionDialect {
+		info.Capabilities = append(info.Capabilities, CapNativeQuestions, acpbridge.CodexQuestionDialect)
+	}
 	if resp.AgentCapabilities.LoadSession {
 		info.Capabilities = append(info.Capabilities, CapLoadSession)
 	}

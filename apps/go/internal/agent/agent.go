@@ -90,6 +90,14 @@ func Defaults(getenv func(string) string) []protocol.Agent {
 // Ensure adds any missing default agents to an existing snapshot and refreshes
 // the executables from the environment without discarding probe results.
 func Ensure(s *protocol.Snapshot, getenv func(string) string) {
+	// A process does not survive server restart. Its saved session option
+	// catalogue may predate a bridge upgrade; the fresh probe/session supplies
+	// the current catalogue without rewriting captured prompt settings.
+	for i := range s.Threads {
+		if IsACP(s.Threads[i].AgentID) {
+			s.Threads[i].Options = nil
+		}
+	}
 	for _, def := range Defaults(getenv) {
 		found := false
 		for i := range s.Agents {

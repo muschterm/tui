@@ -116,22 +116,31 @@ func runFakeCodexAppServer() int {
 						map[string]any{"reasoningEffort": "medium", "description": "Medium"},
 						map[string]any{"reasoningEffort": "high", "description": "High"},
 					}, "defaultReasoningEffort": "medium", "inputModalities": []string{"text"},
+					"serviceTiers": []any{map[string]any{"id": "fast", "name": "Fast", "description": "Faster generation"}},
 				},
 				map[string]any{"id": "fake-other", "model": "fake-other", "displayName": "Other model", "supportedReasoningEfforts": []any{}},
 			}, "nextCursor": nil}) != nil {
 				return 1
 			}
 		case "thread/start":
-			if respond(message.ID, map[string]any{"thread": map[string]any{"id": "thread-fake-1"}, "cwd": os.Getenv("TUI_GO_CODEX_TEST_CWD"), "model": "", "reasoningEffort": nil}) != nil {
+			approval, sandbox := "on-request", "workspaceWrite"
+			if mode == "initial-full" {
+				approval, sandbox = "never", "dangerFullAccess"
+			}
+			if respond(message.ID, map[string]any{"thread": map[string]any{"id": "thread-fake-1"}, "cwd": os.Getenv("TUI_GO_CODEX_TEST_CWD"), "model": "", "reasoningEffort": nil, "approvalPolicy": approval, "sandbox": map[string]any{"type": sandbox}, "approvalsReviewer": "user"}) != nil {
 				return 1
 			}
 		case "thread/resume":
-			if respond(message.ID, map[string]any{"thread": map[string]any{"id": "thread-fake-1"}, "cwd": os.Getenv("TUI_GO_CODEX_TEST_CWD"), "model": "gpt-6-luna", "reasoningEffort": "low"}) != nil {
+			if respond(message.ID, map[string]any{"thread": map[string]any{"id": "thread-fake-1"}, "cwd": os.Getenv("TUI_GO_CODEX_TEST_CWD"), "model": "gpt-6-luna", "reasoningEffort": "low", "approvalPolicy": "on-request", "sandbox": map[string]any{"type": "workspaceWrite"}, "approvalsReviewer": "user"}) != nil {
 				return 1
 			}
 		case "thread/settings/update":
 			settingsSeen++
-			if mode == "hold-settings" && settingsSeen >= 3 {
+			if mode == "reject-settings" && settingsSeen >= 2 {
+				_ = write(map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32602, "message": "settings rejected"}})
+				continue
+			}
+			if mode == "hold-settings" && settingsSeen >= 4 {
 				release := os.Getenv(fakeCodexRelease)
 				deadline := time.Now().Add(5 * time.Second)
 				for time.Now().Before(deadline) {
@@ -329,6 +338,92 @@ func codexRequestCount(entries []codexRuntimeEntry, method string) int {
 	return n
 }
 
+func TestCodexModelScopedOptionsAndSpeedDelivery(t *testing.T) {
+	f := startCodexFixture(t, "completed")
+	var speed, effort *acp.SessionConfigOptionSelect
+	for _, option := range f.options {
+		if option.Select == nil {
+			continue
+		}
+		switch option.Select.Id {
+		case "speed":
+			speed = option.Select
+		case "effort":
+			effort = option.Select
+		}
+	}
+	if speed == nil || effort == nil || speed.Options.Ungrouped == nil || effort.Options.Ungrouped == nil {
+		t.Fatalf("missing model-scoped speed or effort: %+v", f.options)
+	}
+	if got := (*effort.Options.Ungrouped)[0].Name; got != "Low" {
+		t.Fatalf("effort label = %q, want concise Low", got)
+	}
+	if got := (*speed.Options.Ungrouped)[1]; got.Name != "Fast" || got.Value != "fast" {
+		t.Fatalf("speed choice = %+v, want Fast", got)
+	}
+	if err := f.setOption("model", "fake-other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setOption("speed", "fast"); err == nil {
+		t.Fatal("accepted Fast on a model without a reported tier")
+	}
+	f.selectModelAndEffort(t)
+	if err := f.setOption("speed", "fast"); err != nil {
+		t.Fatalf("select reported Fast tier: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.prompt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entries := waitCodexRuntimeLog(t, f.logPath, func(entries []codexRuntimeEntry) bool {
+		return codexRequestCount(entries, "turn/start") == 1
+	})
+	var settings, start map[string]any
+	for _, entry := range entries {
+		switch entry.Method {
+		case "thread/settings/update":
+			_ = json.Unmarshal(entry.Params, &settings)
+		case "turn/start":
+			_ = json.Unmarshal(entry.Params, &start)
+		}
+	}
+	if settings["serviceTier"] != "fast" || start["serviceTierForTurn"] != "fast" {
+		t.Fatalf("Fast tier not bound to settings and turn: settings=%v start=%v", settings, start)
+	}
+}
+
+func TestCodexModelSwitchClearsPreviousFastTier(t *testing.T) {
+	f := startCodexFixture(t, "completed")
+	f.selectModelAndEffort(t)
+	if err := f.setOption("speed", "fast"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setOption("model", "fake-other"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.prompt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entries := waitCodexRuntimeLog(t, f.logPath, func(entries []codexRuntimeEntry) bool {
+		return codexRequestCount(entries, "turn/start") == 1
+	})
+	var settings, start map[string]any
+	for _, entry := range entries {
+		switch entry.Method {
+		case "thread/settings/update":
+			_ = json.Unmarshal(entry.Params, &settings)
+		case "turn/start":
+			_ = json.Unmarshal(entry.Params, &start)
+		}
+	}
+	if value, exists := settings["serviceTier"]; !exists || value != nil || start["serviceTierForTurn"] != "default" {
+		t.Fatalf("Fast tier leaked across model change: settings=%v start=%v", settings, start)
+	}
+}
+
 func TestCodexDiscoversLunaLowAndAcknowledgesSettingsBeforePrompt(t *testing.T) {
 	f := startCodexFixture(t, "completed")
 	modelValues := modelOptionValues(t, f.options)
@@ -457,7 +552,7 @@ func TestCodexCancelDuringSettingsAckPreventsTurnStart(t *testing.T) {
 		promptDone <- err
 	}()
 	waitCodexRuntimeLog(t, f.logPath, func(entries []codexRuntimeEntry) bool {
-		return codexRequestCount(entries, "thread/settings/update") >= 3
+		return codexRequestCount(entries, "thread/settings/update") >= 4
 	})
 	if err := f.conn.Cancel(ctx, acp.CancelNotification{SessionId: f.session}); err != nil {
 		t.Fatalf("cancel while settings are pending: %v", err)
@@ -553,6 +648,144 @@ func TestCodexCompletionBeforeNativeExitWinsOverDisconnect(t *testing.T) {
 	if err != nil || response.StopReason != acp.StopReasonEndTurn {
 		t.Fatalf("queued completion lost to native process exit: response=%+v err=%v", response, err)
 	}
+}
+
+func TestCodexPermissionModesReachSettingsAndTurn(t *testing.T) {
+	cases := []struct {
+		mode, approval, sandbox, reviewer string
+	}{
+		{"supervised", "on-request", "workspaceWrite", "user"},
+		{"auto", "on-request", "workspaceWrite", "auto_review"},
+		{"full", "never", "dangerFullAccess", "user"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			f := startCodexFixture(t, "completed")
+			if got := selectedMode(f.options); got != "supervised" {
+				t.Fatalf("initial mode = %q", got)
+			}
+			f.selectModelAndEffort(t)
+			if err := f.setOption("mode", tc.mode); err != nil {
+				t.Fatalf("set mode: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := f.prompt(ctx); err != nil {
+				t.Fatal(err)
+			}
+			entries := codexRuntimeLog(t, f.logPath)
+			settingsAt, startAt := -1, -1
+			var lastSettings, startParams map[string]any
+			for i, entry := range entries {
+				if entry.Kind != "request" || (entry.Method != "thread/settings/update" && entry.Method != "turn/start") {
+					continue
+				}
+				var params map[string]any
+				if err := json.Unmarshal(entry.Params, &params); err != nil {
+					t.Fatal(err)
+				}
+				if entry.Method == "thread/settings/update" {
+					settingsAt = i
+					lastSettings = params
+				} else {
+					startAt = i
+					startParams = params
+				}
+			}
+			if settingsAt < 0 || startAt <= settingsAt {
+				t.Fatalf("mode was not acknowledged before turn/start: %+v", entries)
+			}
+			for method, params := range map[string]map[string]any{"thread/settings/update": lastSettings, "turn/start": startParams} {
+				if params["approvalPolicy"] != tc.approval || params["approvalsReviewer"] != tc.reviewer {
+					t.Fatalf("%s policy = %+v", method, params)
+				}
+				sandbox, ok := params["sandboxPolicy"].(map[string]any)
+				if !ok || sandbox["type"] != tc.sandbox {
+					t.Fatalf("%s sandbox = %+v", method, params["sandboxPolicy"])
+				}
+			}
+		})
+	}
+}
+
+func TestCodexPermissionModeRejectsInvalidAndUnacknowledgedValues(t *testing.T) {
+	f := startCodexFixture(t, "reject-settings")
+	if err := f.setOption("mode", "invalid"); err == nil {
+		t.Fatal("invalid mode was accepted")
+	}
+	if err := f.setOption("mode", "full"); err == nil {
+		t.Fatal("provider-rejected full access was acknowledged")
+	}
+	if got := codexRequestCount(codexRuntimeLog(t, f.logPath), "turn/start"); got != 0 {
+		t.Fatalf("rejected permission selection sent %d turns", got)
+	}
+}
+
+func TestCodexSupervisedPolicyCanBeRestoredAfterFullAccess(t *testing.T) {
+	f := startCodexFixture(t, "completed")
+	f.selectModelAndEffort(t)
+	if err := f.setOption("mode", "full"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setOption("mode", "supervised"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.prompt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entries := codexRuntimeLog(t, f.logPath)
+	var last, started map[string]any
+	for _, entry := range entries {
+		if entry.Kind == "request" && entry.Method == "thread/settings/update" {
+			if err := json.Unmarshal(entry.Params, &last); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if entry.Kind == "request" && entry.Method == "turn/start" {
+			if err := json.Unmarshal(entry.Params, &started); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if last["approvalPolicy"] != "on-request" || last["approvalsReviewer"] != "user" {
+		t.Fatalf("supervised policy was not restored: %+v", last)
+	}
+	sandbox, ok := last["sandboxPolicy"].(map[string]any)
+	if !ok || sandbox["type"] != "workspaceWrite" {
+		t.Fatalf("supervised sandbox was not restored: %+v", last["sandboxPolicy"])
+	}
+	if started["approvalPolicy"] != "on-request" || started["approvalsReviewer"] != "user" {
+		t.Fatalf("turn inherited prior Full access: %+v", started)
+	}
+	startedSandbox, ok := started["sandboxPolicy"].(map[string]any)
+	if !ok || startedSandbox["type"] != "workspaceWrite" {
+		t.Fatalf("turn inherited prior Full sandbox: %+v", started["sandboxPolicy"])
+	}
+}
+
+func TestCodexNarrowsInheritedFullPolicyBeforeAdvertisingSession(t *testing.T) {
+	f := startCodexFixture(t, "initial-full")
+	if got := selectedMode(f.options); got != "supervised" {
+		t.Fatalf("advertised permission mode = %q", got)
+	}
+	entries := codexRuntimeLog(t, f.logPath)
+	for _, entry := range entries {
+		if entry.Kind != "request" || entry.Method != "thread/settings/update" {
+			continue
+		}
+		var params map[string]any
+		if err := json.Unmarshal(entry.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		sandbox, ok := params["sandboxPolicy"].(map[string]any)
+		if params["approvalPolicy"] != "on-request" || params["approvalsReviewer"] != "user" || !ok || sandbox["type"] != "workspaceWrite" {
+			t.Fatalf("inherited Full policy was not narrowed: %+v", params)
+		}
+		return
+	}
+	t.Fatal("Codex did not acknowledge supervised baseline")
 }
 
 func stringInSlice(values []string, target string) bool {

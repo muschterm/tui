@@ -46,10 +46,14 @@ func (h *acpHandler) CreateElicitation(ctx context.Context, raw json.RawMessage)
 	}
 	h.mu.Lock()
 	builtin := h.info.Version == acpbridge.ClaudeIdentity
+	codex := h.info.Version == acpbridge.CodexIdentity
 	h.mu.Unlock()
 	parse := agent.ParseClaudeQuestions
 	if builtin {
 		parse = agent.ParseBuiltinClaudeQuestions
+	}
+	if codex {
+		parse = agent.ParseBuiltinCodexQuestions
 	}
 	form, err := parse("question-"+ID(), raw)
 	if err != nil {
@@ -90,7 +94,9 @@ func (h *acpHandler) CreateElicitation(ctx context.Context, raw json.RawMessage)
 	request := form.Request
 	request.TurnID, request.Origin = t.TurnID, t.Agent
 	nextThread.Requests = append(nextThread.Requests, request)
-	nextThread.State = "waiting"
+	if request.Mode == "blocking" {
+		nextThread.State = "waiting"
+	}
 	if len(nextThread.Requests) > 128 || projectedSize(next) > snapshotLimit {
 		r.mu.Unlock()
 		e.mu.Unlock()

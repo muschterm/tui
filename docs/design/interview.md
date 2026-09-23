@@ -695,3 +695,15 @@ boundary, the app-owned question contract, official-runtime authentication,
 fixture preservation or truthful delivery/recovery requirements. Exact Go
 packaging is left to implementation. The current turn records the decision only;
 the [handoff](../implementation/agent-integration-handoff.md) guides the new agent.
+
+## Conversation/composer correction — 2026-09-22
+
+The user explicitly moves model/settings and Send inside the prompt box so the
+composer reads as one component. This supersedes the separate control row from
+2026-09-20. Thinking/Waiting belongs to the conversation UI instead. Answered
+question history must show the original question, selected response and other
+choices. Native submitted-but-unconfirmed responses remain visible with that
+status, distinct from confirmed answers. Claude needs versioned and legacy
+model choices; speed choices must follow the selected model's capabilities;
+effort labels should be concise. Context/cost presentation must reflect real
+telemetry and preserve unknown states.
