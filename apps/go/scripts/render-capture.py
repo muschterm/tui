@@ -99,6 +99,15 @@ def cells(text, default_fg, default_bg):
         x += width
 
 
+# Cell-relative (x0, y0, x1, y1) rectangles for block elements and light lines.
+BLOCKS = {
+    "█": (0, 0, 1, 1), "▀": (0, 0, 1, 0.5), "▄": (0, 0.5, 1, 1),
+    "▌": (0, 0, 0.5, 1), "▐": (0.5, 0, 1, 1),
+    "▔": (0, 0, 1, 0.125), "▁": (0, 0.875, 1, 1), "▏": (0, 0, 0.125, 1), "▕": (0.875, 0, 1, 1),
+    "─": (0, 0.5, 1, 0.5), "│": (0.5, 0, 0.5, 1),
+}
+
+
 def render(source, output, font_path, title="Deterministic Go View output, rendered with fixed cells; not a terminal screenshot"):
     match = re.match(r"(\d+)x(\d+)-", source.name)
     if not match:
@@ -121,7 +130,15 @@ def render(source, output, font_path, title="Deterministic Go View output, rende
         if width:
             draw.rectangle((px, py, px + width * cw - 1, py + ch - 1), fill=background)
             rectangles.append(f'<rect x="{px}" y="{py}" width="{width*cw}" height="{ch}" fill="{background}"/>')
-        if char != " ":
+        # Terminals such as foot draw these as exact cell geometry, not font glyphs.
+        block = BLOCKS.get(char)
+        if block and width:
+            x0, y0, x1, y1 = block
+            left, top = px + int(x0 * cw), py + int(y0 * ch)
+            box = (left, top, max(left, px + int(x1 * cw) - 1), max(top, py + int(y1 * ch) - 1))
+            draw.rectangle(box, fill=color)
+            rectangles.append(f'<rect x="{box[0]}" y="{box[1]}" width="{box[2]-box[0]+1}" height="{box[3]-box[1]+1}" fill="{color}"/>')
+        elif char != " ":
             draw.text((px, py + 15), char, font=bold_font if bold else font, fill=color, anchor="ls")
             weight = ' font-weight="700"' if bold else ''
             texts.append(f'<text x="{px}" y="{py+15}" fill="{color}"{weight}>{html.escape(char)}</text>')

@@ -103,6 +103,35 @@ and failure red remain on status indicators and meaningful messages. Interaction
 styling must not overwrite them. Validation stays visible at its source. Disabled
 actions must not gain an enabled hover treatment.
 
+## Settings panel constructs — 2026-09-23
+
+User-directed refinement ("do whatever works"), after reviewing an Omarchy
+Quickshell panel. The Qt panel's mixed font sizes are not available: foot lacks
+OSC 66 scaling and DECDHL, and the pinned Bubble Tea v2 renderer strips both (see
+[text sizing research](../research/terminal-text-sizing-2026-09-23.md)). These
+cell-native constructs approximate its polish instead.
+
+- **Banded square fill.** A square fill may add a `▄` row above and a `▀` row below
+  its label row, painted in the fill color over the canvas, so it reads as a
+  two-cell-tall button. The band is part of the hit rectangle and changes color
+  with state; its geometry never changes. Use it only with 256 or more colors and
+  Nerd Font symbols, where neutral fills differ from the canvas. Otherwise use the
+  single-row `[ Label ]` fallback; never paint solid blocks.
+- **Segmented choice.** A small closed option set becomes equal-width square-fill
+  segments across the form width with a two-cell gap. Each segment is its own hit
+  rectangle, Tab stop and command; the current value takes the selected treatment,
+  and activating it again writes nothing. The focus mark uses the gap cell before
+  the segment. When any label does not fit, fall back to the single button that
+  opens a menu.
+- **Toggle row.** A boolean setting uses a full-row control: label at the left, an
+  On/Off word and a short track with a knob at the right (neutral track with a
+  muted knob at the left when off; accent track with a bright knob at the right when
+  on). The word keeps the state readable without color; monochrome uses
+  `[o   ]`/`[===o]`. The row takes square-fill hover/focus states.
+- **Sections and pairs.** Form section headings are uppercase, bold and muted,
+  separated by a full-width rule in the line color. Read-only label/value rows put a
+  muted label at the left and a bright value flush right.
+
 ## Building components
 
 ### Centered menus and dialogs

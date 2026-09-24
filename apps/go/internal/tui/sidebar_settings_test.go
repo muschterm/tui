@@ -297,3 +297,40 @@ func TestSettingsAttentionAndCompactContentCycle(t *testing.T) {
 		t.Fatal("explicit attention did not leave settings to review work")
 	}
 }
+
+func TestSettingsPanelCaptures(t *testing.T) {
+	dir := os.Getenv("TUI_GO_CAPTURE_DIR")
+	if dir == "" {
+		t.Skip("set capture directory")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	type capture struct {
+		width, height int
+		light         bool
+		page          string
+	}
+	var captures []capture
+	for _, light := range []bool{false, true} {
+		for _, page := range []string{"general", "appearance", "about", "keybindings", "project-general"} {
+			captures = append(captures, capture{160, 30, light, page})
+		}
+	}
+	captures = append(captures, capture{47, 22, false, "general"})
+	for _, c := range captures {
+		m := navigationModel()
+		m.state.Light = c.light
+		m.Update(tea.WindowSizeMsg{Width: c.width, Height: c.height})
+		if strings.HasPrefix(c.page, "project-") {
+			m.openSidebarSettings(strings.TrimPrefix(c.page, "project-"), "alpha")
+		} else {
+			m.openSidebarSettings(c.page, "")
+		}
+		m.configureInputs()
+		path := filepath.Join(dir, fmt.Sprintf("%dx%d-light%t-settings-%s.ansi", c.width, c.height, c.light, c.page))
+		if err := os.WriteFile(path, []byte(strings.Join(m.render().rows, "\n")), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

@@ -117,7 +117,7 @@ def main():
             term.click_label('Off')
             term.pump(.8)
             check(snap()['app_settings']['ContinueAfterRestart'], 'restart toggle persists through server command')
-            term.click_label('Current checkout')
+            # Workspace default is a segmented choice; each segment sets its value.
             term.click_label('Worktree')
             term.pump(.8)
             check(snap()['app_settings']['WorkspaceDefault'] == 'worktree', 'app workspace preference persists')
@@ -150,7 +150,7 @@ def main():
             check('Settings / General / Sidebar project' in screen and 'Continue threads after restart' not in screen,
                   'project General has named scope and excludes app-only restart setting')
             app_before = snap()['app_settings']
-            term.click_label('Use app default: Worktree')
+            check('Using app default: Worktree' in '\n'.join(term.screen()), 'project General shows the inherited effective value')
             term.click_label('Current checkout')
             term.pump(.8)
             p_id = p['ID']
@@ -158,13 +158,12 @@ def main():
                   'project workspace override persists')
             check(snap()['app_settings'] == app_before, 'project override leaves app settings unchanged')
             capture('02-project-general')
-            term.click_label('Current checkout')
-            term.click_label('Use app default')
+            term.click_label('App default')
             term.pump(.8)
             check(next(p for p in snap()['projects'] if p['ID'] == p_id)['WorkspaceDefault'] == '' and
-                  'Use app default: Worktree' in '\n'.join(term.screen()), 'reset clears override and displays inherited effective value')
-            term.click_label('Use app default: Worktree')
+                  'Using app default: Worktree' in '\n'.join(term.screen()), 'reset clears override and displays inherited effective value')
             term.click_label('Current checkout')
+            term.pump(.8)
             category('Keybindings')
             check('Project keybinding overrides are unavailable' in '\n'.join(term.screen()),
                   'project Keybindings does not imply implemented overrides')

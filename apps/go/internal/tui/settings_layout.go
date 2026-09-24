@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
@@ -73,20 +74,7 @@ func (m *Model) renderSettingsContent(f *frame, r shell.Rect) {
 	offset := min(max(0, m.settingsScroll), f.settingsMax)
 	f.hits = append(f.hits, hit{Rect: f.settingsBody, Action: action{}, Label: "Settings · wheel / arrows to scroll", Key: "sidebar-settings"})
 	for i := 0; i < f.settingsBody.H && offset+i < len(rows); i++ {
-		row, y := rows[offset+i], f.settingsBody.Y+i
-		if row.key != "" {
-			fg := p.blue
-			if row.danger {
-				fg = p.red
-			}
-			f.button(m, x, y, width, row.label, row.key, row.action, fg, p.input)
-		} else {
-			v := m.componentStyle(squareFill, componentState{}, p.muted, p.canvas)
-			if row.heading {
-				v.foreground, v.bold = p.text, true
-			}
-			f.componentText(x, y, width, row.label, v)
-		}
+		m.renderSettingsRow(f, rows[offset+i], x, f.settingsBody.Y+i, width, i == 0)
 	}
 	f.scrollbar(m, shell.Rect{X: x + width + 1, Y: f.settingsBody.Y, W: 1, H: f.settingsBody.H}, "sidebar-settings", len(rows), f.settingsBody.H, offset, p.canvas)
 }
@@ -144,24 +132,168 @@ func (m *Model) configureSettingsFocus(f frame) {
 	if len(m.menu) > 0 {
 		return
 	}
-	if !slices.ContainsFunc(f.hits, func(h hit) bool { return h.Key == m.focus }) {
-		key := "sidebar-settings"
-		if f.settingsBody.H == 0 {
-			key = "settings-category:" + m.settingsPage
-		}
-		m.setFocus(key)
+	if slices.ContainsFunc(f.hits, func(h hit) bool { return h.Key == m.focus }) {
+		return
 	}
+	if key, ok := settingsFocusFallback(f.hits, m.focus); ok {
+		m.setFocus(key)
+		return
+	}
+	key := "sidebar-settings"
+	if f.settingsBody.H == 0 {
+		key = "settings-category:" + m.settingsPage
+	}
+	m.setFocus(key)
+}
+
+// settingsFocusFallback recovers keyboard focus across a resize that swaps a
+// setting between its segmented-choice band and its single menu-button
+// fallback. A segment key ("sidebar-setting:<setting>:<value>") that vanished
+// falls back to that setting's button key; a button key that vanished
+// recovers to the setting's currently selected segment, or its first segment
+// when none is marked selected.
+func settingsFocusFallback(hits []hit, focus string) (string, bool) {
+	const prefix = "sidebar-setting:"
+	if !strings.HasPrefix(focus, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(focus, prefix)
+	setting := rest
+	isSegment := false
+	if i := strings.Index(rest, ":"); i >= 0 {
+		setting, isSegment = rest[:i], true
+	}
+	buttonKey := prefix + setting
+	if isSegment {
+		if slices.ContainsFunc(hits, func(h hit) bool { return h.Key == buttonKey }) {
+			return buttonKey, true
+		}
+		return "", false
+	}
+	segmentPrefix := buttonKey + ":"
+	first := ""
+	for _, h := range hits {
+		if !strings.HasPrefix(h.Key, segmentPrefix) {
+			continue
+		}
+		if first == "" {
+			first = h.Key
+		}
+		if h.Action.Kind == "noop" {
+			return h.Key, true
+		}
+	}
+	if first != "" {
+		return first, true
+	}
+	return "", false
 }
 
 func (m *Model) openSettingsCommands() {
 	var items []menuItem
 	for _, page := range m.settingsCategories() {
-		items = append(items, menuItem{title(page), action{Kind: "settings-page", Value: page}})
+		items = append(items, menuItem{Label: title(page), Action: action{Kind: "settings-page", Value: page}})
 	}
-	items = append(items, menuItem{"Back to workspace", action{Kind: "settings-back"}}, menuItem{"Retry pending command", action{Kind: "retry"}}, menuItem{"Detach TUI", action{Kind: "quit"}})
+	items = append(items, menuItem{Label: "Back to workspace", Action: action{Kind: "settings-back"}}, menuItem{Label: "Retry pending command", Action: action{Kind: "retry"}}, menuItem{Label: "Detach TUI", Action: action{Kind: "quit"}})
 	m.showMenu("Settings", items)
 }
 
 func settingsPaneKey(key string) bool {
 	return slices.Contains([]string{"f3", "f5", "f7", "ctrl+s"}, key) || strings.HasPrefix(key, "alt+")
+}
+
+func (m *Model) renderSettingsRow(f *frame, row settingsRow, x, y, width int, first bool) {
+	p := m.colors()
+	switch row.kind {
+	case settingsButton:
+		fg := p.blue
+		if row.danger {
+			fg = p.red
+		}
+		m.renderSettingsButton(f, row, x, y, width, fg, first)
+	case settingsHeading:
+		panelSectionHeading(f, m, x, y, width, row.label)
+	case settingsRule:
+		panelRule(f, m, x, y, width)
+	case settingsPair:
+		panelPairRow(f, m, x, y, width, row.label, row.value)
+	case settingsToggle:
+		m.renderSettingsToggle(f, row, x, y, width)
+	case settingsSegments:
+		m.renderSettingsSegments(f, row, x, y, width, first)
+	default:
+		f.componentText(x, y, width, row.label, m.componentStyle(squareFill, componentState{}, p.muted, p.canvas))
+	}
+}
+
+// The whole toggle row is one control: its label at the left, the On/Off word
+// and switch at the right. Hover and focus fill the row like a square-fill
+// control; the word keeps the state readable without color.
+func (m *Model) renderSettingsToggle(f *frame, row settingsRow, x, y, width int) {
+	p := m.colors()
+	v := m.componentStyle(squareFill, m.controlState(false, row.key), p.text, p.canvas)
+	marked := v.focused && f.blank(x-1, y)
+	word := fit(row.value, 3)
+	right := len(word) + 1 + toggleTrackWidth
+	label := row.label
+	if right < width {
+		// Leave at least one blank cell before the word and switch so a long
+		// label never overlaps them.
+		label = ansi.Truncate(singleLine(label), max(0, width-right-1), "…")
+	}
+	f.styledText(x, y, width, label, v, v.focused && !marked)
+	wordInk := p.muted
+	if row.on {
+		wordInk = p.blue
+	}
+	wv := v
+	wv.foreground, wv.bold = wordInk, row.on
+	if right < width {
+		f.componentText(x+width-right, y, len(word)+1, word+" ", wv)
+		f.put(shell.Rect{X: x + width - toggleTrackWidth, Y: y, W: toggleTrackWidth, H: 1}, m.toggleTrack(row.on))
+	}
+	if marked {
+		f.focusMark(x-1, y, v, v.base)
+	}
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: row.action, Label: row.label + ": " + row.value, Key: row.key})
+}
+
+// A settings button is a square-fill field whose label is inset by one cell;
+// with bands it reads as a two-cell-tall field, and its focus mark takes the
+// blank cell before the label row.
+func (m *Model) renderSettingsButton(f *frame, row settingsRow, x, y, width int, fg string, first bool) {
+	p := m.colors()
+	v := m.componentStyle(squareFill, m.controlState(false, row.key), fg, p.input)
+	v.base = p.canvas
+	if !f.paintPanelBandEdge(x, y, width, row.band, row.bandRows, v) {
+		marked := v.focused && f.blank(x-1, y)
+		f.styledText(x, y, width, " "+row.label, v, v.focused && !marked)
+		if marked {
+			f.focusMark(x-1, y, v, v.base)
+		}
+	}
+	f.registerPanelBandHit(f.settingsBody, y, row.band, row.bandRows, first, hit{Rect: shell.Rect{X: x, W: width}, Action: row.action, Label: row.label, Key: row.key})
+}
+
+// Segments paint equal square fills across the row. With bands, a lower
+// half-block row above and an upper half-block row below in each segment's
+// fill make a three-row band read as a taller button; the hit rectangle covers
+// the visible part of the whole band. The focus mark takes the blank cell
+// before the focused segment on its label row.
+func (m *Model) renderSettingsSegments(f *frame, row settingsRow, x, y, width int, first bool) {
+	p := m.colors()
+	xs, ws := panelSegmentLayout(x, width, len(row.segments))
+	for i, s := range row.segments {
+		v := m.componentStyle(squareFill, m.controlState(s.selected, s.key), p.text, p.input)
+		v.base = p.canvas // Band edges and the focus mark sit on the canvas.
+		if row.bandRows == 1 {
+			f.compactControl(m, xs[i], y, ws[i], centered(ansi.Truncate(s.label, ws[i]-2, "…"), ws[i]-2), v)
+		} else if !f.paintPanelBandEdge(xs[i], y, ws[i], row.band, row.bandRows, v) {
+			f.componentText(xs[i], y, ws[i], centered(s.label, ws[i]), v)
+			if v.focused {
+				f.focusMark(xs[i]-1, y, v, v.base)
+			}
+		}
+		f.registerPanelBandHit(f.settingsBody, y, row.band, row.bandRows, first, hit{Rect: shell.Rect{X: xs[i], W: ws[i]}, Action: s.action, Label: s.label, Key: s.key})
+	}
 }

@@ -114,8 +114,8 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 		}
 		rev := m.snapshot.AppSettings.Revision
 		m.showMenu("Workspace default", []menuItem{
-			{"Current checkout", action{Kind: "app-workspace-set", Value: "checkout", Revision: rev}},
-			{"Worktree · creation unavailable in this build", action{Kind: "app-workspace-set", Value: "worktree", Revision: rev}},
+			{Label: "Current checkout", Action: action{Kind: "app-workspace-set", Value: "checkout", Revision: rev}},
+			{Label: "Worktree · creation unavailable in this build", Action: action{Kind: "app-workspace-set", Value: "worktree", Revision: rev}},
 		})
 	case "app-workspace-set", "restart-toggle":
 		if m.settingsProjectID != "" {
@@ -188,18 +188,21 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 				if field == "icon" && value != "" {
 					label = m.icon(value) + "  " + label
 				}
-				items = append(items, menuItem{label, action{Kind: "project-set-" + field, ID: p.ID, Value: value, Revision: p.Revision}})
+				items = append(items, menuItem{Label: label, Action: action{Kind: "project-set-" + field, ID: p.ID, Value: value, Revision: p.Revision}})
 			}
 			if field == "icon" {
 				color := title(p.Color)
 				if color == "" {
 					color = "Automatic"
 				}
-				items = append(items, menuItem{"Icon color: " + color + "…", action{Kind: "project-color", ID: p.ID}})
+				items = append(items, menuItem{Label: "Icon color: " + color + "…", Action: action{Kind: "project-color", ID: p.ID}})
 			}
 			m.showMenu("Project "+field, items)
 		}
 	case "project-set-icon", "project-set-color", "project-set-workspace":
+		if !m.hasCapability("project-settings") {
+			return true, m.settingsUnavailable("project-settings")
+		}
 		return true, m.saveProjectSetting(a, strings.TrimPrefix(a.Kind, "project-set-"))
 	case "project-remove":
 		if !m.hasCapability("project-settings") {
@@ -218,9 +221,9 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 			// Cancel is deliberately first. Thread membership revisions bind this exact
 			// confirmation to the project and count the user reviewed.
 			m.showMenu("Remove project: "+p.Name, []menuItem{
-				{"Cancel", action{Kind: "noop"}},
-				{fmt.Sprintf("Delete project and %d threads permanently", count), action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
-				{"Files on disk will be kept", action{Kind: "noop"}},
+				{Label: "Cancel", Action: action{Kind: "noop"}},
+				{Label: fmt.Sprintf("Delete project and %d threads permanently", count), Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
+				{Label: "Files on disk will be kept", Action: action{Kind: "noop"}},
 			})
 		}
 	case "project-remove-confirm":
@@ -230,6 +233,20 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 			return false, nil
 		}
 		return true, m.showNotice("Appearance is available in app settings")
+	case "theme-set", "icons-set":
+		// Segments set a value; the existing toggles apply it only on change.
+		current := m.iconsSetting()
+		toggle := action{Kind: "icons"}
+		if a.Kind == "theme-set" {
+			current, toggle = "dark", action{Kind: "theme"}
+			if m.state.Light {
+				current = "light"
+			}
+		}
+		if a.Value == current {
+			return true, nil
+		}
+		return true, m.activate(toggle)
 	default:
 		return false, nil
 	}
@@ -266,77 +283,167 @@ func (m *Model) saveProjectSetting(a action, field string) tea.Cmd {
 	return m.command(protocol.Command{Kind: "project.update", ProjectID: p.ID, Revision: a.Revision, ProjectSettings: &settings}, a)
 }
 
+type settingsRowKind uint8
+
+const (
+	settingsText settingsRowKind = iota
+	settingsHeading
+	settingsRule
+	settingsButton
+	settingsSegments
+	settingsToggle
+	settingsPair
+)
+
+// A segment is one choice of a small closed option set. Each has its own key,
+// hit rectangle and Tab stop; the selected one's action is a no-op so that
+// activating the current value writes nothing.
+type settingsSegment struct {
+	label, key string
+	action     action
+	selected   bool
+}
+
+// settingsRow is one body row. A segmented band spans three rows (band -1, 0
+// and 1: the upper half-block edge, the labels and the lower edge) when the
+// palette can paint distinct neutral fills; otherwise it is one bracketed row.
 type settingsRow struct {
-	label, key      string
-	action          action
-	heading, danger bool
+	kind       settingsRowKind
+	label, key string
+	value      string
+	action     action
+	danger, on bool
+	segments   []settingsSegment
+	band       int
+	bandRows   int
 }
 
 func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 	var rows []settingsRow
-	heading := func(text string) {
+	wrap := func(kind settingsRowKind, text string) {
 		for _, line := range strings.Split(ansi.Wrap(safe(text), width, ""), "\n") {
-			rows = append(rows, settingsRow{label: line, heading: true})
+			rows = append(rows, settingsRow{kind: kind, label: line})
 		}
 	}
-	paragraph := func(text string) {
-		for _, line := range strings.Split(ansi.Wrap(safe(text), width, ""), "\n") {
-			rows = append(rows, settingsRow{label: line})
+	paragraph := func(text string) { wrap(settingsText, text) }
+	gap := func() { paragraph("") }
+	rule := func() {
+		if len(rows) > 0 {
+			gap()
+			rows = append(rows, settingsRow{kind: settingsRule})
+			gap()
+		}
+	}
+	section := func(text string) {
+		rule()
+		wrap(settingsHeading, text)
+	}
+	// band repeats a control row as its upper edge, label row and lower edge
+	// when the palette supports banded fills.
+	band := func(row settingsRow) {
+		row.bandRows = 1
+		if !panelBandsSupported(m) {
+			rows = append(rows, row)
+			return
+		}
+		row.bandRows = 3
+		for part := -1; part <= 1; part++ {
+			row.band = part
+			rows = append(rows, row)
 		}
 	}
 	button := func(label, key string, a action) {
-		rows = append(rows, settingsRow{label: label, key: "sidebar-setting:" + key, action: a})
+		band(settingsRow{kind: settingsButton, label: label, key: "sidebar-setting:" + key, action: a})
 	}
-	gap := func() { paragraph("") }
+	pair := func(label, value string) {
+		rows = append(rows, settingsRow{kind: settingsPair, label: label, value: value})
+	}
+	// segments falls back to the single menu button when a label cannot fit.
+	segments := func(key string, choices []settingsSegment, fallback func()) {
+		labels := make([]string, len(choices))
+		for i, c := range choices {
+			labels[i] = c.label
+		}
+		if !panelSegmentsFit(width, labels) {
+			fallback()
+			return
+		}
+		for i := range choices {
+			choices[i].key = "sidebar-setting:" + key + ":" + choices[i].key
+			if choices[i].selected {
+				choices[i].action = action{Kind: "noop"}
+			}
+		}
+		band(settingsRow{kind: settingsSegments, label: strings.Join(labels, " | "), segments: choices})
+	}
+	toggle := func(label, key string, on bool, a action) {
+		value := "Off"
+		if on {
+			value = "On"
+		}
+		rows = append(rows, settingsRow{kind: settingsToggle, label: label, value: value, on: on, key: "sidebar-setting:" + key, action: a})
+	}
 	name := "Settings"
 	switch m.settingsPage {
 	case "general":
 		name = "General"
-		heading("Workspace default")
+		section("Workspace default")
 		if m.settingsProjectID != "" {
 			p, ok := m.projectByID(m.settingsProjectID)
 			if !ok {
 				paragraph("Project was removed")
 				break
 			}
-			label := workspaceLabel(p.WorkspaceDefault)
-			if p.WorkspaceDefault == "" {
-				label = "Use app default: " + workspaceLabel(m.snapshot.AppSettings.WorkspaceDefault)
+			var choices []settingsSegment
+			for _, value := range []string{"", "checkout", "worktree"} {
+				label, key := workspaceLabel(value), value
+				if value == "" {
+					label, key = "App default", "default"
+				}
+				choices = append(choices, settingsSegment{label: label, key: key, selected: p.WorkspaceDefault == value,
+					action: action{Kind: "project-set-workspace", ID: p.ID, Value: value, Revision: p.Revision}})
 			}
-			button(label, "workspace", action{Kind: "project-workspace", ID: p.ID})
+			segments("workspace", choices, func() {
+				label := workspaceLabel(p.WorkspaceDefault)
+				if p.WorkspaceDefault == "" {
+					label = "Use app default: " + workspaceLabel(m.snapshot.AppSettings.WorkspaceDefault)
+				}
+				button(label, "workspace", action{Kind: "project-workspace", ID: p.ID})
+			})
 			if p.WorkspaceDefault != "" {
 				paragraph("Project override. App default: " + workspaceLabel(m.snapshot.AppSettings.WorkspaceDefault) + ".")
+			} else {
+				paragraph("Using app default: " + workspaceLabel(m.snapshot.AppSettings.WorkspaceDefault) + ".")
 			}
 			paragraph("Applies to new threads in this project.")
-			if protocol.EffectiveWorkspaceDefault(m.snapshot.AppSettings, p) == "worktree" {
-				paragraph("Worktree creation is unavailable in this build.")
-			}
+			paragraph("Worktree creation is unavailable in this build.")
 			if !m.hasCapability("project-settings") {
 				gap()
 				paragraph("Update this server to change project settings.")
 			}
 			break
 		}
-		button(workspaceLabel(m.snapshot.AppSettings.WorkspaceDefault), "workspace", action{Kind: "app-workspace"})
-		paragraph("Used for new threads unless a project overrides it.")
-		if m.snapshot.AppSettings.WorkspaceDefault == "worktree" {
-			paragraph("Worktree creation is unavailable in this build.")
+		rev, current := m.snapshot.AppSettings.Revision, m.snapshot.AppSettings.WorkspaceDefault
+		var choices []settingsSegment
+		for _, value := range []string{"checkout", "worktree"} {
+			choices = append(choices, settingsSegment{label: workspaceLabel(value), key: value, selected: workspaceLabel(current) == workspaceLabel(value),
+				action: action{Kind: "app-workspace-set", Value: value, Revision: rev}})
 		}
-		gap()
-		heading("Project starting folder")
+		segments("workspace", choices, func() {
+			button(workspaceLabel(current), "workspace", action{Kind: "app-workspace"})
+		})
+		paragraph("Used for new threads unless a project overrides it.")
+		paragraph("Worktree creation is unavailable in this build.")
+		section("Project starting folder")
 		directory := m.snapshot.AppSettings.ProjectDirectory
 		if directory == "" || directory == "~" {
 			directory = "Home directory (~)"
 		}
 		button(directory, "project-directory", action{Kind: "app-project-directory"})
 		paragraph("Start browsing for projects here on the connected server.")
+		rule()
+		toggle("Continue threads after restart", "restart", m.snapshot.AppSettings.ContinueAfterRestart, action{Kind: "restart-toggle"})
 		gap()
-		heading("Continue threads after restart")
-		value := "Off"
-		if m.snapshot.AppSettings.ContinueAfterRestart {
-			value = "On"
-		}
-		button(value, "restart", action{Kind: "restart-toggle"})
 		paragraph("Resume eligible interrupted work after an update, crash or restart on this server.")
 		paragraph("Demo execution only. Questions and approvals still need your answer.")
 		if !m.hasCapability("restart-continuation") || !m.hasCapability("app-settings") {
@@ -345,7 +452,7 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 		}
 	case "agents":
 		name = "Agents"
-		heading("New thread defaults")
+		section("New thread defaults")
 		button(m.newThreadDefaultAgentLabel(), "agent", action{Kind: "app-thread-agent"})
 		paragraph("Used when a new project draft is first opened. Existing drafts and threads keep their selections.")
 		if saved := m.snapshot.AppSettings.NewThreadDefaults; saved != nil && saved.AgentID != "" {
@@ -353,6 +460,7 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 				if a.Kind != "fixture" && a.State != "ready" {
 					paragraph("Saved agent is " + agentReadiness(a) + "; refresh its options before using this default.")
 				}
+				gap()
 				for _, field := range settingFieldOrder {
 					label := m.newThreadDefaultFieldLabel(a, field, saved.Settings)
 					button(label, field, action{Kind: "app-thread-field", ID: field})
@@ -361,23 +469,33 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 				paragraph("Saved agent is no longer configured; choose another agent.")
 			}
 		}
-		gap()
+		rule()
 		button("Use built-in defaults", "reset", action{Kind: "app-thread-reset"})
 		if !m.hasCapability("new-thread-defaults") {
 			paragraph("Update this server to change new thread defaults.")
 		}
 	case "appearance":
 		name = "Appearance"
-		heading("Theme")
-		value := "Dark"
-		if m.state.Light {
-			value = "Light"
-		}
-		button(value, "theme", action{Kind: "theme"})
+		section("Theme")
+		segments("theme", []settingsSegment{
+			{label: "Dark", key: "dark", selected: !m.state.Light, action: action{Kind: "theme-set", Value: "dark"}},
+			{label: "Light", key: "light", selected: m.state.Light, action: action{Kind: "theme-set", Value: "light"}},
+		}, func() {
+			value := "Dark"
+			if m.state.Light {
+				value = "Light"
+			}
+			button(value, "theme", action{Kind: "theme"})
+		})
 		paragraph("Saved for this client. F8 switches themes.")
-		gap()
-		heading("Symbols")
-		button(iconsLabel(m.iconsSetting()), "icons", action{Kind: "icons"})
+		section("Symbols")
+		icons := m.iconsSetting()
+		segments("icons", []settingsSegment{
+			{label: iconsLabel("nerd"), key: "nerd", selected: icons == "nerd", action: action{Kind: "icons-set", Value: "nerd"}},
+			{label: iconsLabel("ascii"), key: "ascii", selected: icons == "ascii", action: action{Kind: "icons-set", Value: "ascii"}},
+		}, func() {
+			button(iconsLabel(icons), "icons", action{Kind: "icons"})
+		})
 		paragraph("Nerd Font uses patched-font control glyphs. Choose ASCII when they render as boxes or misaligned cells.")
 		if m.state.Icons == "" {
 			paragraph("Following the TUI_GO_ICONS environment default until a choice is saved here.")
@@ -391,21 +509,29 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 			paragraph("Project keybinding overrides are unavailable in this build.")
 			break
 		}
-		for _, pair := range [][2]string{{"Enter", "Send / activate"}, {"Shift+Enter / Ctrl+J", "New prompt line"}, {"Tab / Shift+Tab", "Next / previous control"}, {"F2", "Navigation / columns"}, {"F3 / F5", "Surfaces / terminal"}, {"F4", "Commands"}, {"F6", "Next content area"}, {"F7 / F8", "Maximize / theme"}, {"Esc", "Close menu / focus prompt"}, {"Ctrl+Q", "Detach; work continues"}} {
-			heading(pair[0])
-			paragraph(pair[1])
-			gap()
+		for _, group := range []struct {
+			title string
+			pairs [][2]string
+		}{
+			{"Composer", [][2]string{{"Send / activate", "Enter"}, {"New prompt line", "Shift+Enter / Ctrl+J"}}},
+			{"Navigation", [][2]string{{"Next / previous control", "Tab / Shift+Tab"}, {"Navigation / columns", "F2"}, {"Surfaces / terminal", "F3 / F5"}, {"Next content area", "F6"}}},
+			{"Window", [][2]string{{"Commands", "F4"}, {"Maximize / theme", "F7 / F8"}, {"Close menu / focus prompt", "Esc"}, {"Detach; work continues", "Ctrl+Q"}}},
+		} {
+			section(group.title)
+			for _, p := range group.pairs {
+				pair(p[0], p[1])
+			}
 		}
 	case "about":
 		name = "About"
-		heading("tui-go")
-		paragraph(buildVersion())
+		section("Application")
+		pair("Name", "tui-go")
+		pair("Version", buildVersion())
+		pair("Implementation", "Go reference app")
 		gap()
-		paragraph("Go reference app")
 		paragraph("Demo activity; agent, Git and embedded terminal integrations are incomplete.")
-		gap()
-		heading("Server protocol")
-		paragraph(fmt.Sprint(m.snapshot.Version))
+		section("Server")
+		pair("Protocol", fmt.Sprint(m.snapshot.Version))
 	case "project":
 		name = "Project settings"
 		p, ok := m.projectByID(m.settingsProjectID)
@@ -413,17 +539,19 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 			paragraph("Project was removed")
 			break
 		}
-		heading("Name")
+		section("Name")
 		button(p.Name, "name", action{Kind: "project-name", ID: p.ID})
-		heading("Icon")
+		section("Icon")
 		icon := title(p.Icon)
 		if icon == "" {
 			icon = "Name initials"
 		}
 		button(icon, "icon", action{Kind: "project-icon", ID: p.ID})
-		gap()
+		section("Remove")
 		button("Remove project…", "remove", action{Kind: "project-remove", ID: p.ID})
-		rows[len(rows)-1].danger = true
+		for i := len(rows) - 1; i >= 0 && rows[i].key == "sidebar-setting:remove"; i-- {
+			rows[i].danger = true
+		}
 		paragraph("Deletes its threads after confirmation; keeps files on disk.")
 		if !m.hasCapability("project-settings") {
 			gap()

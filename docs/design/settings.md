@@ -47,6 +47,16 @@ project override or offer editable remapping. About shows
 a real module version or development revision/modified state from Go build info,
 never an invented release number.
 
+## Form presentation — 2026-09-23
+
+Settings forms use the [settings panel constructs](components.md#settings-panel-constructs--2026-09-23):
+muted uppercase section headings separated by rules; segmented choices for app and
+project Workspace default, Theme and Symbols; a toggle row for Continue threads after
+restart; and label/value rows for About and Keybindings. Segments dispatch the same
+revisioned commands as the menus they replace, reselecting the current value writes
+nothing, and narrow forms fall back to the menu button. Project scope still refuses
+app Appearance changes. See the [Go implementation note](../research/go-settings-panel-2026-09-23.md).
+
 ## New thread defaults
 
 App Agents stores an optional default agent and its model, effort, permissions,

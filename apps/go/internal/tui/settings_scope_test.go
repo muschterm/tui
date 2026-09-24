@@ -39,8 +39,8 @@ func TestProjectSettingsScopeIsIndependentOfThreadAndFilter(t *testing.T) {
 		if m.settingsPage != "general" || !strings.Contains(ansi.Strip(m.render().rows[0]), "Settings / General / Beta") {
 			t.Fatal("missing named project scope", m.settingsBreadcrumb())
 		}
-		workspace := controlHit(t, m.measure(), "sidebar-setting:workspace")
-		if workspace.Action.Kind != "project-workspace" || workspace.Action.ID != "beta" || hasControl(m.measure(), "sidebar-setting:restart") {
+		workspace := controlHit(t, m.measure(), "sidebar-setting:workspace:checkout")
+		if workspace.Action.Kind != "project-set-workspace" || workspace.Action.ID != "beta" || hasControl(m.measure(), "sidebar-setting:restart") {
 			t.Fatal("project General controls target app or wrong project")
 		}
 		light := m.state.Light
@@ -67,7 +67,11 @@ func TestProjectSettingsScopeIsIndependentOfThreadAndFilter(t *testing.T) {
 		}
 		controlHit(t, m.measure(), "sidebar-setting:restart")
 		m.activate(action{Kind: "settings-page", Value: "appearance"})
-		clickControl(m, controlHit(t, m.measure(), "sidebar-setting:theme"))
+		target := "sidebar-setting:theme:light"
+		if light {
+			target = "sidebar-setting:theme:dark"
+		}
+		clickControl(m, controlHit(t, m.measure(), target))
 		if m.state.Light == light {
 			t.Fatal("app appearance stopped working")
 		}
@@ -78,6 +82,8 @@ func TestProjectGeneralInheritsAndSavesOnlyRevisionBoundOverride(t *testing.T) {
 	for _, value := range []string{"", "checkout", "worktree"} {
 		for _, mouse := range []bool{false, true} {
 			m := navigationModel()
+			// Three workspace segments cannot fit 47 columns; the menu remains.
+			m.Update(tea.WindowSizeMsg{Width: 47, Height: 22})
 			p := &m.snapshot.Projects[1]
 			p.Revision, p.Icon, p.Color = 9, "rocket", "teal"
 			m.openSidebarSettings("general", p.ID)
@@ -122,6 +128,24 @@ func TestProjectGeneralInheritsAndSavesOnlyRevisionBoundOverride(t *testing.T) {
 	}
 }
 
+func TestSettingsFocusFallsBackAcrossSegmentMenuButtonResize(t *testing.T) {
+	m := navigationModel()
+	m.activate(action{Kind: "project-settings", ID: "beta"})
+	m.activate(action{Kind: "settings-page", Value: "general"})
+	m.setFocus("sidebar-setting:workspace:worktree")
+	m.Update(tea.WindowSizeMsg{Width: 70, Height: 22})
+	if m.focus != "sidebar-setting:workspace" {
+		t.Fatalf("segment focus did not fall back to the menu button at 70 columns: %q", m.focus)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 22})
+	if !strings.HasPrefix(m.focus, "sidebar-setting:workspace:") {
+		t.Fatalf("button focus did not recover to a workspace segment at 160 columns: %q", m.focus)
+	}
+	if controlHit(t, m.measure(), m.focus).Action.Kind != "noop" {
+		t.Fatalf("focus recovered to a segment other than the selected one: %q", m.focus)
+	}
+}
+
 func TestProjectScopeBreadcrumbUnicodeAndCompactNavigation(t *testing.T) {
 	for _, width := range []int{40, 47, 160} {
 		m := navigationModel()
@@ -144,7 +168,9 @@ func TestProjectScopeBreadcrumbUnicodeAndCompactNavigation(t *testing.T) {
 				t.Fatal("breadcrumb overflowed viewport", width)
 			}
 		}
-		controlHit(t, m.measure(), "sidebar-setting:workspace")
+		if f := m.measure(); !hasControl(f, "sidebar-setting:workspace") && !hasControl(f, "sidebar-setting:workspace:default") {
+			t.Fatal("workspace control missing", width)
+		}
 		controlHit(t, m.measure(), "settings-close")
 	}
 }
