@@ -52,12 +52,27 @@ func tabEntry(tab shell.Surface) menuItem {
 	return menuItem{Label: tab.Title, Action: action{Kind: "tab", ID: tab.ID, Value: tab.Kind}}
 }
 
+// tabDisplayTitle derives a tab's shown title from its persisted title and
+// the active view's current detail selection, so the Activity singleton's
+// tab reads "Usage" while its usage detail is open and "Activity" for its
+// list (including after navigating back or across thread switch/restore),
+// without mutating the persisted shell.Surface.Title. No dedicated usage
+// icon exists in the icon set, so the tab keeps the Activity glyph (kind is
+// unchanged) per the icon-set fallback.
+func tabDisplayTitle(m *Model, kind, title string) string {
+	if kind == "activity" && m.viewState().DetailID == "usage" {
+		return "Usage"
+	}
+	return title
+}
+
 // The icon and name occupy disjoint hit areas. Only the icon slot closes;
 // focusing it by keyboard exposes the same close affordance as hover.
 // Cells: end cap, glyph, its spill cell, one gap, the title, end cap. The
 // padding matches T3's tight tab insets rather than centering the glyph.
 func (f *frame) tab(m *Model, x, y, width int, title, kind, selectKey, closeKey string, selectAction, closeAction action, active bool) {
 	p := m.colors()
+	title = tabDisplayTitle(m, kind, title)
 	state := m.controlState(active, selectKey, closeKey)
 	v := m.componentStyle(squareFill, state, p.text, p.input)
 	closeVisible := state.Hovered || m.focus == closeKey

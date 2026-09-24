@@ -20,17 +20,23 @@ func (m *Model) steerBlocked(q protocol.Prompt) string {
 	return protocol.QueueSteerBlocked(m.snapshot.Capabilities, m.thread(), q)
 }
 
+// steerDelivered reports whether a queue.steer receipt confirms delivery into
+// the active turn rather than mere server acceptance.
+func steerDelivered(state string) bool {
+	return state == "delivered" || state == "fixture-delivered"
+}
+
 func (m *Model) steerQueued(a action) tea.Cmd {
 	for _, q := range m.thread().Queue {
 		if q.ID != a.ID {
 			continue
 		}
 		if reason := m.steerBlocked(q); reason != "" {
-			return m.showNotice("Steer: " + reason)
+			return m.showNoticeAs(noticeUnavailable, "Steer: "+reason)
 		}
 		// Keep the turn/revision captured by the visible action or menu entry.
 		// A delayed selection must not silently target newer work or queue edits.
 		return m.command(protocol.Command{Kind: "queue.steer", TargetID: a.ID, Revision: a.Revision, ExpectedTurnID: a.Value}, a)
 	}
-	return m.showNotice("This message is no longer queued")
+	return m.showNoticeAs(noticeUnavailable, "This message is no longer queued")
 }

@@ -44,7 +44,7 @@ func questionHistoryRenderedText(lines []contentLine) string {
 func questionHistoryStatusLine(t *testing.T, lines []contentLine) contentLine {
 	t.Helper()
 	for _, line := range lines {
-		if strings.Contains(ansi.Strip(line.text), "Submitted ·") || strings.Contains(ansi.Strip(line.text), "Answered") {
+		if strings.Contains(ansi.Strip(line.text), "SUBMITTED ·") || strings.Contains(ansi.Strip(line.text), "ANSWERED") {
 			return line
 		}
 	}
@@ -66,7 +66,7 @@ func TestQuestionHistoryShowsQuestionAnswerAndAvailableOptions(t *testing.T) {
 	multiPicked := m.questionMarker("multiple", true)
 	multiOther := m.questionMarker("multiple", false)
 	for _, part := range []string{
-		"Submitted · provider confirmation unavailable", "Which layout?", singlePicked, singleOther,
+		"SUBMITTED · provider confirmation unavailable", "Which layout?", singlePicked, singleOther,
 		"Which features?", multiPicked + " Files", multiPicked + " Terminal", multiOther + " Git", multiPicked + " Other · Use built-in previews",
 		"Anything else?", "Skipped (optional)",
 	} {
@@ -74,7 +74,7 @@ func TestQuestionHistoryShowsQuestionAnswerAndAvailableOptions(t *testing.T) {
 			t.Errorf("history card missing %q:\n%s", part, text)
 		}
 	}
-	if strings.Contains(text, "Answered") {
+	if strings.Contains(strings.ToUpper(text), "ANSWERED") {
 		t.Fatalf("unconfirmed response was labelled Answered:\n%s", text)
 	}
 	toggle := false
@@ -103,7 +103,7 @@ func TestQuestionHistoryUsesConfirmedLabelOnlyForConfirmedResolution(t *testing.
 		t.Fatal("confirmed fixture response did not produce history")
 	}
 	text := questionHistoryRenderedText(lines)
-	if !strings.Contains(text, "Answered") || strings.Contains(text, "Submitted") {
+	if !strings.Contains(text, "✓ ANSWERED") || strings.Contains(strings.ToUpper(text), "SUBMITTED") {
 		t.Fatalf("confirmed response label = %q", text)
 	}
 }
@@ -148,7 +148,7 @@ func TestQuestionHistoryFallbackReportsUnknownPositionAndDeduplicates(t *testing
 	if !handled || len(duplicate) != 0 {
 		t.Fatal("duplicate request marker was not swallowed without a second card")
 	}
-	if !strings.Contains(questionHistoryRenderedText(first), "Submitted") {
+	if !strings.Contains(questionHistoryRenderedText(first), "SUBMITTED") {
 		t.Fatal("deduplicated anchor lost its card")
 	}
 	thread.Activity[1].State = "question-history-position-unavailable"
@@ -177,7 +177,7 @@ func TestQuestionHistoryFallbackStaysWithItsRetainedTurn(t *testing.T) {
 	if turnEnd < 0 || history < 0 || laterTurn < 0 || !(turnEnd < history && history < laterTurn) {
 		t.Fatalf("unanchored answer was not placed after its retained turn and before later messages:\n%s", text)
 	}
-	if !strings.Contains(text, "earlier position unavailable") || !strings.Contains(text, "Submitted · provider confirmation unavailable") || strings.Contains(text, "Answered") {
+	if !strings.Contains(text, "earlier position unavailable") || !strings.Contains(text, "SUBMITTED · provider confirmation unavailable") || strings.Contains(strings.ToUpper(text), "ANSWERED") {
 		t.Fatalf("fallback overstated its position or delivery:\n%s", text)
 	}
 }
@@ -224,7 +224,7 @@ func TestAnchoredQuestionHistoryRemainsInActivityChronology(t *testing.T) {
 	if before < 0 || history < 0 || after < 0 || next < 0 || !(before < history && history < after && after < next) {
 		t.Fatalf("anchored answer did not retain its activity position:\n%s", text)
 	}
-	if strings.Count(text, "Which layout?") != 1 || !strings.Contains(text, "Submitted · provider confirmation unavailable") || strings.Contains(text, "earlier position unavailable") {
+	if strings.Count(text, "Which layout?") != 1 || !strings.Contains(text, "SUBMITTED · provider confirmation unavailable") || strings.Contains(text, "earlier position unavailable") {
 		t.Fatalf("anchored answer duplicated or lost truthful delivery status:\n%s", text)
 	}
 }
@@ -325,7 +325,7 @@ func TestQuestionHistoryCollapsesWrappedLongText(t *testing.T) {
 		t.Fatalf("long Q&A did not collapse to a bounded preview: handled=%v rows=%d", ok, len(compact))
 	}
 	preview := questionHistoryRenderedText(compact)
-	if !strings.Contains(preview, "…") || !strings.Contains(preview, "Expand") || !strings.Contains(preview, "Submitted · delivery uncertain") {
+	if !strings.Contains(preview, "…") || !strings.Contains(preview, "Expand") || !strings.Contains(preview, "SUBMITTED · delivery uncertain") {
 		t.Fatalf("compact preview lacks truncation, status or expansion:\n%s", preview)
 	}
 	m.activate(action{Kind: "question-history-toggle", ID: request.ID})
@@ -374,9 +374,9 @@ func TestQuestionHistoryHeaderToneMatchesDeliveryConfidence(t *testing.T) {
 		status   string
 		color    string
 	}{
-		{"acp-unconfirmed", "Submitted · provider confirmation unavailable", p.muted},
-		{"acp-uncertain", "Submitted · delivery uncertain", p.gold},
-		{"acp-undeliverable", "Submitted · not delivered", p.red},
+		{"acp-unconfirmed", "○ SUBMITTED · provider confirmation unavailable", p.muted},
+		{"acp-uncertain", "! SUBMITTED · delivery uncertain", p.gold},
+		{"acp-undeliverable", "✕ SUBMITTED · not delivered", p.red},
 	} {
 		t.Run(tc.delivery, func(t *testing.T) {
 			request := base
@@ -395,11 +395,13 @@ func TestQuestionHistoryHeaderToneMatchesDeliveryConfidence(t *testing.T) {
 					t.Fatal("submitted answer did not render")
 				}
 				statusLine := questionHistoryStatusLine(t, lines)
-				if statusLine.fg != tc.color {
-					t.Errorf("expanded=%v status color %q, want %q", expanded, statusLine.fg, tc.color)
+				// The mark carries the delivery color; failed or uncertain
+				// delivery words share it, otherwise the heading is muted.
+				if statusLine.leadFG != tc.color || statusLine.fg != tc.color {
+					t.Errorf("expanded=%v status mark color %q (text %q), want %q", expanded, statusLine.leadFG, statusLine.fg, tc.color)
 				}
 				text := questionHistoryRenderedText(lines)
-				if !strings.Contains(text, tc.status) || strings.Contains(text, "Answered") {
+				if !strings.Contains(text, tc.status) || strings.Contains(strings.ToUpper(text), "ANSWERED") {
 					t.Errorf("expanded=%v status overstated delivery: %q", expanded, text)
 				}
 			}
@@ -482,9 +484,9 @@ func TestQuestionHistoryOutlineIsUniform(t *testing.T) {
 		box := shell.Rect{X: right - lines[0].boxW, Y: f.transcript.Y, W: lines[0].boxW, H: height}
 		p := m.colors()
 		assertUniformOutline(t, m, f, box, m.containerStyle(false, p.text, p.panel).border)
-		status := strings.Index(ansi.Strip(f.rows[box.Y+1]), "Answered")
+		status := strings.Index(ansi.Strip(f.rows[box.Y+1]), "ANSWERED")
 		if delivery != "fixture-confirmed" {
-			status = strings.Index(ansi.Strip(f.rows[box.Y+1]), "Submitted")
+			status = strings.Index(ansi.Strip(f.rows[box.Y+1]), "SUBMITTED")
 		}
 		if status < 0 {
 			t.Fatalf("%s: status header missing: %q", delivery, ansi.Strip(f.rows[box.Y+1]))

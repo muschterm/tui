@@ -11,7 +11,7 @@ import (
 // input boundary so dismissal neither submits nor alters the underlying draft.
 func (m *Model) showSendError(reason string) tea.Cmd {
 	if m.hiddenWorkBlocked() != "" {
-		return m.showNotice(reason)
+		return m.showNoticeAs(noticeError, reason)
 	}
 	m.status = reason
 	width := max(12, min(63, m.width-11))

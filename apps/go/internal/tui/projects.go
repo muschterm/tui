@@ -102,25 +102,25 @@ func (m *Model) projectKey(k tea.KeyPressMsg) tea.Cmd {
 			} else if step < 0 && m.projectGear {
 				m.projectGear = false
 			} else {
-				m.menuIndex = (m.menuIndex + step + len(m.menu)) % len(m.menu)
+				m.menuIndex = m.menuStep(m.menuIndex, step, true)
 				item := m.menu[m.menuIndex]
 				m.projectGear = step < 0 && item.Action.Kind == "project-filter" && item.Action.ID != ""
 			}
 			return nil
 		}
 		if k.String() == "tab" {
-			m.menuIndex = (m.menuIndex + 1) % len(m.menu)
+			m.menuIndex = m.menuStep(m.menuIndex, 1, true)
 		} else {
-			m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
+			m.menuIndex = m.menuStep(m.menuIndex, -1, true)
 		}
 		return nil
 	case "up":
 		m.projectGear = false
-		m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
+		m.menuIndex = m.menuStep(m.menuIndex, -1, true)
 		return nil
 	case "down":
 		m.projectGear = false
-		m.menuIndex = (m.menuIndex + 1) % len(m.menu)
+		m.menuIndex = m.menuStep(m.menuIndex, 1, true)
 		return nil
 	case "enter":
 		if m.projectGear && m.projectMode == "filter" {
@@ -227,7 +227,7 @@ func (m *Model) confirmThreadDelete(id string) {
 	if !ok {
 		return
 	}
-	m.showMenuFor("Delete thread: ", t.Title, []menuItem{
+	m.showMenuFor("Delete thread · ", t.Title, []menuItem{
 		{Label: "Cancel", Action: action{Kind: "thread-delete-cancel"}},
 		{Label: "Delete permanently · history, drafts and owned work", Action: action{Kind: "thread-delete-confirm", ID: id, Index: int(t.LifecycleRevision)}},
 	})

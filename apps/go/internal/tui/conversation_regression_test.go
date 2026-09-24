@@ -79,7 +79,7 @@ func TestConversationRegressionPlacesLegacyQuestionAndRendersMarkdown(t *testing
 				flat := strings.Join(strings.Fields(transcript), " ")
 				for _, want := range []string{
 					"Choose a layout for the report.", "The earlier layout question is now resolved.",
-					"Which layout should guide the report?", "Answered", "Format the release notes now.",
+					"Which layout should guide the report?", "ANSWERED", "Format the release notes now.",
 					"Rendering notes", "important", "carefully", "inline **literal**", "reference link",
 					"first list item", "second list item", `fmt.Println("fenced **literal**")`, "This final sentence is plain.",
 				} {

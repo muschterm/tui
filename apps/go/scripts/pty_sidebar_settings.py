@@ -68,6 +68,14 @@ def main():
                     return
             raise AssertionError('settings value missing: ' + label)
 
+        def row_with(label):
+            # Panel pair rows render the muted label at the left and the
+            # bright value flush right on the same row.
+            for line in term.screen()[:-1]:
+                if label in line:
+                    return line
+            raise AssertionError('settings row missing: ' + label)
+
         def nav_back():
             term.click_label('Back')
 
@@ -123,9 +131,10 @@ def main():
             check(snap()['app_settings']['WorkspaceDefault'] == 'worktree', 'app workspace preference persists')
             capture('01-general')
             category('Agents')
-            term.click_label('Agent: built-in default')
+            term.click_label('Built-in default')
             term.click_label('Fixture agent')
-            term.click_label('Effort: Medium')
+            check('Medium' in row_with('Effort'), 'Effort row shows Medium before changing it')
+            term.click_label('Effort')
             term.click_label('High')
             term.pump(.8)
             defaults = snap()['app_settings']['NewThreadDefaults']

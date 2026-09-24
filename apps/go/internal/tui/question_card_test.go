@@ -320,7 +320,7 @@ func TestQuestionHeaderSitsInsideIntactOutline(t *testing.T) {
 		}
 		header := ansi.Strip(cutCells(f.rows[r.Y+1], r.X+2, r.X+r.W-2))
 		// The thread's own agent is not repeated in the header.
-		if !strings.HasPrefix(header, m.icon("question")+" Answer anytime") {
+		if !strings.HasPrefix(header, m.icon("question")+" ANSWER ANYTIME") {
 			t.Fatalf("header text %q", header)
 		}
 		if mark := ansi.Strip(cutCells(f.rows[r.Y+1], r.X+1, r.X+2)); mark != m.icon("focus") {
@@ -342,7 +342,7 @@ func TestQuestionAnsweredMarkerDoesNotShiftLabel(t *testing.T) {
 	m.viewState().QuestionIndex = 0
 	after := m.render()
 	now := label(after)
-	check := m.icon("check")
+	check := answeredMark(m)
 	if controlHit(t, after, "question-page:0").Rect != h.Rect {
 		t.Fatal("answering resized the tab")
 	}

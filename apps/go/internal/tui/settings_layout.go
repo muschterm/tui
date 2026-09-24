@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
@@ -45,15 +46,43 @@ func (m *Model) renderSidebarSettings(f *frame, r shell.Rect) {
 	p := m.colors()
 	f.fill(r, p, p.nav)
 	x, width := r.X+2, max(1, r.W-4)
-	visual := m.componentStyle(squareFill, componentState{}, p.text, p.nav)
-	visual.bold = true
-	f.componentText(x, r.Y+1, width, "Settings", visual)
-	for i, page := range m.settingsCategories() {
-		key := "settings-category:" + page
-		label := title(page)
-		f.styledButton(x, r.Y+3+i*2, width, label, key, action{Kind: "settings-page", Value: page}, m.componentStyle(squareFill, m.controlState(m.settingsPage == page, key), p.text, p.nav))
+	panelSectionHeadingOn(f, m, x, r.Y+1, width, "Settings", p.nav)
+	panelRuleOn(f, m, x, r.Y+2, width, p.nav)
+	categories := m.settingsCategories()
+	for i, page := range categories {
+		m.renderSettingsCategory(f, x-1, r.Y+4+i*2, width+1, title(page), "settings-category:"+page, action{Kind: "settings-page", Value: page}, m.settingsPage == page)
 	}
-	f.button(m, x, r.Y+r.H-2, width, m.icon("previous")+" Back", "settings-back", action{Kind: "settings-back"}, p.text, p.nav)
+	back := r.Y + r.H - 2
+	if back-2 > r.Y+4+(len(categories)-1)*2 {
+		panelRuleOn(f, m, x, back-2, width, p.nav)
+	}
+	m.renderSettingsCategory(f, x-1, back, width+1, m.icon("previous")+" Back", "settings-back", action{Kind: "settings-back"}, false)
+}
+
+// renderSettingsCategory paints one sidebar row as a single-row square fill:
+// rest is the navigation background, hover a stronger neutral fill, and the
+// current category the selected fill with accent bold text. The leading cell
+// is reserved for the focus mark so focus never moves the label; where fills
+// cannot be told apart, the current category adds bracket end cells.
+func (m *Model) renderSettingsCategory(f *frame, x, y, width int, label, key string, a action, selected bool) {
+	if width < 3 {
+		return
+	}
+	p := m.colors()
+	v := m.componentStyle(squareFill, m.controlState(selected, key), p.text, p.nav)
+	left, right := " ", " "
+	if selected && (m.colorProfile <= colorprofile.ANSI || m.plainIcons) {
+		left, right = "[", "]"
+	}
+	text := left + fit(singleLine(label), width-2) + right
+	if !selected {
+		text = left + fit(singleLine(label), width-1)
+	}
+	f.componentText(x, y, width, text, v)
+	if v.focused {
+		f.focusMark(x, y, v, v.background)
+	}
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: a, Label: label, Key: key})
 }
 
 func (m *Model) renderSettingsContent(f *frame, r shell.Rect) {
@@ -219,6 +248,8 @@ func (m *Model) renderSettingsRow(f *frame, row settingsRow, x, y, width int, fi
 		panelPairRow(f, m, x, y, width, row.label, row.value)
 	case settingsToggle:
 		m.renderSettingsToggle(f, row, x, y, width)
+	case settingsField:
+		m.renderSettingsField(f, row, x, y, width)
 	case settingsSegments:
 		m.renderSettingsSegments(f, row, x, y, width, first)
 	default:
@@ -251,6 +282,39 @@ func (m *Model) renderSettingsToggle(f *frame, row settingsRow, x, y, width int)
 	if right < width {
 		f.componentText(x+width-right, y, len(word)+1, word+" ", wv)
 		f.put(shell.Rect{X: x + width - toggleTrackWidth, Y: y, W: toggleTrackWidth, H: 1}, m.toggleTrack(row.on))
+	}
+	if marked {
+		f.focusMark(x-1, y, v, v.base)
+	}
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: row.action, Label: row.label + ": " + row.value, Key: row.key})
+}
+
+// An actionable pair row is one control: the muted label inset one cell at the
+// left and its accent value flush right, truncated before it can reach the
+// label. Hover and focus fill the row like a square-fill control; the focus
+// mark takes the blank cell before it, or focus underlines the label.
+func (m *Model) renderSettingsField(f *frame, row settingsRow, x, y, width int) {
+	p := m.colors()
+	v := m.componentStyle(squareFill, m.controlState(false, row.key), p.text, p.canvas)
+	marked := v.focused && f.blank(x-1, y)
+	labelInk := p.muted
+	if v.background != p.canvas || m.colorProfile <= colorprofile.ANSI {
+		labelInk = p.text // Muted ink loses contrast on the hover fill.
+	}
+	inner := max(1, width-2)
+	valueInk := p.blue
+	if row.fixed {
+		valueInk = labelInk
+	}
+	if m.colorProfile <= colorprofile.ANSI && v.background != p.canvas {
+		valueInk = p.text // Terminal-defined blue on a gray fill can vanish.
+	}
+	panelPairRowStyled(f, x+1, y, inner, row.label, row.value, labelInk, valueInk, v.background)
+	f.text(x, y, 1, "", p.text, v.background)
+	f.text(x+width-1, y, 1, "", p.text, v.background)
+	if v.focused && !marked {
+		label := fit(singleLine(row.label), min(inner, ansi.StringWidth(row.label)))
+		f.styledText(x+1, y, ansi.StringWidth(label), label, componentVisual{foreground: labelInk, background: v.background}, true)
 	}
 	if marked {
 		f.focusMark(x-1, y, v, v.base)

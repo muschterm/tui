@@ -13,7 +13,7 @@ const maxSettingHelp = 44
 
 func (m *Model) openPromptSettings(field string) tea.Cmd {
 	if m.configurationLocked() {
-		return m.showNotice("Settings are read-only during active work")
+		return m.showNoticeAs(noticeUnavailable, "Settings are read-only during active work")
 	}
 	if field == "" {
 		field = "model"

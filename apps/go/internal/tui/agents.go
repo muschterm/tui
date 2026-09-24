@@ -358,11 +358,11 @@ func fixtureSettingsBlocked(s protocol.Settings) string {
 // the agent it was created with.
 func (m *Model) chooseAgent(id string) tea.Cmd {
 	if m.configurationLocked() {
-		return m.showNotice("Settings are read-only during active work")
+		return m.showNoticeAs(noticeUnavailable, "Settings are read-only during active work")
 	}
 	agent, ok := m.agentByID(id)
 	if !ok {
-		return m.showNotice("That agent is no longer configured")
+		return m.showNoticeAs(noticeUnavailable, "That agent is no longer configured")
 	}
 	current, hasCurrent := m.threadAgent(m.thread())
 	if !m.creatingThread() {
@@ -373,7 +373,7 @@ func (m *Model) chooseAgent(id string) tea.Cmd {
 		if hasCurrent {
 			name = safe(current.Name)
 		}
-		return m.showNotice("This thread keeps " + name + " · start a new thread to use another agent")
+		return m.showNoticeAs(noticeUnavailable, "This thread keeps "+name+" · start a new thread to use another agent")
 	}
 	v := m.viewState()
 	if !hasCurrent || current.ID != agent.ID {
@@ -399,7 +399,7 @@ func (m *Model) probeOffer(a protocol.Agent) tea.Cmd {
 // values only while the agent still offers them.
 func (m *Model) chooseSetting(field, value string) tea.Cmd {
 	if m.configurationLocked() {
-		return m.showNotice("Settings are read-only during active work")
+		return m.showNoticeAs(noticeUnavailable, "Settings are read-only during active work")
 	}
 	c, ok := m.composerConfig()
 	if !ok {
@@ -407,10 +407,10 @@ func (m *Model) chooseSetting(field, value string) tea.Cmd {
 	}
 	o, has := c.option(field)
 	if !has {
-		return m.showNotice(safe(c.agent.Name) + " offers no " + field + " option")
+		return m.showNoticeAs(noticeUnavailable, safe(c.agent.Name)+" offers no "+field+" option")
 	}
 	if _, ok := optionValue(o, value); !ok {
-		return m.showNotice("That " + field + " is no longer offered · reprobe " + safe(c.agent.Name))
+		return m.showNoticeAs(noticeUnavailable, "That "+field+" is no longer offered · reprobe "+safe(c.agent.Name))
 	}
 	v := m.viewState()
 	setSettingValue(&v.Settings, field, value)

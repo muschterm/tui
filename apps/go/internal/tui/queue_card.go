@@ -40,11 +40,15 @@ func (m *Model) renderQueue(f *frame, r shell.Rect) int {
 	// queue; hovering it or its controls never recolors the frame.
 	f.componentBox(m, r, roundedOutline, m.containerStyle(queueControlKey(m.focus), p.text, p.panel), p.canvas)
 	x, w := r.X+2, max(1, r.W-4)
-	header := fmt.Sprintf(" %d queued ", len(queue))
+	// A muted uppercase panel legend: queued work is not an attention state.
+	header := fmt.Sprintf(" QUEUED %d ", len(queue))
 	if hidden := len(queue) - m.queueVisibleRows(); hidden > 0 {
-		header = fmt.Sprintf(" %d queued · %d more… ", len(queue), hidden)
+		header = fmt.Sprintf(" QUEUED %d · %d more… ", len(queue), hidden)
 	}
-	f.button(m, x, r.Y, min(w, ansi.StringWidth(header)), header, "queue", action{Kind: "queue"}, p.gold, p.panel)
+	// Bold muted, like the uppercase panel headings inside request cards.
+	legend := m.componentStyle(squareFill, m.controlState(false, "queue"), p.muted, p.panel)
+	legend.bold = true
+	f.styledButton(x, r.Y, min(w, ansi.StringWidth(header)), header, "queue", action{Kind: "queue"}, legend)
 	f.hits[len(f.hits)-1].Label = "Open all queued messages and controls"
 	for i, q := range queue[:m.queueVisibleRows()] {
 		y := r.Y + 1 + i

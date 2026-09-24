@@ -7,6 +7,10 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
 
+// readOnlyNote suffixes a locked setting's help; the overflow menu states it
+// once in its title instead of inside each pair value.
+const readOnlyNote = " · read-only during active work"
+
 type composerControl struct {
 	x, y, width            int
 	label, key, help, tone string
@@ -39,7 +43,7 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 		settings[len(settings)-1].field = title(s.field)
 		if m.configurationLocked() {
 			settings[len(settings)-1].tone = "muted"
-			settings[len(settings)-1].help += " · read-only during active work"
+			settings[len(settings)-1].help += readOnlyNote
 		}
 	}
 	if m.state.Edit != nil {
@@ -54,7 +58,7 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 		settings = append(settings, control("Resume", "resume", "Resume saved work", "gold", action{Kind: "resume"}))
 	}
 	actions = append(actions,
-		control(m.usageCompactLabel(), "usage", "Open usage details", "muted", action{Kind: "usage-summary"}),
+		control(m.usageCompactLabel(), "usage", "Open usage details", m.usageTone(), action{Kind: "usage-summary"}),
 		control(m.icon("attach"), "attach", "Attach context", "blue", action{Kind: "attach"}))
 	actions[1].icon = true
 	if activeTurn(t) {
@@ -187,15 +191,23 @@ func (m *Model) openComposerOverflow() {
 	// move the selected item under a pending click or Enter key.
 	_, hidden := m.composerLayout(max(1, m.measure().geom.Center.W-2))
 	var items []menuItem
+	readOnly := false
 	for _, c := range hidden {
 		if value, ok := strings.CutPrefix(c.help, c.field+": "); c.field != "" && ok {
+			if v, locked := strings.CutSuffix(value, readOnlyNote); locked {
+				value, readOnly = v, true
+			}
 			items = append(items, pairMenuItem(c.field, value, c.action))
 			continue
 		}
 		items = append(items, menuItem{Label: c.help, Action: c.action})
 	}
 	if len(items) > 0 {
-		m.showMenu("More settings", items)
+		title := "More settings"
+		if readOnly {
+			title += " · read-only"
+		}
+		m.showMenu(title, items)
 	}
 }
 

@@ -245,15 +245,22 @@ func TestQuestionHistoryDeclinedAndCancelled(t *testing.T) {
 			t.Fatalf("%s: no history card", tc.status)
 		}
 		text := questionHistoryRenderedText(lines)
-		if !strings.Contains(text, tc.status) || strings.Contains(text, "Answered") || strings.Contains(text, "Submitted") || strings.Contains(text, "No answer recorded") || strings.Contains(text, "Tighter rows") {
+		outcome, detail, split := strings.Cut(tc.status, " · ")
+		rendered := strings.ToUpper(outcome)
+		if split {
+			rendered += " · " + detail
+		}
+		if !strings.Contains(text, rendered) || strings.Contains(strings.ToUpper(text), "ANSWERED") || strings.Contains(strings.ToUpper(text), "SUBMITTED") || strings.Contains(text, "No answer recorded") || strings.Contains(text, "Tighter rows") {
 			t.Fatalf("%s: %s", tc.status, text)
 		}
 		if !strings.Contains(text, "Which layout?") || !strings.Contains(text, "Roomy") || strings.Contains(text, m.icon("radio-on")) {
 			t.Fatalf("%s: original questions missing or an option shown selected: %s", tc.status, text)
 		}
 		for _, line := range lines {
-			if strings.Contains(ansi.Strip(line.text), tc.status) && line.fg != tc.color {
-				t.Fatalf("%s: status color %q, want %q", tc.status, line.fg, tc.color)
+			// A decline or cancel never takes the answered check; its mark
+			// carries the delivery color.
+			if strings.Contains(ansi.Strip(line.text), rendered) && (line.leadFG != tc.color || line.lead == "✓" || line.lead == "+") {
+				t.Fatalf("%s: status mark %q color %q, want %q", tc.status, line.lead, line.leadFG, tc.color)
 			}
 		}
 		if copied := questionHistoryText(request); !strings.HasPrefix(copied, tc.status) || strings.Contains(copied, "No answer recorded") {

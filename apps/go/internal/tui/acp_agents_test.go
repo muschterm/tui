@@ -300,16 +300,17 @@ func TestThoughtAndToolRowsRenderDistinctly(t *testing.T) {
 			rows = append(rows, line.fg+"|"+line.text)
 		}
 	}
+	mark := func(state string) string { g, _ := panelStatusMark(m, state); return g }
 	want := []string{
 		p.muted + "|Thinking",
 		p.muted + "|Weighing two approaches",
-		p.cyan + "|" + m.icon("tool") + "  Read files  ·  pending",
+		p.cyan + "|" + mark("pending") + " " + m.icon("tool") + "  Read files  ·  pending",
 		p.text + "|3 files",
-		p.cyan + "|" + m.icon("tool") + "  Run tests  ·  running",
+		p.cyan + "|" + mark("running") + " " + m.icon("tool") + "  Run tests  ·  running",
 		p.text + "|go test",
-		p.cyan + "|" + m.icon("tool") + "  Patch  ·  completed",
+		p.cyan + "|" + mark("completed") + " " + m.icon("tool") + "  Patch  ·  completed",
 		p.text + "|1 edit",
-		p.cyan + "|" + m.icon("mcp") + "  Lookup  ·  failed",
+		p.cyan + "|" + mark("failed") + " " + m.icon("mcp") + "  Lookup  ·  failed",
 		p.text + "|timeout",
 	}
 	if strings.Join(rows, "\n") != strings.Join(want, "\n") {
@@ -373,7 +374,7 @@ func TestApprovalCardShowsAgentChoices(t *testing.T) {
 	}
 	// The thread's own agent is not repeated on its cards; only a different
 	// origin, such as a child run, would be named.
-	if !strings.Contains(view, "Approval required") || strings.Contains(view, "Claude · Approval required") {
+	if !strings.Contains(view, "APPROVAL REQUIRED") || strings.Contains(view, "Claude · APPROVAL REQUIRED") {
 		t.Fatalf("approval header should name the state without the thread agent:\n%s", view)
 	}
 	m.activate(action{Kind: "approve", ID: "perm-1", Value: "Allow once", Revision: 4})

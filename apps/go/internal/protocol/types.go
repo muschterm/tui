@@ -107,6 +107,22 @@ type Activity struct {
 	RequestID                            string  `json:"RequestID,omitempty"`
 	TurnID                               string  `json:"TurnID,omitempty"`
 	Prompt                               *Prompt `json:"Prompt,omitempty"`
+	// Tool is the structured inspector payload of a tool or MCP call. It is
+	// optional: older payloads and non-tool activity carry only Detail, which
+	// stays populated for older clients.
+	Tool *ToolDetail `json:"Tool,omitempty"`
+}
+
+// ToolDetail holds agent-reported tool call facts as explicit fields. Every
+// string is sanitized and independently bounded by the server; RawInput,
+// RawOutput and Content are display summaries, not re-parseable payloads.
+type ToolDetail struct {
+	Kind      string   `json:"kind,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Locations []string `json:"locations,omitempty"`
+	Content   []string `json:"content,omitempty"`
+	RawInput  string   `json:"rawInput,omitempty"`
+	RawOutput string   `json:"rawOutput,omitempty"`
 }
 
 // Usage is agent-reported context occupancy: Used tokens of Size capacity,

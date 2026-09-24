@@ -50,6 +50,7 @@ type questionLine struct {
 type requestLayout struct {
 	card                        shell.Rect
 	x, w                        int
+	textW                       int // Body text width; one less than w beside a scrollbar.
 	header, tabs, body, input   shell.Rect
 	noticeY, actionsY           int
 	noticeInline, optionsHidden bool
@@ -217,7 +218,10 @@ func (m *Model) requestLayout(req protocol.Request, r shell.Rect) requestLayout 
 	if questionTabsShown(req) {
 		tabs = 1
 	}
-	message, _ := m.requestCardNotice(req)
+	message, problem := m.requestCardNotice(req)
+	if message != "" {
+		message = m.requestNoticeMark(problem) + " " + message // Measured as painted.
+	}
 	// A short notice shares the actions row, between Options… and the right
 	// action group; approvals and longer notices take their own row above the
 	// actions. The group is measured as if Options… were shown, so the choice
@@ -260,6 +264,13 @@ func (m *Model) requestLayout(req protocol.Request, r shell.Rect) requestLayout 
 		ix := l.x + m.questionInputIndent(req)
 		// The field ends before the shared scrollbar column.
 		l.input = shell.Rect{X: ix, Y: l.body.Y + l.body.H, W: max(1, l.card.X+l.card.W-2-ix), H: inputRows}
+	}
+	l.textW = l.w
+	if len(l.lines) > l.body.H && l.w > 2 {
+		// A shown scrollbar keeps one gap cell from the text. The card is
+		// already at its cap, so rewrapping only lengthens the scroll content.
+		l.textW = l.w - 1
+		l.lines = m.questionLines(req, l.textW)
 	}
 	maxOffset := max(0, len(l.lines)-l.body.H)
 	l.offset = min(max(0, m.viewState().RequestScroll), maxOffset)
@@ -358,7 +369,8 @@ func (m *Model) renderRequestHeader(f *frame, l requestLayout, req protocol.Requ
 	if origin := m.requestOriginLabel(req); origin != "" {
 		segments = append(segments, struct{ text, fg string }{origin, p.text}, struct{ text, fg string }{" · ", p.muted})
 	}
-	segments = append(segments, struct{ text, fg string }{mode, modeInk})
+	// The mode is a static panel label: uppercase, never user or agent text.
+	segments = append(segments, struct{ text, fg string }{strings.ToUpper(mode), modeInk})
 	s := m.controlState(false, "request-detail")
 	avail, x := max(1, l.w-right), l.x
 	for _, seg := range segments {
@@ -385,13 +397,13 @@ func (m *Model) renderRequestHeader(f *frame, l requestLayout, req protocol.Requ
 func (m *Model) renderQuestionLine(f *frame, l requestLayout, line questionLine, y int) {
 	p := m.colors()
 	if line.detail {
-		if w := l.w - line.indent; w > 0 {
+		if w := l.textW - line.indent; w > 0 {
 			f.styledText(l.x+line.indent, y, w, line.text, componentVisual{foreground: p.muted, background: p.panel}, false)
 		}
 		return
 	}
 	if line.key == "" {
-		f.styledText(l.x, y, l.w, line.text, componentVisual{foreground: p.text, background: p.panel, bold: line.bold}, false)
+		f.styledText(l.x, y, l.textW, line.text, componentVisual{foreground: p.text, background: p.panel, bold: line.bold}, false)
 		return
 	}
 	s := m.controlState(line.selected, line.key)
@@ -444,6 +456,9 @@ func (m *Model) renderRequestActions(f *frame, l requestLayout, req protocol.Req
 	if problem {
 		fg = p.red
 	}
+	if message != "" {
+		message = m.requestNoticeMark(problem) + " " + message
+	}
 	if message != "" && l.noticeY >= 0 {
 		f.text(x, l.noticeY, w, message, fg, p.panel)
 	}
@@ -456,7 +471,8 @@ func (m *Model) renderRequestActions(f *frame, l requestLayout, req protocol.Req
 			f.compactButton(m, x, y, w, "Approval choices…", "approval-options", action{Kind: "approval-options"}, false, normalControl)
 			return
 		}
-		cx := x
+		// Right-aligned like the question and queue actions; keyboard order stays left to right.
+		cx := x + w - total
 		for i, choice := range req.Choices {
 			size := ansi.StringWidth(choice) + 4
 			f.compactButton(m, cx, y, size, choice, fmt.Sprint("approve:", i), m.approvalAction(req, i), false, normalControl)
@@ -486,6 +502,17 @@ func (m *Model) renderRequestActions(f *frame, l requestLayout, req protocol.Req
 		f.questionButton(m, bx, y, b.width, b.label, b.key, b.action, b.role, m.submitBlocked())
 		bx += b.width + 1
 	}
+}
+
+// requestNoticeMark leads card feedback with the panel status glyph: a
+// problem (failed, unconfirmed or blocked) is "!", progress is the working
+// dot. Neither ever reads as confirmed success.
+func (m *Model) requestNoticeMark(problem bool) string {
+	state := "working"
+	if problem {
+		state = "blocked"
+	}
+	return statusGlyph(m, state)
 }
 
 // questionActionButton is one control of the right-aligned action group.

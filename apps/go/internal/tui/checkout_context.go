@@ -86,15 +86,44 @@ func (m *Model) checkoutLabels() (string, string) {
 	return left, right
 }
 
+// checkoutMark returns the glyph before the branch value, its ink and the
+// value's ink. A known branch or revision is a bright value behind the Git
+// identity icon; loading is pending, non-Git a neutral dot and anything else
+// (unavailable, fixture) a neutral "?". None of these reads as success.
+func (m *Model) checkoutMark() (glyph, glyphInk, valueInk string) {
+	p := m.colors()
+	if m.checkoutLoading {
+		glyph, glyphInk = panelStatusMark(m, "pending")
+		return glyph, glyphInk, p.muted
+	}
+	switch m.displayedCheckout().State {
+	case "branch", "unborn", "detached":
+		return m.icon("git"), p.muted, p.text
+	case "non-git":
+		glyph, glyphInk = panelStatusMark(m, "")
+	default:
+		glyph, glyphInk = panelStatusMark(m, "unavailable")
+	}
+	return glyph, glyphInk, p.muted
+}
+
 func (m *Model) renderCheckoutContext(f *frame, r shell.Rect) {
 	p := m.colors()
 	x, width := r.X+composerInset(r.W), max(1, r.W-2*composerInset(r.W))
 	left, right := m.checkoutLabels()
-	rightWidth := min(ansi.StringWidth(right), max(1, width/2))
-	leftWidth := max(1, width-rightWidth-2)
+	glyph, glyphInk, valueInk := m.checkoutMark()
+	markWidth := ansi.StringWidth(glyph) + 1
+	rightWidth := min(ansi.StringWidth(right), max(1, width/2-markWidth))
+	leftWidth := max(1, width-rightWidth-markWidth-2)
 	f.button(m, x, r.Y, leftWidth, left, "checkout-info", action{Kind: "checkout-info"}, p.muted, p.canvas)
 	f.hits[len(f.hits)-1].Label = m.displayedCheckout().Path + " · Checkout details / refresh"
-	f.button(m, x+width-rightWidth, r.Y, rightWidth, right, "checkout-branch", action{Kind: "checkout-info"}, p.muted, p.canvas)
+	rightX := x + width - rightWidth
+	// The mark is read-only context outside the value's hit cell, so hover
+	// and focus feedback stay on the value itself.
+	if rightX-markWidth >= x+leftWidth {
+		f.text(rightX-markWidth, r.Y, markWidth, glyph+" ", glyphInk, p.canvas)
+	}
+	f.button(m, rightX, r.Y, rightWidth, right, "checkout-branch", action{Kind: "checkout-info"}, valueInk, p.canvas)
 	f.hits[len(f.hits)-1].Label = right + " · Observed on selection; open to refresh"
 }
 
@@ -130,13 +159,22 @@ func (m *Model) renderClosedBanner(f *frame, r shell.Rect) int {
 	}
 	p := m.colors()
 	x, width := r.X+composerInset(r.W), r.W-2*composerInset(r.W)
-	label := "This thread is closed · Send a message to reopen"
+	// The state reads in text ink and its hint stays muted: one row when
+	// wide, stacked when narrow. Reopen keeps its own reserved cells.
+	const state = "This thread is closed"
+	room := max(1, width-10)
+	hintX, hint := x, "Send to reopen"
 	if height == 2 {
-		f.text(x, r.Y, width, "This thread is closed", p.text, p.canvas)
-		label = "Send to reopen"
+		f.text(x, r.Y, width, state, p.text, p.canvas)
+	} else {
+		f.text(x, r.Y, room, state, p.text, p.canvas)
+		stateWidth := min(room, ansi.StringWidth(state))
+		hintX, room, hint = x+stateWidth, room-stateWidth, " · Send a message to reopen"
 	}
 	y := r.Y + height - 1
-	f.text(x, y, max(1, width-10), label, p.muted, p.canvas)
-	f.button(m, x+width-8, y, 8, "Reopen", "thread-reopen", action{Kind: "thread-reopen", ID: m.state.Active}, p.blue, p.input)
+	if room > 0 {
+		f.text(hintX, y, room, hint, p.muted, p.canvas)
+	}
+	f.compactButton(m, x+width-8, y, 8, "Reopen", "thread-reopen", action{Kind: "thread-reopen", ID: m.state.Active}, false, primaryControl)
 	return r.Y + height
 }

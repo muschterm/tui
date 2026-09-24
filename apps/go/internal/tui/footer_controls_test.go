@@ -225,7 +225,7 @@ func TestComposerFocusFollowsCollapsedControl(t *testing.T) {
 		t.Fatalf("collapsed control lost keyboard access: focus = %q", m.focus)
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.menuTitle != "More settings" {
+	if !strings.HasPrefix(m.menuTitle, "More settings") {
 		t.Fatal("Enter did not follow collapsed control into overflow")
 	}
 }
@@ -301,19 +301,19 @@ func TestUsageSummaryHasIndependentMouseAndKeyboardAccess(t *testing.T) {
 
 func TestUsageGaugeDistinguishesUnknownZeroAndClamps(t *testing.T) {
 	capacity := int64(100)
-	if got := usageGauge(nil, &capacity); got != "Ctx —" {
+	if got := usageGauge(nil, &capacity); got != "Ctx ?" {
 		t.Fatal(got)
 	}
 	for _, tt := range []struct {
 		used int64
 		want string
-	}{{0, "Ctx 0%"}, {50, "Ctx 50%"}, {100, "Ctx 100%"}, {150, "Ctx 100%"}, {-1, "Ctx —"}} {
+	}{{0, "Ctx 0%"}, {50, "Ctx 50%"}, {100, "Ctx 100%"}, {150, "Ctx 100%"}, {-1, "Ctx ?"}} {
 		if got := usageGauge(&tt.used, &capacity); got != tt.want {
 			t.Errorf("%d: %q", tt.used, got)
 		}
 	}
 	zero := int64(0)
-	if got := usageGauge(&zero, &zero); got != "Ctx —" {
+	if got := usageGauge(&zero, &zero); got != "Ctx ?" {
 		t.Fatal(got)
 	}
 }

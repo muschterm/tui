@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"github.com/muschterm/tui/apps/go/internal/storage"
 )
 
 func update(t *testing.T, payload string) Update {
@@ -71,11 +73,12 @@ func TestToolUpdatesNeverEraseEarlierValues(t *testing.T) {
 	if err := json.Unmarshal([]byte(row.Detail), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Kind != "read" || len(detail.Locations) != 1 || string(detail.RawInput) != `{"path":"a.go"}` {
+	if detail.Kind != "read" || len(detail.Locations) != 1 || detail.RawInput != nil {
 		t.Fatalf("omitted fields erased earlier detail: %s", row.Detail)
 	}
-	if string(detail.RawOutput) != `{"bytes":12}` {
-		t.Fatalf("raw output lost: %s", row.Detail)
+	// Raw payloads are retained once, in the structured copy.
+	if row.Tool.RawInput != `{"path":"a.go"}` || row.Tool.RawOutput != `{"bytes":12}` {
+		t.Fatalf("raw fields lost: %+v", row.Tool)
 	}
 	if row.Text != "read · a.go" {
 		t.Fatalf("summary: %q", row.Text)
@@ -361,5 +364,196 @@ func TestSessionNotesAreScopedToTheirTurn(t *testing.T) {
 	}
 	if notes[0].TurnID != "turn-1" || notes[1].TurnID != "turn-2" {
 		t.Fatalf("note chronology lost: %+v", notes)
+	}
+}
+
+func TestToolCallsCarryStructuredDetail(t *testing.T) {
+	thread := &protocol.Thread{ID: "t", TurnID: "turn-1"}
+	apply(t, thread,
+		`{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Read file","kind":"read","status":"pending","locations":[{"path":"a.go"}],"rawInput":{"path":"a.go"}}`,
+		`{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"failed","rawOutput":{"error":"\u001b[31mdenied"}}`,
+	)
+	row := thread.Activity[0]
+	want := protocol.ToolDetail{Kind: "read", Status: "failed", Locations: []string{"a.go"}, RawInput: `{"path":"a.go"}`, RawOutput: `{"error":"\u001b[31mdenied"}`}
+	if row.Tool == nil || row.Tool.Kind != want.Kind || row.Tool.Status != want.Status || len(row.Tool.Locations) != 1 || row.Tool.RawInput != want.RawInput || row.Tool.RawOutput != want.RawOutput {
+		t.Fatalf("tool = %+v", row.Tool)
+	}
+	if !json.Valid([]byte(row.Detail)) {
+		t.Fatalf("Detail no longer the legacy JSON: %s", row.Detail)
+	}
+	encoded, err := json.Marshal(thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back protocol.Thread
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Activity[0].Tool; got == nil || got.RawInput != want.RawInput || got.Locations[0] != "a.go" {
+		t.Fatalf("round trip = %+v", got)
+	}
+	// Persistence stores the whole snapshot, so Tool survives a save and load.
+	store, err := storage.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Save(protocol.Snapshot{Threads: []protocol.Thread{*thread}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Threads[0].Activity[0].Tool; got == nil || got.Status != "failed" || got.RawOutput != want.RawOutput {
+		t.Fatalf("restored = %+v", got)
+	}
+	// A restored row keeps merging: a later update adds to the stored fields.
+	apply(t, &loaded.Threads[0], `{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}`)
+	if got := loaded.Threads[0].Activity[0].Tool; got.Status != "completed" || got.Kind != "read" || got.RawInput != want.RawInput {
+		t.Fatalf("merge after restore = %+v", got)
+	}
+}
+
+func TestHugeRawInputTruncatesEachToolField(t *testing.T) {
+	thread := &protocol.Thread{ID: "t", TurnID: "turn-1"}
+	huge := strings.Repeat("x", 3*MaxActivityDeta)
+	apply(t, thread,
+		`{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Write","kind":"edit","status":"completed","rawInput":{"content":"`+huge+`"},"rawOutput":{"ok":true}}`,
+	)
+	row := thread.Activity[0]
+	combined := len(row.Tool.RawInput) + len(row.Tool.RawOutput)
+	for _, entry := range row.Tool.Content {
+		combined += len(entry)
+	}
+	if combined > MaxActivityDeta || !strings.HasSuffix(row.Tool.RawInput, "truncated at the retention limit …") {
+		t.Fatalf("structured payload %d bytes exceeds the shared %d budget", combined, MaxActivityDeta)
+	}
+	if row.Tool == nil || row.Tool.RawOutput != `{"ok":true}` || row.Tool.Kind != "edit" {
+		t.Fatalf("tool = kind %q output %q input %d bytes", row.Tool.Kind, row.Tool.RawOutput, len(row.Tool.RawInput))
+	}
+	encoded, err := json.Marshal(row)
+	if err != nil || !json.Valid(encoded) {
+		t.Fatalf("activity no longer encodes: %v", err)
+	}
+	if len(row.Detail) > 2048 || strings.Contains(row.Detail, "rawInput") {
+		t.Fatalf("legacy Detail duplicates the structured payload: %d bytes", len(row.Detail))
+	}
+	// Even when Detail itself is truncated past valid JSON, the next update
+	// keeps the explicit fields from Tool.
+	row.Detail = row.Detail[:len(row.Detail)/2]
+	thread.Activity[0] = row
+	apply(t, thread, `{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"failed"}`)
+	if got := thread.Activity[0].Tool; got.Kind != "edit" || got.Status != "failed" {
+		t.Fatalf("fields lost after truncated Detail: %+v", got)
+	}
+	// Omitted rawInput/rawOutput never erase: the retained summaries survive
+	// the recovery update and every later status-only update.
+	for i, status := range []string{"in_progress", "completed"} {
+		apply(t, thread, `{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"`+status+`"}`)
+		got := thread.Activity[0].Tool
+		if got.RawInput != row.Tool.RawInput || got.RawOutput != row.Tool.RawOutput || got.Status != status {
+			t.Fatalf("update %d: input %d→%d bytes, output %q, status %q", i+1, len(row.Tool.RawInput), len(got.RawInput), got.RawOutput, got.Status)
+		}
+	}
+}
+
+func TestToolBudgetSharesUnusedRoom(t *testing.T) {
+	got := toolBudget(100, 10, 500, 500)
+	if got[0] != 10 || got[1] != 45 || got[2] != 45 {
+		t.Fatalf("shares = %v", got)
+	}
+	if got := toolBudget(100, 0, 0, 0); got[0]+got[1]+got[2] != 0 {
+		t.Fatalf("empty shares = %v", got)
+	}
+	if got := boundEntries([]string{"aaaa", "bbbb"}, 6); len(got) != 1 {
+		t.Fatalf("entries = %q", got)
+	}
+}
+
+func TestBoundEntriesMarksDroppedContent(t *testing.T) {
+	got := boundEntries([]string{strings.Repeat("a", 65526), strings.Repeat("b", 100)}, MaxActivityDeta)
+	size := 0
+	for _, entry := range got {
+		size += len(entry)
+	}
+	if size > MaxActivityDeta || !strings.Contains(strings.Join(got, ""), "truncated at the retention limit") {
+		t.Fatalf("entries %d, %d bytes, marker missing or over budget", len(got), size)
+	}
+	// An entry that ends exactly at the room leaves the marker as its own entry.
+	room := 1000 - len(truncationMarker)
+	got = boundEntries([]string{strings.Repeat("a", room), strings.Repeat("b", 100)}, 1000)
+	if len(got) != 2 || got[1] != truncationEntry || len(got[0])+len(got[1]) > 1000 {
+		t.Fatalf("entries = %d, last %q", len(got), got[len(got)-1])
+	}
+}
+
+// Seventy locations keep the first 63 and end with the marker entry, so the
+// 64-entry cap holds and the loss is visible.
+func TestStructuredToolMarksCappedEntries(t *testing.T) {
+	var locations, content []string
+	for i := range 70 {
+		locations = append(locations, fmt.Sprintf("f%d.go", i))
+		content = append(content, "c")
+	}
+	tool := structuredTool(toolDetail{Locations: locations, Content: content}, "", "")
+	for name, got := range map[string][]string{"locations": tool.Locations, "content": tool.Content} {
+		if len(got) != maxToolEntries || got[maxToolEntries-1] != truncationEntry {
+			t.Fatalf("%s: %d entries, last %q", name, len(got), got[len(got)-1])
+		}
+	}
+	if tool.Locations[62] != "f62.go" {
+		t.Fatalf("location 63 = %q", tool.Locations[62])
+	}
+	if tool := structuredTool(toolDetail{Locations: locations[:64]}, "", ""); len(tool.Locations) != 64 || tool.Locations[63] != "f63.go" {
+		t.Fatalf("64 locations altered: %q", tool.Locations[63])
+	}
+}
+
+func TestCompactDetailRetainsToolPayload(t *testing.T) {
+	thread := &protocol.Thread{ID: "t", TurnID: "turn-1"}
+	big := strings.Repeat("y", 64<<10)
+	apply(t, thread,
+		`{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Write","kind":"edit","status":"in_progress","locations":[{"path":"a.go"}],"content":[{"type":"content","content":{"type":"text","text":"`+big+`"}}],"rawInput":{"i":"`+big+`"},"rawOutput":{"o":"`+big+`"}}`,
+	)
+	row := thread.Activity[0]
+	if len(row.Detail) > 2048 || !json.Valid([]byte(row.Detail)) || !strings.Contains(row.Detail, `"kind":"edit"`) || !strings.Contains(row.Detail, "a.go") {
+		t.Fatalf("Detail = %d bytes %q", len(row.Detail), row.Detail[:min(len(row.Detail), 200)])
+	}
+	before := *row.Tool
+	apply(t, thread, `{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}`)
+	got := thread.Activity[0].Tool
+	if got.RawInput != before.RawInput || got.RawOutput != before.RawOutput || len(got.Content) != len(before.Content) || got.Content[0] != before.Content[0] || got.Status != "completed" {
+		t.Fatalf("status update lost payload: %+v", got.Status)
+	}
+}
+
+// An update carrying only rawInput must share the budget with the kept
+// rawOutput, never add it on top.
+func TestToolUpdateWithOneRawFieldKeepsSharedBudget(t *testing.T) {
+	thread := &protocol.Thread{ID: "t", TurnID: "turn-1"}
+	big := strings.Repeat("x", MaxActivityDeta)
+	apply(t, thread,
+		`{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Write","kind":"edit","status":"in_progress","rawInput":{"i":"`+big+`"},"rawOutput":{"o":"`+big+`"}}`,
+		`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"i":"`+big+`y"}}`,
+	)
+	got := thread.Activity[0].Tool
+	if combined := len(got.RawInput) + len(got.RawOutput); combined > MaxActivityDeta {
+		t.Fatalf("combined %d bytes exceeds the shared %d budget", combined, MaxActivityDeta)
+	}
+	if !strings.Contains(got.RawInput, "i:xxxx") || !strings.Contains(got.RawOutput, "o:xxxx") {
+		t.Fatalf("a present field was emptied: input %.20q, output %.20q", got.RawInput, got.RawOutput)
+	}
+	if strings.Count(got.RawOutput, truncationMarker) != 1 || strings.Count(got.RawInput, truncationMarker) != 1 {
+		t.Fatalf("truncation markers: input %d, output %d", strings.Count(got.RawInput, truncationMarker), strings.Count(got.RawOutput, truncationMarker))
+	}
+	// A small kept field keeps its exact size; the new field gets the rest.
+	apply(t, thread,
+		`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawOutput":{"ok":true}}`,
+		`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"i":"`+big+`"}}`,
+	)
+	got = thread.Activity[0].Tool
+	if got.RawOutput != `{"ok":true}` || len(got.RawInput)+len(got.RawOutput) > MaxActivityDeta || len(got.RawInput) < MaxActivityDeta-64 {
+		t.Fatalf("input %d bytes, output %q", len(got.RawInput), got.RawOutput)
 	}
 }

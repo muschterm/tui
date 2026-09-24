@@ -143,6 +143,9 @@ func TestMenuHeadingRulesAndHitGeometry(t *testing.T) {
 	}
 	visible := m.menuVisibleItems()
 	for i := 0; i < visible; i++ {
+		if m.menu[i].Separator {
+			continue
+		}
 		h, ok := hitByKey(f, fmt.Sprintf("menu:%d", i))
 		if !ok || h.Rect.Y != r.Y+3+i || !r.Contains(h.Rect.X, h.Rect.Y) || !r.Contains(h.Rect.X+h.Rect.W-1, h.Rect.Y) {
 			t.Fatalf("item %d hit %+v outside rows of %+v", i, h, r)
@@ -158,7 +161,7 @@ func TestMenuHeadingRulesAndHitGeometry(t *testing.T) {
 	if !ok || last.Rect.Y != r.Y+3+visible-1 {
 		t.Fatalf("last item hit %+v after scrolling", last)
 	}
-	if !strings.Contains(strings.Split(frameText(f), "\n")[r.Y+r.H-2], fmt.Sprintf("%d/%d", len(m.menu), len(m.menu))) {
+	if !strings.Contains(strings.Split(frameText(f), "\n")[r.Y+r.H-2], fmt.Sprintf("%[1]d/%[1]d", selectableMenuRows(m.menu))) {
 		t.Fatal("menu counter missing on hint row")
 	}
 }
@@ -212,29 +215,39 @@ func TestMenuNeverInfersPairsFromUserText(t *testing.T) {
 func TestSurfaceStructuredRowsAndScrollBounds(t *testing.T) {
 	m := testModel()
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
+	// An older payload without the structured Tool keeps free-text detail.
+	for i := range m.snapshot.Threads[0].Activity {
+		if m.snapshot.Threads[0].Activity[i].ID == "mcp-fixture" {
+			m.snapshot.Threads[0].Activity[i].Tool = nil
+		}
+	}
 	m.openSurface("activity", "")
 	m.viewState().DetailID = "mcp-fixture"
 	active, _ := m.viewState().Host.Active()
 	rows := m.surfaceRows(m.surfaceBlocks(active), 60)
-	pairs := map[string]string{}
+	text := map[string]bool{}
 	for _, r := range rows {
 		if r.kind == surfacePairRow {
-			pairs[r.text] = r.value
+			t.Fatalf("free-form activity detail rendered as pair: %+v", r)
+		}
+		if r.kind == surfaceTextRow {
+			text[r.text] = true
 		}
 	}
 	if rows[0].kind != surfaceHeadingRow || rows[0].text != "Activity" {
 		t.Fatalf("first row %+v, want the Activity heading", rows[0])
 	}
-	if pairs["Server"] != "design" || pairs["Tool"] != "inspect_surface" {
-		t.Fatalf("short detail facts are not pairs: %+v", pairs)
+	if !text["Server: design"] || !text["Tool: inspect_surface"] {
+		t.Fatalf("detail lines are not plain text rows: %+v", text)
 	}
-	// Result is too long for a pair: muted label above the wrapped value.
-	for i, r := range rows {
-		if r.kind == surfaceTextRow && r.text == "Result" {
-			if r.ink != m.colors().muted || !strings.Contains(rows[i+1].text, "existing tab") {
-				t.Fatalf("long value rows %+v %+v", r, rows[i+1])
-			}
+	result := false
+	for _, r := range rows {
+		if r.kind == surfaceTextRow && strings.HasPrefix(r.text, "Result: ") && r.ink == m.colors().muted {
+			result = true
 		}
+	}
+	if !result {
+		t.Fatal("Result line missing as muted text")
 	}
 	// Plan: one status row per step, semantic ink and the state at the right.
 	m.snapshot.Threads[0].Plan = []protocol.PlanStep{{Title: "Read", State: "completed"}, {Title: "Edit", State: "active"}, {Title: "Verify", State: "pending"}, {Title: "Ship", State: "failed"}, {Title: "Odd", State: "mystery"}}
@@ -381,8 +394,8 @@ func TestMenuTitleKeepsUserTextCase(t *testing.T) {
 	m := testModel()
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	for _, tc := range []struct{ prefix, user, want string }{
-		{"Delete thread: ", "Fix Bug: MixedCase", "DELETE THREAD: Fix Bug: MixedCase"},
-		{"Remove project: ", "myProject", "REMOVE PROJECT: myProject"},
+		{"Delete thread · ", "Fix Bug: MixedCase", "DELETE THREAD · Fix Bug: MixedCase"},
+		{"Remove project · ", "myProject", "REMOVE PROJECT · myProject"},
 	} {
 		m.showMenuFor(tc.prefix, tc.user, []menuItem{{Label: "Cancel", Action: action{Kind: "noop"}}})
 		if got := m.menuTitleText(); got != tc.want {

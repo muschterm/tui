@@ -228,17 +228,31 @@ func (m *Model) compose(paint bool) frame {
 			break
 		}
 	}
+	// A notice leads with its severity's panel status mark, painted beside
+	// the notice text rather than prefixed into it.
+	mark, markInk := "", ""
 	if m.notice.text != "" {
 		status = m.notice.text
+		mark, markInk = panelStatusMark(m, m.notice.severity.markState())
 	}
-	if notice := m.steeringNotice(); notice != "" {
+	if notice, severity := m.steeringNoticeSeverity(); notice != "" {
 		status = notice
+		mark, markInk = panelStatusMark(m, severity.markState())
 	}
 	connection := "● connected"
 	if !m.connected {
 		connection = "○ disconnected · stale"
 	}
-	f.text(1, m.height-1, m.width-2, connection+"  ·  "+status, p.muted, p.nav)
+	prefix := connection + "  ·  "
+	if mark != "" {
+		prefix += mark + " "
+	}
+	f.text(1, m.height-1, m.width-2, prefix+status, p.muted, p.nav)
+	if mark != "" {
+		if x := ansi.StringWidth(connection + "  ·  "); 1+x+ansi.StringWidth(mark) <= m.width-1 {
+			f.text(1+x, m.height-1, ansi.StringWidth(mark), mark, markInk, p.nav)
+		}
+	}
 	m.renderMentions(&f)
 	if len(m.menu) > 0 {
 		m.renderMenu(&f)
@@ -258,6 +272,12 @@ type contentLine struct {
 	// painted on the canvas like componentBox's side cells; the interior
 	// between them uses fg/bg. Border rows themselves carry the ink as fg.
 	border string
+	// lead and tail are state accents inside text: lead is its leading status
+	// mark (painted in leadFG) and tail its trailing suffix (painted in
+	// tailFG). Both stay part of text, so copy, width and row count are
+	// unchanged; see paintLineAccents. sep, when set, is the text right
+	// before tail, painted in sepFG (a muted separator before a state word).
+	lead, leadFG, tail, tailFG, sep, sepFG string
 }
 
 func (m *Model) activityLines(items []protocol.Activity, w int) []contentLine {
@@ -302,20 +322,36 @@ func (m *Model) activityLinesForThread(t protocol.Thread, items []protocol.Activ
 			}
 		}
 		header := name
-		if a.Role == "tool" || a.Role == "mcp" {
-			header = m.icon(a.Role) + "  " + header
+		operation := a.Role == "tool" || a.Role == "mcp"
+		var lead, leadFG, tail string
+		if operation {
+			// Tool and MCP rows lead with the panel status mark in state ink, as
+			// the right-host surfaces do; the state word stays, muted.
+			lead, leadFG = panelStatusMark(m, a.State)
+			header = lead + " " + m.icon(a.Role) + "  " + header
 		}
 		if a.State != "" {
-			header += "  ·  " + a.State
+			tail = a.State
+			header += "  ·  " + tail
 		}
 		act := action{}
-		if a.Role == "tool" || a.Role == "mcp" {
+		if operation {
 			act = action{Kind: "open", Value: "activity", ID: a.ID}
 		}
 		// Message ownership is expressed by alignment and background. Operational
 		// rows retain their meaningful titles and lifecycle state.
 		if !message {
-			lines = append(lines, contentLine{text: header, fg: fg, bg: bg, action: act})
+			line := contentLine{text: header, fg: fg, bg: bg, action: act}
+			if operation {
+				// The state word takes the mark's ink, as right-host status rows
+				// do (unknown and neutral states stay muted); the separator
+				// before it stays muted.
+				line.lead, line.leadFG, line.tail, line.tailFG = lead, leadFG, tail, leadFG
+				if tail != "" {
+					line.sep, line.sepFG = "  ·  ", p.muted
+				}
+			}
+			lines = append(lines, line)
 		}
 		// A user message is a right-aligned tinted box (as in T3 Code) ending
 		// one cell beyond the text column, the prompt outline's extent. It hugs
@@ -406,16 +442,17 @@ func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
 		}
 	}
 	if activeTurn(t) {
+		// The panel status marks: active keeps the pulsing working ink,
+		// waiting is the gold "!", and a lost connection the neutral "?".
 		status := "Thinking…"
+		marker, _ := panelStatusMark(m, "active")
 		markerFG := m.activityColor(activitySummary{Working: true})
 		if t.State == "waiting" {
-			status, markerFG = "Waiting…", p.gold
+			status = "Waiting…"
+			marker, markerFG = panelStatusMark(m, "waiting")
 		} else if !m.connected {
-			status, markerFG = "Connection lost", p.muted
-		}
-		marker := "●"
-		if m.plainIcons {
-			marker = "o"
+			status = "Connection lost"
+			marker, markerFG = panelStatusMark(m, "disconnected")
 		}
 		lines = append(lines, contentLine{text: status, fg: p.text, bg: p.canvas, marker: marker, markerFG: markerFG})
 	}
@@ -495,7 +532,10 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 			if line.action.Kind == "question-history-toggle" {
 				key = "question-history:" + line.action.ID
 			}
-			f.button(m, x, r.Y+i, width, line.text, key, line.action, line.fg, line.bg)
+			v := m.componentStyle(squareFill, m.controlState(false, key), line.fg, line.bg)
+			underline := v.focused && !f.blank(x-1, r.Y+i)
+			f.styledButton(x, r.Y+i, width, line.text, key, line.action, v)
+			f.paintLineAccents(x, r.Y+i, width, line, v, underline)
 		} else if line.styled {
 			// Markdown source is sanitized before parsing and decoded text is
 			// sanitized again by its renderer. Preserve only that trusted SGR
@@ -503,6 +543,7 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 			f.put(shell.Rect{X: x, Y: r.Y + i, W: width, H: 1}, style(line.fg, line.bg).Render(fit(line.text, width)))
 		} else {
 			f.text(x, r.Y+i, width, line.text, line.fg, line.bg)
+			f.paintLineAccents(x, r.Y+i, width, line, componentVisual{foreground: line.fg, background: line.bg}, false)
 		}
 	}
 	// The scrollbar owns the gutter column right of the box extent, so it never
@@ -565,6 +606,7 @@ func (m *Model) renderOutlinedRow(f *frame, x, y, width int, line contentLine, i
 	inner := ansi.Cut(line.text, 1, tw-1)
 	if line.action.Kind == "" || width < 5 {
 		f.text(x+1, y, width-2, inner, line.fg, line.bg)
+		f.paintLineAccents(x+1, y, width-2, contentLine{text: inner, lead: line.lead, leadFG: line.leadFG, tail: line.tail, tailFG: line.tailFG, sep: line.sep, sepFG: line.sepFG}, componentVisual{foreground: line.fg, background: line.bg}, false)
 		return
 	}
 	f.text(x+1, y, width-2, "", line.fg, line.bg)
@@ -587,7 +629,7 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 		}
 	}
 	if len(v.Attachments) > 0 {
-		f.button(m, x, y, w, fmt.Sprintf("%d context attachments · manage / remove", len(v.Attachments)), "attachments", action{Kind: "attachments"}, p.blue, p.input)
+		m.attachmentsButton(f, x, y, w, fmt.Sprintf("%d context attachments · manage / remove", len(v.Attachments)))
 		y++
 	}
 	if v.ContextError != "" {
@@ -684,13 +726,18 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	f.scrollbar(m, shell.Rect{X: f.detail.X + f.detail.W, Y: f.detail.Y, W: 1, H: f.detail.H}, "detail", len(rows), f.detail.H, offset, p.panel)
 }
 
-func (m *Model) terminalText(id string) string {
-	for _, t := range m.snapshot.Terminals {
-		if t.ID == id {
-			return fmt.Sprintf("Terminal · %s\n%s\nController: %s\n\n%s", t.State, t.ID, t.Controller, t.Output)
+// bottomTerminalBlocks is the bottom panel's session body: the right host's
+// status and pair rows, then one rule before the output. The panel has no gap
+// rows so its metadata costs no more rows than the former plain header.
+func (m *Model) bottomTerminalBlocks(id string) []surfaceBlock {
+	blocks := m.terminalBlocks(id)
+	out := blocks[:0:0]
+	for _, b := range blocks {
+		if b.kind != surfaceGapBlock {
+			out = append(out, b)
 		}
 	}
-	return "Terminal session unavailable · open a new session explicitly"
+	return out
 }
 
 // The bottom panel is a tab row of this thread's terminal sessions with an
@@ -721,11 +768,13 @@ func (m *Model) renderBottom(f *frame, r shell.Rect) {
 		return
 	}
 	f.bottomBody = shell.Rect{X: r.X + 2, Y: r.Y + 2, W: max(1, r.W-4), H: max(0, r.H-2)}
-	lines := strings.Split(ansi.Wrap(safe(m.terminalText(active.ID)), f.bottomBody.W, ""), "\n")
+	// One blank cell keeps right-aligned values off the scrollbar.
+	lines := m.surfaceRows(m.bottomTerminalBlocks(active.ID), max(1, f.bottomBody.W-1))
 	f.bottomMax = max(0, len(lines)-f.bottomBody.H)
 	offset := min(max(0, m.viewState().BottomScroll), f.bottomMax)
 	for i := 0; i < f.bottomBody.H && offset+i < len(lines); i++ {
-		f.text(f.bottomBody.X, f.bottomBody.Y+i, f.bottomBody.W, lines[offset+i], p.text, p.panel)
+		f.text(f.bottomBody.X, f.bottomBody.Y+i, f.bottomBody.W, "", p.text, p.panel)
+		m.paintSurfaceRow(f, f.bottomBody.X, f.bottomBody.Y+i, max(1, f.bottomBody.W-1), lines[offset+i])
 	}
 	f.hits = append(f.hits, hit{Rect: f.bottomBody, Action: action{}, Label: "Terminal output · wheel / arrows to scroll", Key: "bottom-body"})
 	f.scrollbar(m, shell.Rect{X: f.bottomBody.X + f.bottomBody.W, Y: f.bottomBody.Y, W: 1, H: f.bottomBody.H}, "bottom", len(lines), f.bottomBody.H, offset, p.panel)
@@ -764,6 +813,14 @@ func (m *Model) renderMenu(f *frame) {
 	}
 	visible := m.menuVisibleItems()
 	start := m.menuStart(visible)
+	// When any row carries an icon, every plain row reserves the same slot so
+	// labels start in one column.
+	iconSlot := 0
+	for _, item := range m.menu {
+		if item.Action.Kind == "open" && !item.Separator {
+			iconSlot = max(iconSlot, ansi.StringWidth(m.icon(item.Action.Value)))
+		}
+	}
 	for i := 0; i < visible && start+i < len(m.menu); i++ {
 		index := start + i
 		item := m.menu[index]
@@ -780,6 +837,15 @@ func (m *Model) renderMenu(f *frame) {
 				f.styledButton(r.X+w-6, y, 3, centered(m.icon("settings"), 3), key, action{Kind: "project-settings", ID: project.ID}, m.componentStyle(squareFill, state, p.muted, p.input))
 				f.hits[len(f.hits)-1].Label = "Project settings · " + project.Name
 			}
+		} else if item.Separator {
+			// A rule row in the line color: no hit, never focused.
+			// Same span as the heading and hint rules; it ends left of the
+			// scrollbar column at r.X+w-2.
+			panelRuleOn(f, m, r.X+2, y, w-4, p.input)
+		} else if item.Note != "" {
+			// A muted informational row: no hit, never focused, and it does
+			// not count toward the n/N position shown in the footer.
+			f.text(r.X+2, y, w-5, item.Note, p.muted, p.input)
 		} else if item.Action.Kind == "tab" {
 			f.tab(m, r.X+2, y, w-5, item.Label, item.Action.Value,
 				fmt.Sprintf("menu:%d", index), "menu-tab-close:"+item.Action.ID,
@@ -787,7 +853,10 @@ func (m *Model) renderMenu(f *frame) {
 		} else {
 			label := item.Label
 			if item.Action.Kind == "open" {
-				label = m.icon(item.Action.Value) + "  " + label
+				icon := m.icon(item.Action.Value)
+				label = icon + strings.Repeat(" ", iconSlot-ansi.StringWidth(icon)+2) + label
+			} else if iconSlot > 0 {
+				label = strings.Repeat(" ", iconSlot+2) + label
 			}
 			key := fmt.Sprintf("menu:%d", index)
 			state := m.controlState(index == m.menuIndex, key)
@@ -795,6 +864,10 @@ func (m *Model) renderMenu(f *frame) {
 			fg := p.text
 			if menuItemDestructive(item) {
 				fg = p.red
+			} else if item.Action.Kind == "path-noop" {
+				// Folder lookup status (looking, errors, no or more matches)
+				// is information, not an action.
+				fg = p.muted
 			}
 			v := m.componentStyle(squareFill, state, fg, p.input)
 			if name, value, ok := menuPair(item, w-5); ok {
@@ -806,11 +879,28 @@ func (m *Model) renderMenu(f *frame) {
 	}
 	f.scrollbar(m, shell.Rect{X: r.X + w - 2, Y: top + extra, W: 1, H: visible}, "menu", len(m.menu), visible, start, p.input)
 	panelRuleOn(f, m, r.X+2, r.Y+h-3, w-4, p.input)
-	help := fmt.Sprintf("↑ ↓  Enter  Esc  %d/%d", m.menuIndex+1, len(m.menu))
+	pos, total := menuPosition(m.menu, m.menuIndex)
+	help := fmt.Sprintf("↑ ↓  Enter  Esc  %d/%d", pos, total)
 	if m.projectMode == "add" || m.projectMode == "project-root" {
 		help = "↑ ↓  Tab browse  Enter choose  Esc"
 	}
 	f.text(r.X+2, r.Y+h-2, w-4, help, p.muted, p.input)
+}
+
+// menuPosition returns the 1-based position of index among selectable
+// (non-separator, non-note) rows and the number of selectable rows.
+func menuPosition(items []menuItem, index int) (int, int) {
+	pos, total := 0, 0
+	for i, item := range items {
+		if !item.selectable() {
+			continue
+		}
+		total++
+		if i <= index {
+			pos = total
+		}
+	}
+	return pos, total
 }
 
 // menuItemDestructive reports items whose action discards or deletes work,

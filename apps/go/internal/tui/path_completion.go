@@ -296,7 +296,7 @@ func (m *Model) selectMention(index int) tea.Cmd {
 	entry := entries[index]
 	if !entry.IsDir {
 		if m.state.Edit != nil {
-			return m.showNotice("Save or cancel the queued edit before attaching files")
+			return m.showNoticeAs(noticeUnavailable, "Save or cancel the queued edit before attaching files")
 		}
 		duplicate := false
 		for _, attachment := range m.viewState().Attachments {
@@ -305,7 +305,7 @@ func (m *Model) selectMention(index int) tea.Cmd {
 			}
 		}
 		if !duplicate && len(m.viewState().Attachments) >= 8 {
-			return m.showNotice("Attachment limit: 8")
+			return m.showNoticeAs(noticeUnavailable, "Attachment limit: 8")
 		}
 	}
 	replacement := "@" + entry.Path
@@ -321,7 +321,7 @@ func (m *Model) selectMention(index int) tea.Cmd {
 	value := []rune(m.prompt.Value())
 	next := string(value[:mention.start]) + replacement + string(value[mention.end:])
 	if len([]rune(next)) > m.prompt.CharLimit {
-		return m.showNotice("File reference exceeds the prompt limit")
+		return m.showNoticeAs(noticeUnavailable, "File reference exceeds the prompt limit")
 	}
 	m.prompt.SetValue(next)
 	inputSetCursor(&m.prompt, mention.start+len([]rune(replacement)))
@@ -348,8 +348,20 @@ func (m *Model) mentionRect(f frame) shell.Rect {
 		return shell.Rect{}
 	}
 	n := max(1, min(6, len(m.mentionEntries())))
-	h := min(n+4, max(0, f.prompt.Y-1))
-	return shell.Rect{X: f.prompt.X - 1, Y: f.prompt.Y - 1 - h, W: f.prompt.W + 2, H: h}
+	// The popup sits directly above the composer outline and shares its left
+	// and right edges: the outline is inset-wide beside the prompt text and
+	// its top border is two rows above it (border and padding).
+	inset := 0
+	for i := 2; i > 0; i-- {
+		if composerInset(f.prompt.W+2*i) == i {
+			inset = i
+			break
+		}
+	}
+	top := f.prompt.Y - 2
+	// Outline, heading, rule, entries, rule and hint row.
+	h := min(n+6, max(0, top))
+	return shell.Rect{X: f.prompt.X - inset, Y: top - h, W: f.prompt.W + 2*inset, H: h}
 }
 
 func (m *Model) renderMentions(f *frame) {
@@ -370,10 +382,20 @@ func (m *Model) renderMentions(f *frame) {
 	// The whole popup, including padding, consumes pointer activation.
 	f.hits = append(f.hits, hit{Rect: r, Action: action{Kind: "mention-background"}, Label: "Project files", Key: "mention-background"})
 	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, componentState{Focused: true}, p.text, p.input), p.canvas)
-	f.text(r.X+1, r.Y+1, r.W-5, "Project files · @", p.violet, p.input)
+	// Panel menu layout: an uppercase static heading over a rule, and a rule
+	// above the muted hint row. Short popups drop the rules before entries.
+	ruled := r.H >= 7
+	top, visible := r.Y+2, r.H-4
+	if ruled {
+		top, visible = r.Y+3, r.H-6
+		panelRuleOn(f, m, r.X+2, r.Y+2, r.W-4, p.input)
+		panelRuleOn(f, m, r.X+2, r.Y+r.H-3, r.W-4, p.input)
+	}
+	// Rows start after a blank gutter cell, as in renderMenu, so the selected
+	// row takes the focus mark there instead of an underline.
+	panelSectionHeadingOn(f, m, r.X+2, r.Y+1, r.W-7, "Project files", p.input)
 	f.iconButton(m, r.X+r.W-4, r.Y+1, 3, centered(m.icon("close"), 3), "mention-dismiss", action{Kind: "mention-dismiss"}, p.muted, p.input)
 	entries := m.mentionEntries()
-	visible := r.H - 4
 	start := max(0, min(m.mentionIndex-visible+1, len(entries)-visible))
 	if len(entries) == 0 {
 		text := "No matching files or folders"
@@ -383,7 +405,7 @@ func (m *Model) renderMentions(f *frame) {
 		} else if m.paths.err != "" {
 			text = m.paths.err
 		}
-		f.text(r.X+1, r.Y+2, r.W-2, text, p.muted, p.input)
+		f.text(r.X+2, top, r.W-4, text, p.muted, p.input)
 	}
 	for i := 0; i < visible && start+i < len(entries); i++ {
 		index := start + i
@@ -395,11 +417,11 @@ func (m *Model) renderMentions(f *frame) {
 		key := fmt.Sprintf("mention:%d", index)
 		state := m.controlState(index == m.mentionIndex, key)
 		state.Focused = index == m.mentionIndex
-		f.styledButton(r.X+1, r.Y+2+i, r.W-2, label, key, action{Kind: "mention-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
+		f.styledButton(r.X+2, top+i, r.W-4, label, key, action{Kind: "mention-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
 	}
 	help := "↑ ↓  Tab/Enter choose · Esc close"
 	if m.paths.result.Truncated {
 		help = "More matches · type to narrow"
 	}
-	f.text(r.X+1, r.Y+r.H-2, r.W-2, help, p.muted, p.input)
+	f.text(r.X+2, r.Y+r.H-2, r.W-4, help, p.muted, p.input)
 }

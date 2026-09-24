@@ -25,7 +25,7 @@ func (m *Model) submitApproval(a action) tea.Cmd {
 		m.status = message
 		m.setRequestFeedback(m.state.Active, r.ID, r.Revision, message, false)
 		m.configureInputs()
-		return m.showNotice(message)
+		return m.showNoticeAs(noticeUnavailable, message)
 	}
 	if m.thread().NeedsResume {
 		return reject("Resume this thread first (F4 → Resume).")

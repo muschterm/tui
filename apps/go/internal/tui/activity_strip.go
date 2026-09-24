@@ -210,10 +210,7 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 		} else {
 			f.text(x, y, w, "   "+s.Label, p.text, bg)
 		}
-		circle := "●"
-		if m.plainIcons {
-			circle = "o"
-		}
+		circle := m.activityMark(s)
 		if s.Dismissible && w > 1 && !statusOnlyActivity(c.kind) {
 			if engaged {
 				circle = m.icon("close")
@@ -227,4 +224,26 @@ func (m *Model) renderActivityStrip(f *frame, r shell.Rect) int {
 		}
 	}
 	return r.Y + height
+}
+
+// activityMark is the summary's leading glyph in the panel status vocabulary.
+// Active work and all-completed keep a solid circle (blue pulse, solid green);
+// every other state keeps its distinct panelStatusMark glyph so failure,
+// interruption, waiting and unknown never read as success.
+func (m *Model) activityMark(s activitySummary) string {
+	switch {
+	case s.State == "completed":
+		if m.plainIcons {
+			return statusGlyph(m, "completed")
+		}
+		return "●"
+	case s.Working && m.connected:
+		return statusGlyph(m, "active")
+	case s.Working:
+		// A working report from a disconnected server is unknown, not active.
+		return statusGlyph(m, "disconnected")
+	case s.State == "paused":
+		return statusGlyph(m, "waiting")
+	}
+	return statusGlyph(m, s.State)
 }

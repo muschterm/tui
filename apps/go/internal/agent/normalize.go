@@ -268,7 +268,27 @@ func applyTool(t *protocol.Thread, id string, patch toolPatch) {
 	a.Role = role
 	var detail toolDetail
 	if a.Detail != "" {
-		_ = json.Unmarshal([]byte(a.Detail), &detail)
+		if err := json.Unmarshal([]byte(a.Detail), &detail); err != nil && a.Tool != nil {
+			// A truncated Detail no longer parses; recover the explicit fields
+			// from the structured copy so an update cannot erase them.
+			detail = toolDetail{Kind: a.Tool.Kind, Status: a.Tool.Status, Locations: a.Tool.Locations, Content: a.Tool.Content}
+		}
+	}
+	// Detail is compact once Tool exists: content lives only in Tool.
+	if a.Tool != nil && detail.Content == nil {
+		detail.Content = a.Tool.Content
+	}
+	// Raw input/output missing from Detail (recovered above, or dropped by an
+	// earlier recovery) survive as Tool's display summaries: restored
+	// verbatim, never re-encoded or re-truncated.
+	var keptInput, keptOutput string
+	if a.Tool != nil {
+		if detail.RawInput == nil {
+			keptInput = a.Tool.RawInput
+		}
+		if detail.RawOutput == nil {
+			keptOutput = a.Tool.RawOutput
+		}
 	}
 	if patch.Title != nil && *patch.Title != "" {
 		a.Title = label(*patch.Title)
@@ -300,11 +320,147 @@ func applyTool(t *protocol.Thread, id string, patch toolPatch) {
 		detail.RawOutput = encode(patch.RawOutput)
 	}
 	a.Text = summarizeTool(a.Title, detail)
-	encoded, err := json.Marshal(detail)
+	a.Tool = structuredTool(detail, keptInput, keptOutput)
+	// Tool is the authoritative copy of raw input/output and content; the
+	// legacy Detail keeps only the small fields so a row is not retained twice.
+	encoded, err := json.Marshal(toolDetail{Kind: detail.Kind, Status: detail.Status, Locations: a.Tool.Locations, Extra: detail.Extra})
 	if err != nil {
 		encoded = []byte(`{"error":"tool detail could not be encoded"}`)
 	}
 	a.Detail = Truncate(string(encoded), MaxActivityDeta)
+}
+
+// maxToolEntries bounds the locations and content summaries retained in the
+// structured tool payload.
+const maxToolEntries = 64
+
+// truncationMarker is what Truncate appends; budgets reserve room for it so a
+// truncated field never exceeds its share.
+const truncationMarker = "\n… truncated at the retention limit …"
+
+// structuredTool copies the retained detail into explicit fields. Raw input,
+// raw output and content share one MaxActivityDeta budget, so the structured
+// copy never retains more than one Detail's worth of payload; each field is
+// truncated independently, so cutting one never invalidates the others.
+// keptInput and keptOutput are display summaries retained from an earlier
+// update for fields this detail omits; they count against the same budget
+// and stay verbatim unless they exceed their share.
+func structuredTool(detail toolDetail, keptInput, keptOutput string) *protocol.ToolDetail {
+	input, output := Sanitize(string(detail.RawInput)), Sanitize(string(detail.RawOutput))
+	if detail.RawInput == nil {
+		input = keptInput
+	}
+	if detail.RawOutput == nil {
+		output = keptOutput
+	}
+	content := capEntries(detail.Content)
+	contentSize := 0
+	for _, entry := range content {
+		contentSize += len(entry)
+	}
+	shares := toolBudget(MaxActivityDeta, len(input), len(output), contentSize)
+	var locations []string
+	if len(detail.Locations) > 0 {
+		locations = capEntries(detail.Locations)
+	}
+	return &protocol.ToolDetail{Kind: detail.Kind, Status: detail.Status, Locations: locations,
+		Content: boundEntries(content, shares[2]), RawInput: bound(input, shares[0]), RawOutput: bound(output, shares[1])}
+}
+
+// toolBudget splits total fairly among fields of the given sizes: a field
+// needing less than an equal share keeps its size and leaves the rest to the
+// others.
+func toolBudget(total int, sizes ...int) []int {
+	shares := make([]int, len(sizes))
+	pending := make([]bool, len(sizes))
+	left, count := total, len(sizes)
+	for i := range pending {
+		pending[i] = true
+	}
+	for count > 0 {
+		settled := false
+		for i, size := range sizes {
+			if pending[i] && size <= left/count {
+				shares[i], pending[i] = size, false
+				left -= size
+				count--
+				settled = true
+			}
+		}
+		if !settled {
+			for i := range sizes {
+				if pending[i] {
+					shares[i] = left / count
+				}
+			}
+			break
+		}
+	}
+	return shares
+}
+
+// bound truncates text to at most limit bytes including the marker.
+func bound(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	// A retained summary truncated earlier carries one marker already.
+	text = strings.TrimSuffix(text, truncationMarker)
+	return Truncate(text, max(0, limit-len(truncationMarker)))
+}
+
+// truncationEntry is the standalone entry that marks dropped content or
+// location entries; it is the retention marker without its leading newline.
+var truncationEntry = strings.TrimPrefix(truncationMarker, "\n")
+
+// capEntries keeps at most maxToolEntries entries. When more were supplied it
+// keeps maxToolEntries-1 of them and ends with truncationEntry, so the count
+// cap holds and the loss stays visible.
+func capEntries(entries []string) []string {
+	if len(entries) <= maxToolEntries {
+		return append([]string(nil), entries...)
+	}
+	return append(append([]string(nil), entries[:maxToolEntries-1]...), truncationEntry)
+}
+
+// boundEntries keeps content entries within limit bytes in total. When they
+// do not all fit, room is reserved for the marker: the entry that crosses the
+// remaining room is truncated with the marker, or, when no useful part of it
+// fits, the marker follows as its own entry. Later entries are dropped. With
+// no room even for the marker, entries are dropped without it.
+func boundEntries(entries []string, limit int) []string {
+	total := 0
+	for _, entry := range entries {
+		total += len(entry)
+	}
+	if total <= limit {
+		return entries
+	}
+	room := limit - len(truncationMarker)
+	if room < 0 {
+		var out []string
+		for _, entry := range entries {
+			if len(entry) > limit {
+				break
+			}
+			out = append(out, entry)
+			limit -= len(entry)
+		}
+		return out
+	}
+	var out []string
+	for _, entry := range entries {
+		if len(entry) <= room {
+			out = append(out, entry)
+			room -= len(entry)
+			continue
+		}
+		if room > 0 {
+			return append(out, Truncate(strings.TrimSuffix(entry, truncationMarker), room))
+		}
+		break
+	}
+	return append(out, truncationEntry)
 }
 
 func encode(value any) json.RawMessage {

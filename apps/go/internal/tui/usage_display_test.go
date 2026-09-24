@@ -18,7 +18,7 @@ func TestUsageCompactDisplayAndModelCompatibility(t *testing.T) {
 		t.Fatal(lines)
 	}
 	th.Usage.Model = "another model"
-	if got := m.usageCompactLabel(); !strings.HasPrefix(got, "Ctx —") {
+	if got := m.usageCompactLabel(); !strings.HasPrefix(got, "Ctx ?") {
 		t.Fatal("mixed models", got)
 	}
 	if !strings.Contains(strings.Join(m.usageLines(), "\n"), "previous model/session") {
@@ -28,7 +28,7 @@ func TestUsageCompactDisplayAndModelCompatibility(t *testing.T) {
 
 func TestUsageCompactMissingCostDoesNotShowFakePrice(t *testing.T) {
 	m := testModel()
-	if got := m.usageCompactLabel(); got != "Ctx —" {
+	if got := m.usageCompactLabel(); got != "Ctx ?" {
 		t.Fatal(got)
 	}
 	m.snapshot.Threads[0].Usage = &protocol.Usage{Used: 0, Size: 100}

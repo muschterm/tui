@@ -35,6 +35,7 @@ func (m *Model) scrollTo(target string, offset int, f frame) {
 		if bar, ok := f.scrollbars[target]; ok {
 			m.menuOffset = min(bar.Bar.MaxOffset, max(0, offset))
 			m.menuIndex = min(m.menuOffset+bar.Bar.Viewport-1, max(m.menuOffset, m.menuIndex))
+			m.menuIndex = m.menuNearestSelectable(m.menuIndex)
 		}
 	case "prompt":
 		m.promptView.ScrollTo(&m.prompt, m.promptMetrics.Total, offset)

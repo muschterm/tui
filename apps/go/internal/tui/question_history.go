@@ -13,6 +13,8 @@ const questionHistoryCompactRows = 12
 
 type questionHistoryRow struct {
 	text, fg string
+	// lead is a leading status mark inside text, painted in leadFG.
+	lead, leadFG string
 }
 
 // questionHistoryFallbackGroup is a submitted answer without a durable
@@ -141,11 +143,13 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 	contentWidth := max(1, maxBox-4)
 
 	rows := m.questionHistoryRows(request, positionUnknown)
+	rows[0] = questionHistoryFitStatus(rows[0], contentWidth)
 	compact := questionHistoryVisualRows(rows, contentWidth) > questionHistoryCompactRows
 	expanded := m.viewState().QuestionHistoryExpanded[request.ID]
 	displayed := rows
 	if compact && !expanded {
 		displayed = m.questionHistoryPreviewRows(request, contentWidth, positionUnknown)
+		displayed[0] = questionHistoryFitStatus(displayed[0], contentWidth)
 	}
 	toggle := ""
 	if compact {
@@ -167,17 +171,21 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 	appendBorder := func(left, middle, right string, fg, bg string) {
 		lines = append(lines, contentLine{text: left + strings.Repeat(middle, boxWidth-2) + right, fg: fg, bg: bg, outset: true, boxW: boxWidth})
 	}
-	appendRow := func(text, fg string) {
-		for _, wrapped := range questionHistoryWrap(text, contentWidth) {
-			lines = append(lines, contentLine{
+	appendRow := func(row questionHistoryRow) {
+		for i, wrapped := range questionHistoryWrap(row.text, contentWidth) {
+			line := contentLine{
 				text: b.Left + " " + fit(wrapped, contentWidth) + " " + b.Right,
-				fg:   fg, bg: p.panel, outset: true, boxW: boxWidth, border: outline,
-			})
+				fg:   row.fg, bg: p.panel, outset: true, boxW: boxWidth, border: outline,
+			}
+			if i == 0 {
+				line.lead, line.leadFG = row.lead, row.leadFG
+			}
+			lines = append(lines, line)
 		}
 	}
 	appendBorder(b.TopLeft, b.Top, b.TopRight, outline, p.canvas)
 	for _, row := range displayed {
-		appendRow(row.text, row.fg)
+		appendRow(row)
 	}
 	if compact {
 		lines = append(lines, contentLine{
@@ -192,12 +200,7 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 
 func (m *Model) questionHistoryRows(request protocol.Request, positionUnknown bool) []questionHistoryRow {
 	p := m.colors()
-	status, confirmed := questionHistoryStatus(request)
-	if positionUnknown {
-		status += " · earlier position unavailable"
-	}
-	statusColor := questionHistoryStatusColor(request, confirmed, p)
-	rows := []questionHistoryRow{{text: status, fg: statusColor}}
+	rows := []questionHistoryRow{m.questionHistoryStatusRow(request, positionUnknown)}
 	answers := questionHistoryAnswers(request)
 	for i, question := range request.Questions {
 		if i > 0 {
@@ -258,12 +261,7 @@ func (m *Model) questionHistoryRows(request protocol.Request, positionUnknown bo
 
 func (m *Model) questionHistoryPreviewRows(request protocol.Request, width int, positionUnknown bool) []questionHistoryRow {
 	p := m.colors()
-	status, confirmed := questionHistoryStatus(request)
-	if positionUnknown {
-		status += " · earlier position unavailable"
-	}
-	statusColor := questionHistoryStatusColor(request, confirmed, p)
-	rows := []questionHistoryRow{{text: status, fg: statusColor}}
+	rows := []questionHistoryRow{m.questionHistoryStatusRow(request, positionUnknown)}
 	answers := questionHistoryAnswers(request)
 	hiddenOptions := 0
 	for i, question := range request.Questions {
@@ -343,23 +341,65 @@ func questionHistoryStatus(request protocol.Request) (string, bool) {
 	}
 }
 
-func questionHistoryStatusColor(request protocol.Request, confirmed bool, p palette) string {
+// questionHistoryStatusRow is the card title: a panel status mark carrying
+// the delivery color, then the static outcome as an uppercase muted heading
+// and any delivery sub-status in sentence case. Only a confirmed answer
+// takes the green check.
+func (m *Model) questionHistoryStatusRow(request protocol.Request, positionUnknown bool) questionHistoryRow {
+	status, confirmed := questionHistoryStatus(request)
+	outcome, detail, split := strings.Cut(status, " · ")
+	title := strings.ToUpper(outcome)
+	if split {
+		title += " · " + detail
+	}
+	if positionUnknown {
+		title += " · earlier position unavailable"
+	}
+	state := questionHistoryMarkState(request, confirmed)
+	glyph, ink := panelStatusMark(m, state)
+	fg := m.colors().muted
+	switch state {
+	case "failed", "stale", "cancelled":
+		// Failed or uncertain delivery keeps its emphasis in the words too, so
+		// it does not rest on one colored cell in 16-color or NO_COLOR.
+		fg = ink
+	}
+	return questionHistoryRow{text: glyph + " " + title, fg: fg, lead: glyph, leadFG: ink}
+}
+
+// questionHistoryFitStatus keeps the card height the mark-free title would
+// have: when the leading mark would wrap the title onto another row at the
+// card's widest content width, the title drops the mark and takes its ink.
+func questionHistoryFitStatus(row questionHistoryRow, width int) questionHistoryRow {
+	bare, ok := strings.CutPrefix(row.text, row.lead+" ")
+	if row.lead == "" || !ok || len(questionHistoryWrap(row.text, width)) <= len(questionHistoryWrap(bare, width)) {
+		return row
+	}
+	return questionHistoryRow{text: bare, fg: row.leadFG}
+}
+
+// questionHistoryMarkState maps a recorded outcome to a panelStatusMark
+// state: a confirmed answer is completed; a confirmed decline or cancel is
+// settled but neutral; awaiting confirmation is pending; not delivered is
+// failed; uncertain or cancelled delivery warns; anything else is unknown.
+func questionHistoryMarkState(request protocol.Request, confirmed bool) string {
 	if confirmed && request.Action != "" {
-		// A confirmed decline or cancel is settled but not an answer: neutral.
-		return p.muted
+		return ""
 	}
 	if confirmed {
-		return p.green
+		return "completed"
 	}
 	switch request.Delivery {
 	case "acp-accepted", "acp-unconfirmed", "acp-delivered":
-		return p.muted
+		return "pending"
 	case "acp-undeliverable":
-		return p.red
-	default:
-		// Uncertain, cancelled and unknown outcomes remain visible as warnings.
-		return p.gold
+		return "failed"
+	case "acp-uncertain":
+		return "stale"
+	case "acp-cancelled":
+		return "cancelled"
 	}
+	return "unknown"
 }
 
 func questionHistoryPrompt(question protocol.Question) string {

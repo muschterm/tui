@@ -62,7 +62,7 @@ type questionTabPlan struct {
 // Each tab is " <label> <mark> " with its end caps: the marker cell is always
 // reserved, so answering never moves the label.
 func (m *Model) questionTabPlan(req protocol.Request, r shell.Rect) questionTabPlan {
-	plan := questionTabPlan{active: m.questionIndex(req), marker: max(1, ansi.StringWidth(m.icon("check")))}
+	plan := questionTabPlan{active: m.questionIndex(req), marker: max(1, ansi.StringWidth(answeredMark(m)))}
 	// Fixed empty slots prevent tab labels from occupying a hidden arrow's
 	// position. One cell separates each arrow from the tab strip.
 	plan.x, plan.end = r.X+questionArrowWidth+1, r.X+r.W-questionArrowWidth-1
@@ -98,11 +98,17 @@ func (m *Model) renderQuestionTabs(f *frame, r shell.Rect, req protocol.Request)
 	for _, slot := range plan.slots {
 		mark, status := strings.Repeat(" ", plan.marker), ""
 		if plan.answered[slot.index] {
-			mark, status = fit(m.icon("check"), plan.marker), " · answered"
+			mark, status = fit(answeredMark(m), plan.marker), " · answered"
 		}
 		label := fit(ansi.Truncate(plan.labels[slot.index], max(1, slot.width-3-plan.marker), "…"), max(1, slot.width-3-plan.marker)) + " " + mark
 		key := fmt.Sprint("question-page:", slot.index)
-		m.questionTab(f, x, r.Y, slot.width, label, key, action{Kind: "question-index", Index: slot.index}, slot.index == plan.active)
+		v := m.questionTab(f, x, r.Y, slot.width, label, key, action{Kind: "question-index", Index: slot.index}, slot.index == plan.active)
+		if plan.answered[slot.index] && slot.width >= 3+plan.marker {
+			// Recolor only the reserved marker cell: the label never moves.
+			// A local draft is not a confirmed answer: the mark keeps the tab's
+			// own ink rather than success green.
+			f.styledText(x+slot.width-1-plan.marker, r.Y, plan.marker, mark, componentVisual{foreground: v.foreground, background: v.background, bold: v.bold}, false)
+		}
 		f.hits[len(f.hits)-1].Label = fmt.Sprintf("Question %d of %d · %s%s", slot.index+1, len(plan.labels), plan.labels[slot.index], status)
 		x += slot.width + 1
 	}
@@ -118,12 +124,19 @@ func (m *Model) renderQuestionTabs(f *frame, r shell.Rect, req protocol.Request)
 
 // questionTab paints a left-aligned tab label (label, gap, marker cell) so
 // its position is independent of the answered marker.
-func (m *Model) questionTab(f *frame, x, y, width int, label, key string, a action, selected bool) {
+func (m *Model) questionTab(f *frame, x, y, width int, label, key string, a action, selected bool) componentVisual {
 	if width < 3 {
-		return
+		return componentVisual{}
 	}
 	p := m.colors()
 	v := m.componentStyle(squareFill, m.controlState(selected, key), p.text, p.input)
 	f.compactControl(m, x, y, width, fit(label, width-2), v)
 	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: a, Label: label, Key: key})
+	return v
+}
+
+// answeredMark is the panel vocabulary's completed glyph (✓, ASCII "+"),
+// painted in the tab's ink because a draft answer is not yet confirmed.
+func answeredMark(m *Model) string {
+	return statusGlyph(m, "answered")
 }

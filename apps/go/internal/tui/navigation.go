@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
@@ -112,10 +113,48 @@ func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 func (m *Model) renderEmptyThreads(f *frame, r shell.Rect) {
 	p := m.colors()
 	x, y, w := r.X+2, r.Y+2, max(1, r.W-4)
-	f.text(x, y, w, "No thread selected", p.text, p.canvas)
-	f.button(m, x, y+2, w, "New thread", "empty-new", action{Kind: "thread-create"}, p.blue, p.canvas)
-	f.button(m, x, y+4, w, "Reopen a closed thread", "empty-closed", action{Kind: "closed-threads"}, p.blue, p.canvas)
-	f.button(m, x, y+6, w, "Add project", "empty-project", action{Kind: "project-add"}, p.blue, p.canvas)
+	panelSectionHeading(f, m, x, y, w, "No thread selected")
+	panelRule(f, m, x, y+1, w)
+	actions := []struct{ label, key, kind string }{
+		{"New thread", "empty-new", "thread-create"},
+		{"Reopen a closed thread", "empty-closed", "closed-threads"},
+		{"Add project", "empty-project", "project-add"},
+	}
+	// Buttons share one width that fits the longest label, so they read as
+	// buttons rather than full-width rows.
+	longest := 0
+	for _, a := range actions {
+		longest = max(longest, ansi.StringWidth(a.label))
+	}
+	bw := min(w, longest+4)
+	// Bands need three rows each plus a gap; the one-row `[ Label ]` fallback
+	// keeps the original two-row pitch.
+	banded := panelBandsSupported(m) && y+3+4*len(actions)-1 <= r.Y+r.H
+	for i, a := range actions {
+		act := action{Kind: a.kind}
+		v := m.componentStyle(squareFill, m.controlState(false, a.key), p.blue, p.input)
+		v.base = p.canvas
+		if !banded {
+			row := y + 3 + 2*i
+			if row >= r.Y+r.H {
+				return
+			}
+			f.compactControl(m, x, row, bw, a.label, v)
+			f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: row, W: bw, H: 1}, Action: act, Label: a.label, Key: a.key})
+			continue
+		}
+		top := y + 3 + 4*i
+		for band := -1; band <= 1; band++ {
+			row := top + band + 1
+			if !f.paintPanelBandEdge(x, row, bw, band, 3, v) {
+				f.componentText(x, row, bw, " "+a.label, v)
+				if v.focused {
+					f.focusMark(x-1, row, v, v.base)
+				}
+			}
+			f.registerPanelBandHit(r, row, band, 3, false, hit{Rect: shell.Rect{X: x, W: bw}, Action: act, Label: a.label, Key: a.key})
+		}
+	}
 }
 
 func (m *Model) threadByID(id string) (protocol.Thread, bool) {

@@ -80,6 +80,13 @@ type menuItem struct {
 	// pair row. Free-form labels are never split, since user text such as a
 	// thread title may contain ": ".
 	PairLabel, PairValue string
+	// Separator is a non-selectable rule row: it has no hit rectangle and
+	// keyboard and wheel navigation skip it.
+	Separator bool
+	// Note is a non-selectable muted informational row: it has no hit
+	// rectangle, is skipped by keyboard/wheel navigation, and does not count
+	// toward the n/N position shown in the menu footer.
+	Note string
 }
 
 // pairMenuItem is a label/value fact row; Label keeps "Label: value" for
@@ -764,7 +771,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.markDirty()
 			m.configureInputs()
-			return m, m.showNotice(m.status)
+			return m, m.showNoticeAs(noticeError, m.status)
 		}
 		if msg.err != nil {
 			m.status = safe(msg.err.Error())
@@ -811,16 +818,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.command.Kind == "queue.steer" {
 				message := m.status
 				m.status = ""
-				return m, m.showNotice("Steer: " + message)
+				return m, m.showNoticeAs(noticeError, "Steer: "+message)
 			}
 			if msg.command.Kind == "settings.update" || msg.command.Kind == "project.update" || msg.command.Kind == "project.remove" || msg.command.Kind == "thread.create" || msg.command.Kind == "thread.start" || msg.command.Kind == "prompt.reopen-send" {
-				return m, m.showNotice(m.status)
+				return m, m.showNoticeAs(noticeError, m.status)
 			}
 			return m, nil
 		}
 		m.busy = nil
 		m.state.Pending = nil
-		m.status = "Accepted · " + msg.receipt.State
+		m.status = "Accepted"
+		if msg.receipt.State != "" {
+			m.status += " · " + msg.receipt.State
+		}
 		if msg.command.Kind == "thread.start" {
 			if v := m.state.DraftThreads[msg.command.ProjectID]; v != nil {
 				v.ContextError = ""
@@ -831,7 +841,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.command.Kind == "queue.steer" {
-			cmd = m.showNotice("Message steered into the active turn")
+			// Only a confirmed delivery is done; an accepted steer is still pending.
+			severity, text := noticeActive, "Steer accepted · awaiting delivery"
+			if steerDelivered(msg.receipt.State) {
+				severity, text = noticeDone, "Message steered into the active turn"
+			}
+			cmd = m.showNoticeAs(severity, text)
 		}
 		if msg.command.Kind == "request.answer" {
 			m.clearRequestFeedback(msg.command.ThreadID, msg.command.TargetID, msg.command.Revision, false)
@@ -939,7 +954,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		if m.terminalTooSmall() || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
 			// Nothing behind a modal, the resize notice or settings accepts input.
-			cmd = m.showNotice("Paste ignored · no visible input")
+			cmd = m.showNoticeAs(noticeUnavailable, "Paste ignored · no visible input")
 		} else if m.projectMode != "" {
 			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: singleLine(msg.Content)})
 			m.menuIndex = 0
@@ -1036,15 +1051,18 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 				m.menu = nil
 			}
 		case "up", "shift+tab":
-			m.menuIndex = (m.menuIndex + len(m.menu) - 1) % len(m.menu)
+			m.menuIndex = m.menuStep(m.menuIndex, -1, true)
 		case "down", "tab":
-			m.menuIndex = (m.menuIndex + 1) % len(m.menu)
+			m.menuIndex = m.menuStep(m.menuIndex, 1, true)
 		case "delete", "backspace":
 			if item := m.menu[m.menuIndex]; item.Action.Kind == "tab" {
 				m.menu = nil
 				return m.activate(action{Kind: "close", ID: item.Action.ID})
 			}
 		case "enter":
+			if m.menu[m.menuIndex].Separator {
+				return nil
+			}
 			if m.contextMenu != nil {
 				return m.selectContextMenuItem(m.menuIndex)
 			}
@@ -1259,7 +1277,7 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		target := m.wheelTarget(f, p.X, p.Y)
 		if target == "menu" {
-			m.menuIndex = min(len(m.menu)-1, max(0, m.menuIndex+d))
+			m.menuIndex = m.menuStep(m.menuIndex, d, false)
 		} else if bar, ok := f.scrollbars[target]; ok {
 			m.scrollTo(target, bar.Bar.Offset+d, f)
 		} else if target != "" {

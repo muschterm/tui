@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -34,6 +33,9 @@ type surfaceBlock struct {
 	label, value, glyph string
 	ink                 string
 	bold                bool
+	// note is a muted qualifier of a pair's value, shown after it as
+	// "value · note" when that fits, else right-aligned below the value.
+	note string
 }
 
 type surfaceRowKind int
@@ -55,15 +57,14 @@ type surfaceRow struct {
 	glyph, ink  string
 	indent      int
 	bold        bool
+	note        string // muted suffix after a pair row's value
 }
 
-// detailPair matches the "Key: value" lines retained activity details use.
-var detailPair = regexp.MustCompile(`^([A-Z][A-Za-z0-9 /_-]{0,23}): (.+)$`)
-
-// detailBlocks turns retained detail text into pairs for its "Key: value"
-// lines and muted text for everything else. Blank lines keep the structure
-// of tool output and diffs; runs of them collapse to one, and leading or
-// trailing ones are dropped.
+// detailBlocks renders retained detail as muted text lines. Activity detail
+// is free-form server/tool text (tool details arrive as encoded JSON), so no
+// line is ever split into a label/value pair: a "Note: x" or "Error: x" line
+// stays text. Blank lines keep the structure of tool output and diffs; runs
+// of them collapse to one, and leading or trailing ones are dropped.
 func detailBlocks(m *Model, detail string) []surfaceBlock {
 	var out []surfaceBlock
 	blank := false
@@ -75,10 +76,6 @@ func detailBlocks(m *Model, detail string) []surfaceBlock {
 		if blank {
 			out = append(out, surfaceBlock{kind: surfaceTextBlock, value: ""})
 			blank = false
-		}
-		if g := detailPair.FindStringSubmatch(line); g != nil {
-			out = append(out, surfaceBlock{kind: surfacePairBlock, label: g[1], value: g[2]})
-			continue
 		}
 		out = append(out, surfaceBlock{kind: surfaceTextBlock, value: line, ink: m.colors().muted})
 	}
@@ -137,7 +134,11 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 			}
 			entry := []surfaceBlock{statusBlock(m, c.Name, c.State, true)}
 			if c.ParentID != "" {
-				entry = append(entry, surfaceBlock{kind: surfacePairBlock, label: "Parent", value: c.ParentID})
+				parent := c.ParentID
+				if thread, ok := m.threadByID(parent); ok && thread.Title != "" {
+					parent = thread.Title
+				}
+				entry = append(entry, surfaceBlock{kind: surfacePairBlock, label: "Parent", value: parent})
 			}
 			for _, a := range c.Activity {
 				entry = append(entry, gap)
@@ -160,9 +161,10 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 				b = append(b, surfaceBlock{kind: surfaceTextBlock, value: c, ink: p.text})
 			}
 			b = append(b, gap, surfaceBlock{kind: surfaceRuleBlock}, gap, heading("Terminal", ""), gap,
-				surfaceBlock{kind: surfacePairBlock, label: "Keyboard", value: m.keyboard},
-				pairOrText(m, m.colorDiagnostics()),
-				surfaceBlock{kind: surfacePairBlock, label: "Graphics", value: "not probed; text fallback"})
+				surfaceBlock{kind: surfacePairBlock, label: "Keyboard", value: m.keyboard})
+			b = append(b, colorBlocks(m)...)
+			b = append(b, surfaceBlock{kind: surfacePairBlock, label: "Graphics", value: "text fallback"},
+				surfaceBlock{kind: surfacePairBlock, label: "Image support", value: "not probed"})
 			return b
 		}
 		var entries []surfaceBlock
@@ -194,10 +196,12 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 		}
 		b = append(append(b, heading("Activity", ""), gap), entries...)
 	case "terminal":
-		return m.terminalBlocks(s.ID)
+		// The right host opens every surface with its section heading; the
+		// bottom panel reuses terminalBlocks without it (it has no title row).
+		return append([]surfaceBlock{heading("Terminal", ""), gap}, m.terminalBlocks(s.ID)...)
 	case "files":
 		b = append(b, heading("Files", ""), gap,
-			surfaceBlock{kind: surfacePairBlock, label: "Checkout", value: t.Checkout}, gap,
+			surfaceBlock{kind: surfaceLongBlock, label: "Checkout", value: t.Checkout}, gap,
 			statusBlock(m, "Collaborative editor", "unavailable", true),
 			surfaceBlock{kind: surfaceTextBlock, value: "File writes are not enabled in this slice.", ink: p.muted},
 			gap, surfaceBlock{kind: surfaceRuleBlock}, gap, heading("Planned validation", ""), gap)
@@ -205,15 +209,53 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: "• " + item, ink: p.text})
 		}
 	case "git":
-		b = append(b, heading("Git", ""), gap,
-			surfaceBlock{kind: surfacePairBlock, label: "Checkout", value: t.Checkout}, gap,
-			statusBlock(m, "Git integration", "unavailable", true),
-			surfaceBlock{kind: surfaceTextBlock, value: "Working-tree, staged and branch diffs will remain separate from recorded turn changes.", ink: p.muted})
+		b = append(b, heading("Git", ""), gap)
+		b = append(b, m.gitCheckoutBlocks()...)
+		b = append(b, gap, surfaceBlock{kind: surfaceRuleBlock}, gap, heading("Changes", ""), gap,
+			statusBlock(m, "Git integration", "unavailable", true))
 	}
 	return b
 }
 
-// pairOrText splits a "Label: value" line into a pair block.
+// gitCheckoutBlocks renders the read-only checkout context as explicit
+// pairs: the checkout path, then Branch, HEAD or Revision only for the
+// structured states the server reported. Values are plain text, never a
+// success mark; loading, non-Git and unavailable values stay muted.
+func (m *Model) gitCheckoutBlocks() []surfaceBlock {
+	info := m.displayedCheckout()
+	muted := m.colors().muted
+	pair := func(label, value string) surfaceBlock {
+		return surfaceBlock{kind: surfacePairBlock, label: label, value: value}
+	}
+	quiet := func(label, value string) surfaceBlock {
+		return surfaceBlock{kind: surfacePairBlock, label: label, value: value, ink: muted}
+	}
+	out := []surfaceBlock{{kind: surfaceLongBlock, label: "Checkout", value: info.Path}}
+	switch {
+	case m.checkoutLoading:
+		return append(out, quiet("Branch", "loading…"))
+	case info.State == "branch":
+		return append(out, pair("Branch", info.Branch))
+	case info.State == "unborn":
+		return append(out, pair("Branch", info.Branch), pair("HEAD", "unborn"))
+	case info.State == "detached":
+		return append(out, pair("HEAD", "detached"), pair("Revision", info.Revision))
+	case info.State == "non-git":
+		return append(out, quiet("Repository", "not a Git checkout"))
+	}
+	return append(out, quiet("Branch", "unavailable"))
+}
+
+// colorBlocks renders the color diagnostic as one Colors pair whose caveat,
+// when the profile carries one, is a muted note of the value.
+func colorBlocks(m *Model) []surfaceBlock {
+	d := m.colorDiagnosticParts()
+	return []surfaceBlock{{kind: surfacePairBlock, label: "Colors", value: d.profile, note: d.note}}
+}
+
+// pairOrText splits a "Label: value" line into a pair block. Use it only for
+// lines the TUI itself composes (usage and terminal diagnostics); server or
+// tool text goes through detailBlocks and is never split.
 func pairOrText(m *Model, line string) surfaceBlock {
 	if label, value, ok := strings.Cut(line, ": "); ok && label != "" {
 		return surfaceBlock{kind: surfacePairBlock, label: label, value: value}
@@ -222,7 +264,7 @@ func pairOrText(m *Model, line string) surfaceBlock {
 }
 
 // activityBlocks is one retained activity: a status row, its text, the
-// "Key: value" pairs of its detail and any captured prompt attachments, each
+// free-form text of its detail and any captured prompt attachments, each
 // with a muted label above its raw captured content.
 func activityBlocks(m *Model, a protocol.Activity) []surfaceBlock {
 	p := m.colors()
@@ -233,7 +275,9 @@ func activityBlocks(m *Model, a protocol.Activity) []surfaceBlock {
 	if a.Text != "" {
 		out = append(out, surfaceBlock{kind: surfaceTextBlock, value: a.Text, ink: p.text})
 	}
-	if detail := detailBlocks(m, a.Detail); len(detail) > 0 {
+	if a.Tool != nil {
+		out = append(out, toolBlocks(m, a.State, *a.Tool)...)
+	} else if detail := detailBlocks(m, a.Detail); len(detail) > 0 {
 		out = append(append(out, surfaceBlock{kind: surfaceGapBlock}), detail...)
 	}
 	if a.Prompt != nil {
@@ -246,6 +290,62 @@ func activityBlocks(m *Model, a protocol.Activity) []surfaceBlock {
 		}
 	}
 	return out
+}
+
+// toolBlocks renders the structured tool payload: explicit Kind, Status and
+// Locations pairs (long values stack), then content and raw input/output as
+// muted text. Pairs come only from these fields, never from Detail text.
+//
+// Status reflects the effective activity state, which server settle paths
+// (interrupt, restart) change without touching the agent-reported tool
+// status. A differing reported status stays visible as a plain muted
+// Reported pair, so it never paints a stale active or success mark.
+func toolBlocks(m *Model, state string, tool protocol.ToolDetail) []surfaceBlock {
+	p := m.colors()
+	out := []surfaceBlock{{kind: surfaceGapBlock}}
+	if tool.Kind != "" {
+		out = append(out, surfaceBlock{kind: surfacePairBlock, label: "Kind", value: tool.Kind})
+	}
+	effective := state
+	if effective == "" {
+		effective = tool.Status
+	}
+	// The activity's status row already shows a non-empty state; repeat it as
+	// a pair only when the row has none and the tool reported one.
+	if effective != "" && state == "" {
+		glyph, ink := panelStatusMark(m, effective)
+		out = append(out, surfaceBlock{kind: surfacePairBlock, label: "Status", value: glyph + " " + effective, ink: ink})
+	}
+	if tool.Status != "" && !sameToolStatus(tool.Status, effective) {
+		out = append(out, surfaceBlock{kind: surfacePairBlock, label: "Reported", value: tool.Status, ink: p.muted})
+	}
+	switch len(tool.Locations) {
+	case 0:
+	case 1:
+		out = append(out, surfaceBlock{kind: surfacePairBlock, label: "Location", value: tool.Locations[0]})
+	default:
+		out = append(out, surfaceBlock{kind: surfaceLongBlock, label: "Locations", value: strings.Join(tool.Locations, "\n")})
+	}
+	muted := func(label, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		out = append(out, surfaceBlock{kind: surfaceGapBlock}, surfaceBlock{kind: surfaceTextBlock, value: label, ink: p.muted, bold: true})
+		out = append(out, detailBlocks(m, value)...)
+	}
+	muted("Content", strings.Join(tool.Content, "\n"))
+	muted("Input", tool.RawInput)
+	muted("Output", tool.RawOutput)
+	return out
+}
+
+// sameToolStatus reports whether an ACP tool status names the given activity
+// state (in_progress is running; completed and failed keep their names).
+func sameToolStatus(reported, state string) bool {
+	if reported == "in_progress" {
+		reported = "running"
+	}
+	return strings.EqualFold(reported, state)
 }
 
 // activityTitle names an untitled activity by its role, so a status row
@@ -305,7 +405,11 @@ func (m *Model) surfaceText(s shell.Surface) string {
 			}
 			lines = append(lines, line)
 		case surfacePairBlock:
-			lines = append(lines, b.label+": "+b.value)
+			line := b.label + ": " + b.value
+			if b.note != "" {
+				line += " · " + b.note
+			}
+			lines = append(lines, line)
 		case surfaceLongBlock:
 			lines = append(lines, b.label, b.value)
 		default:
@@ -313,6 +417,15 @@ func (m *Model) surfaceText(s shell.Surface) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// surfacePairInline keeps a pair on one row when panelPairShort allows it or
+// when the value is a short status word or phrase (at most 20 cells) that
+// fits beside its label: narrow hosts would otherwise stack values such as
+// "legacy keyboard" under their labels.
+func surfacePairInline(width int, label, value string) bool {
+	return panelPairShort(width, label, value) ||
+		(panelPairFits(width, label, value) && ansi.StringWidth(singleLine(value)) <= 20)
 }
 
 func wrapCells(s string, width int) []string {
@@ -341,11 +454,25 @@ func (m *Model) surfaceRows(blocks []surfaceBlock, width int) []surfaceRow {
 				rows = append(rows, surfaceRow{kind: surfaceTextRow})
 			}
 		case surfacePairBlock:
-			label, value := safe(singleLine(b.label)), safe(b.value)
-			if !strings.Contains(value, "\n") && panelPairShort(width, label, value) {
-				rows = append(rows, surfaceRow{kind: surfacePairRow, text: label, value: value})
-			} else {
+			label, value, note := safe(singleLine(b.label)), safe(b.value), safe(singleLine(b.note))
+			switch {
+			case note != "" && !strings.Contains(value, "\n") && surfacePairInline(width, label, value) && panelPairFits(width, label, value+" · "+note):
+				// The value alone decides inline placement; its note only
+				// needs room beside it.
+				rows = append(rows, surfaceRow{kind: surfacePairRow, text: label, value: value, ink: b.ink, note: note})
+			case !strings.Contains(value, "\n") && surfacePairInline(width, label, value):
+				rows = append(rows, surfaceRow{kind: surfacePairRow, text: label, value: value, ink: b.ink})
+				if note != "" {
+					// The note continues the value: right-aligned beneath it.
+					rows = append(rows, surfaceRow{kind: surfacePairRow, value: note, ink: p.muted})
+				}
+			default:
 				long(label, value)
+				if note != "" {
+					for _, line := range wrapCells(note, width) {
+						rows = append(rows, surfaceRow{kind: surfaceTextRow, text: line, ink: p.muted})
+					}
+				}
 			}
 		case surfaceLongBlock:
 			long(b.label, b.value)
@@ -375,7 +502,11 @@ func (m *Model) surfaceRows(blocks []surfaceBlock, width int) []surfaceRow {
 			}
 			if below != "" {
 				for _, line := range wrapCells(below, max(1, width-gw)) {
-					rows = append(rows, surfaceRow{kind: surfaceTextRow, text: line, ink: p.muted, indent: gw})
+					ink := p.muted
+					if b.glyph != "" && b.ink != "" {
+						ink = b.ink
+					}
+					rows = append(rows, surfaceRow{kind: surfaceTextRow, text: line, ink: ink, indent: gw})
 				}
 			}
 		case surfaceRawBlock:
@@ -407,7 +538,18 @@ func (m *Model) paintSurfaceRow(f *frame, x, y, width int, row surfaceRow) {
 	case surfaceRuleRow:
 		panelRuleOn(f, m, x, y, width, bg)
 	case surfacePairRow:
-		panelPairRowStyled(f, x, y, width, row.text, row.value, p.muted, p.text, bg)
+		ink := row.ink
+		if ink == "" {
+			ink = p.text
+		}
+		if row.note == "" {
+			panelPairRowStyled(f, x, y, width, row.text, row.value, p.muted, ink, bg)
+			break
+		}
+		suffix := " · " + row.note
+		panelPairRowStyled(f, x, y, width, row.text, row.value+suffix, p.muted, ink, bg)
+		sw := ansi.StringWidth(suffix)
+		f.text(x+width-sw, y, sw, suffix, p.muted, bg)
 	case surfaceStatusRow:
 		gw := 0
 		f.text(x, y, width, "", p.text, bg)
@@ -423,7 +565,13 @@ func (m *Model) paintSurfaceRow(f *frame, x, y, width int, row surfaceRow) {
 		}
 		f.componentText(x+gw, y, max(0, room), row.text, v)
 		if vw > 0 {
-			f.text(x+width-vw, y, vw, row.value, p.muted, bg)
+			// The state word shares its mark's semantic ink; unmarked
+			// states stay muted.
+			ink := p.muted
+			if row.glyph != "" && row.ink != "" {
+				ink = row.ink
+			}
+			f.text(x+width-vw, y, vw, row.value, ink, bg)
 		}
 	default:
 		ink := row.ink

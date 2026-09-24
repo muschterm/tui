@@ -44,23 +44,41 @@ func (m *Model) openCommands() {
 		m.showMenu("Commands", []menuItem{{Label: "Detach TUI (Ctrl+Q)", Action: action{Kind: "quit"}}, {Label: "Suspend (Ctrl+Z)", Action: action{Kind: "suspend"}}, {Label: "Switch dark / light theme (F8)", Action: action{Kind: "theme"}}})
 		return
 	}
-	items := []menuItem{{Label: "Navigation · show / hide (F2)", Action: action{Kind: "left"}}, {Label: "Right surfaces · show / hide (F3)", Action: action{Kind: "right"}}, {Label: "Bottom panel · show / hide (F5)", Action: action{Kind: "bottom"}}, {Label: "Maximize / restore surface (F7)", Action: action{Kind: "maximize"}}, {Label: "Switch dark / light theme (F8)", Action: action{Kind: "theme"}}, {Label: "Attention", Action: action{Kind: "attention"}}, {Label: "Resume selected thread", Action: action{Kind: "resume"}}, {Label: "Stop selected thread", Action: action{Kind: "interrupt"}}, {Label: "Send / save queued edit (Ctrl+S)", Action: action{Kind: "send"}}, {Label: "Retry pending command", Action: action{Kind: "retry"}}, {Label: "Rebase queued edit after conflict", Action: action{Kind: "refresh-edit"}}, {Label: "Closed · collapse / expand", Action: action{Kind: "recents-collapse"}}, {Label: "Closed · hide / restore", Action: action{Kind: "recents-hide"}}, {Label: "Navigation · grow", Action: action{Kind: "resize-left", Index: 2}}, {Label: "Navigation · shrink", Action: action{Kind: "resize-left", Index: -2}}, {Label: "Right · grow (Alt+Left)", Action: action{Kind: "resize-right", Index: 2}}, {Label: "Right · shrink (Alt+Right)", Action: action{Kind: "resize-right", Index: -2}}, {Label: "Bottom · grow (Alt+Up)", Action: action{Kind: "resize-bottom", Index: 1}}, {Label: "Bottom · shrink (Alt+Down)", Action: action{Kind: "resize-bottom", Index: -1}}, {Label: "Usage details", Action: action{Kind: "usage"}}, {Label: "Copy visible transcript", Action: action{Kind: "copy-transcript"}}, {Label: "Detach TUI (Ctrl+Q)", Action: action{Kind: "quit"}}}
-	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
-		items = append(items, menuItem{Label: "Open " + title(kind), Action: action{Kind: "open", Value: kind}})
-	}
+	panes := []menuItem{{Label: "Navigation · show / hide (F2)", Action: action{Kind: "left"}}, {Label: "Right surfaces · show / hide (F3)", Action: action{Kind: "right"}}, {Label: "Bottom panel · show / hide (F5)", Action: action{Kind: "bottom"}}, {Label: "Maximize / restore surface (F7)", Action: action{Kind: "maximize"}}, {Label: "Switch dark / light theme (F8)", Action: action{Kind: "theme"}}}
 	if m.singleColumn() {
-		items[0] = menuItem{Label: "Choose column (F2)", Action: action{Kind: "columns"}}
-		items[1] = menuItem{Label: "Surfaces (F3)", Action: action{Kind: "column", Index: int(shell.RightRegion)}}
-		items[2] = menuItem{Label: "Terminal (F5)", Action: action{Kind: "column", Index: int(shell.BottomRegion)}}
-		items[3] = menuItem{Label: "Conversation", Action: action{Kind: "column", Index: int(shell.CenterRegion)}}
+		panes[0] = menuItem{Label: "Choose column (F2)", Action: action{Kind: "columns"}}
+		panes[1] = menuItem{Label: "Surfaces (F3)", Action: action{Kind: "column", Index: int(shell.RightRegion)}}
+		panes[2] = menuItem{Label: "Terminal (F5)", Action: action{Kind: "column", Index: int(shell.BottomRegion)}}
+		panes[3] = menuItem{Label: "Conversation", Action: action{Kind: "column", Index: int(shell.CenterRegion)}}
 	}
+	work := []menuItem{{Label: "Attention", Action: action{Kind: "attention"}}, {Label: "Resume selected thread", Action: action{Kind: "resume"}}, {Label: "Stop selected thread", Action: action{Kind: "interrupt"}}, {Label: "Send / save queued edit (Ctrl+S)", Action: action{Kind: "send"}}, {Label: "Retry pending command", Action: action{Kind: "retry"}}, {Label: "Rebase queued edit after conflict", Action: action{Kind: "refresh-edit"}}}
+	closed := []menuItem{{Label: "Closed · collapse / expand", Action: action{Kind: "recents-collapse"}}, {Label: "Closed · hide / restore", Action: action{Kind: "recents-hide"}}}
+	resize := []menuItem{{Label: "Navigation · grow", Action: action{Kind: "resize-left", Index: 2}}, {Label: "Navigation · shrink", Action: action{Kind: "resize-left", Index: -2}}, {Label: "Right · grow (Alt+Left)", Action: action{Kind: "resize-right", Index: 2}}, {Label: "Right · shrink (Alt+Right)", Action: action{Kind: "resize-right", Index: -2}}, {Label: "Bottom · grow (Alt+Up)", Action: action{Kind: "resize-bottom", Index: 1}}, {Label: "Bottom · shrink (Alt+Down)", Action: action{Kind: "resize-bottom", Index: -1}}}
+	session := []menuItem{{Label: "Usage details", Action: action{Kind: "usage"}}, {Label: "Copy visible transcript", Action: action{Kind: "copy-transcript"}}, {Label: "Detach TUI (Ctrl+Q)", Action: action{Kind: "quit"}}}
+	var surfaces []menuItem
+	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
+		surfaces = append(surfaces, menuItem{Label: "Open " + title(kind), Action: action{Kind: "open", Value: kind}})
+	}
+	var threads []menuItem
 	for _, t := range m.snapshot.Threads {
-		items = append(items, menuItem{Label: "Thread · " + t.Title, Action: action{Kind: "thread", ID: t.ID}})
+		threads = append(threads, menuItem{Label: "Thread · " + t.Title, Action: action{Kind: "thread", ID: t.ID}})
 	}
+	var tabs []menuItem
 	for _, tab := range m.viewState().Host.Tabs {
-		items = append(items, tabEntry(tab))
+		tabs = append(tabs, tabEntry(tab))
 	}
-	items = append(items, menuItem{Label: "App settings", Action: action{Kind: "app-settings"}}, menuItem{Label: "Select / filter projects", Action: action{Kind: "projects"}}, menuItem{Label: "Add project", Action: action{Kind: "project-add"}}, menuItem{Label: "New thread", Action: action{Kind: "thread-create"}}, menuItem{Label: "Closed threads", Action: action{Kind: "closed-threads"}}, menuItem{Label: "Selected thread options", Action: action{Kind: "thread-menu", ID: m.state.Active}})
+	app := []menuItem{{Label: "App settings", Action: action{Kind: "app-settings"}}, {Label: "Select / filter projects", Action: action{Kind: "projects"}}, {Label: "Add project", Action: action{Kind: "project-add"}}, {Label: "New thread", Action: action{Kind: "thread-create"}}, {Label: "Closed threads", Action: action{Kind: "closed-threads"}}, {Label: "Selected thread options", Action: action{Kind: "thread-menu", ID: m.state.Active}}}
+	// Separator rows divide the existing groups; the order is unchanged.
+	var items []menuItem
+	for _, group := range [][]menuItem{panes, work, closed, resize, session, surfaces, threads, tabs, app} {
+		if len(group) == 0 {
+			continue
+		}
+		if len(items) > 0 {
+			items = append(items, menuItem{Separator: true})
+		}
+		items = append(items, group...)
+	}
 	m.showMenu("Commands", items)
 }
 
@@ -106,11 +124,11 @@ func (m *Model) activate(a action) tea.Cmd {
 	}
 	if requestScoped(a) && !m.requestBound(a) {
 		m.status = "That request changed or was resolved · nothing sent"
-		return m.showNotice(m.status)
+		return m.showNoticeAs(noticeUnavailable, m.status)
 	}
 	if slices.Contains([]string{"answer-submit", "answer-action", "approve", "steer"}, a.Kind) {
 		if reason := m.hiddenWorkBlocked(); reason != "" {
-			return m.showNotice(reason)
+			return m.showNoticeAs(noticeUnavailable, reason)
 		}
 	}
 	if handled, cmd := m.activateSidebarSettings(a); handled {
@@ -118,7 +136,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		return cmd
 	}
 	if m.singleColumn() && strings.HasPrefix(a.Kind, "resize-") {
-		return m.showNotice("Pane resizing is available in the wider layout")
+		return m.showNoticeAs(noticeUnavailable, "Pane resizing is available in the wider layout")
 	}
 	v := m.viewState()
 	t := m.thread()
@@ -214,7 +232,7 @@ func (m *Model) activate(a action) tea.Cmd {
 			return nil
 		}
 		if m.state.Layout.Compute(m.width, m.height-1, 0).Forced {
-			return m.showNotice("Maximize needs room beside the conversation · F3 hides the right panel")
+			return m.showNoticeAs(noticeUnavailable, "Maximize needs room beside the conversation · F3 hides the right panel")
 		}
 		m.state.Layout.ToggleMaximize(&v.Host)
 	case "dismiss-agents":
@@ -572,16 +590,16 @@ func (m *Model) activate(a action) tea.Cmd {
 		return m.openPromptSettings(a.Value)
 	case "setting-model":
 		if m.configurationLocked() {
-			return m.showNotice("Settings are read-only during active work")
+			return m.showNoticeAs(noticeUnavailable, "Settings are read-only during active work")
 		}
 		if v.Settings.Model != "fixture-model" {
 			v.Settings = protocol.Settings{Model: "fixture-model", Effort: "medium", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}
 		}
 	case "provider-unavailable":
-		return m.showNotice(a.Value + " integration is planned; only Demo is connected in this build")
+		return m.showNoticeAs(noticeUnavailable, a.Value+" integration is planned; only Demo is connected in this build")
 	case "setting":
 		if m.configurationLocked() {
-			return m.showNotice("Settings are read-only during active work")
+			return m.showNoticeAs(noticeUnavailable, "Settings are read-only during active work")
 		}
 		v.Settings.Effort = a.Value
 	case "setting-agent":
@@ -590,7 +608,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		cmd = m.chooseSetting(a.ID, a.Value)
 	case "agent-probe":
 		if agent, ok := m.agentByID(a.ID); ok && agent.Kind == "fixture" {
-			return m.showNotice(agent.Name + " has fixed options; nothing to probe")
+			return m.showNoticeAs(noticeUnavailable, agent.Name+" has fixed options; nothing to probe")
 		}
 		return m.command(protocol.Command{Kind: "agent.probe", TargetID: a.ID, ProjectID: m.agentProjectID()}, a)
 	case "attach":

@@ -139,8 +139,11 @@ content-reading and choosing areas, not to the compact controls governed above:
 
 - **Right-host surfaces** (Plan, Agents, Activity, Usage, Files, Git, Terminal
   headers) paint structured rows: uppercase muted headings, rules between entries,
-  status rows and label/value pairs. Only short values sit right-aligned; longer
-  values stack under a muted label. Terminal output stays raw, sanitized text.
+  status rows and label/value pairs. Pairs come only from explicit structured
+  fields (protocol pairs the TUI composes, or `protocol.Activity.Tool`), never
+  split from free-form `Key: value` text — see "Structured pairs only" below.
+  Only short values sit right-aligned; longer values stack under a muted label.
+  Terminal output stays raw, sanitized text.
 - **Status glyphs** keep semantic ink: completed `✓` green, active/working `●`
   blue, pending `○` muted, failed `✕` red, interrupted/waiting/stale `!` amber,
   unknown/unavailable `?` neutral, and any other reported state a neutral `·`.
@@ -156,8 +159,119 @@ content-reading and choosing areas, not to the compact controls governed above:
 - **Navigation** labels its Closed section with the same uppercase heading, still
   dimmed, with the count only while collapsed.
 
-Unchanged by this refinement: the composer and footer, question card and tabs,
-queue card, thread cards, surface tabs, top chrome and activity strip.
+This refinement did not band or restructure the composer and footer, question
+card and tabs, queue card, thread cards, surface tabs, top chrome or activity
+strip; the app-wide pass below adds only zero-row alignments to them.
+
+### Panel style — app-wide pass — 2026-09-24
+
+The user authorized further recommended restyling. These rules now apply:
+
+- **Status vocabulary app-wide.** `panelStatusMark` glyphs and inks are the status
+  language everywhere, including the conversation, activity strip, request cards,
+  notices and other one-row-density areas. Circles remain only for active work and
+  the all-completed Agents/Plan summaries (solid green `●`, per the activity
+  rules). `✓` appears only for confirmed success; pending or failed delivery never
+  shows it.
+- **Zero-row alignment in one-row areas.** The composer, footer, question card,
+  queue card, thread cards, surface tabs, top chrome and activity strip take marks,
+  muted state words, uppercase static labels and explicit pairs only where they add
+  no rows. If a mark would add a row, fall back to colored text without it.
+  Uppercase applies to static labels (for example `ANSWER ANYTIME`,
+  `APPROVAL REQUIRED`, `QUEUED n`, `ANSWERED`); user text keeps its case.
+- **Actionable pair row.** A dense settings field is one row: muted label at the
+  left, accent value flush right, whole-row hit rectangle with hover and focus
+  feedback. Fixed (non-editable) values use muted value ink and no action.
+- **Settings sidebar.** Uppercase heading and rule, single-row square-fill
+  categories with a reserved focus cell, and a rule above Back. Brackets mark the
+  selected category only in low-color or ASCII fallbacks.
+- **Separator menu items.** Menus may contain non-selectable rule rows with no hit
+  rectangle; keyboard navigation skips them.
+- **Notice severity.** Each notice carries an explicit severity set by its caller:
+  info `·`, unavailable `!`, error `✕`, done `✓`, active `●`. The mark is painted
+  separately from the notice text; text is never parsed to infer severity.
+- **Context lines.** The checkout line leads with a mark (Git identity icon for a
+  branch, unborn or detached checkout; `○` loading; `·` non-Git; `?` unavailable or
+  fixture), never green. The mark sits outside the line's hit rectangle.
+- **Structured pairs only.** Activity inspectors show Kind, Status and Location
+  pairs only from structured tool data (`protocol.Activity.Tool`); free-text detail
+  is never split into pairs.
+- **Empty states.** An uppercase heading, a rule and banded buttons, with
+  `[Label]` fallbacks where bands are unsupported.
+- **Menu position counter.** A menu's `n of N` counter counts selectable rows
+  only, skipping separators. When any row in a menu has an icon, every row
+  reserves that icon's slot so labels stay aligned, even the rows without one.
+  The Commands menu groups its existing items with separator rows in their
+  existing order; it does not add category headings.
+- **Confirmation dialog titles.** Destructive confirmations use the
+  `PREFIX · user` form (`DELETE THREAD · <title>`, `REMOVE PROJECT · <name>`):
+  a static uppercase prefix followed by the user's text in its original case.
+- **Footer overflow settings.** Hidden footer fields appear as explicit
+  label/value pairs in the "More settings" menu, titled `MORE SETTINGS` and,
+  while settings are read-only during active work, `MORE SETTINGS · READ-ONLY`
+  (uppercased at render time like other menu titles; the stored title keeps
+  its original case for the user-text form above).
+- **`@`-mention popup.** The popup spans the composer outline's width (matching
+  its inset) and sits directly above it, two rows above the prompt's top
+  border. A selected entry uses the shared square-fill selection treatment
+  plus the focus-mark gutter cell (`•`) reserved before the control, per the
+  keyboard-focus rule above.
+- **Approval and question actions.** Approval card actions are right-aligned
+  in the same fixed action group as question Submit/queue actions
+  (`questionActionsPlan`): Cancel, then Decline, then Submit, overflowing into
+  a More… menu before Submit is ever displaced. The question body keeps one
+  gap cell before its scrollbar column.
+- **Queue legend.** The `QUEUED n` legend is bold, muted text that stays in
+  the card's border row; moving it inside the card would add a row.
+- **Status line.** The empty receipt state shows plain `Accepted`. An
+  unconfirmed steer notice reads `Steer accepted · awaiting delivery` with the
+  active `●` mark; once delivery is confirmed
+  (`delivered`/`fixture-delivered`) it reads `Message steered into the active
+  turn` with the done `✓` mark.
+- **Right-host status rows.** The state word takes its mark's semantic ink
+  app-wide (muted for unknown/neutral, and so on), instead of a separate
+  fixed color. A Colors caveat is a note on the single `Colors` pair: it folds
+  into `value · note` when `panelPairFits` allows the combined text, otherwise
+  it continues on its own right-aligned muted line.
+- **Activity tab title.** The Activity surface tab's label reads "Usage"
+  while its usage detail is open, and "Activity" otherwise. This is a
+  render-time title change only — it is still the same Activity surface kind,
+  and it keeps the Activity glyph, since no dedicated usage icon exists yet.
+- **Tool payload budget.** `structuredTool` folds any retained (`kept`) raw
+  input/output into the same `toolBudget` split as the current update's
+  fields, so kept and new payloads share one `MaxActivityDeta` budget instead
+  of each being truncated to it independently; `bound`/`boundEntries` strip a
+  prior truncation marker before re-truncating, so a field already marked
+  truncated never gains a second marker. Content and location entries beyond
+  the 64-entry cap (`capEntries`) keep the first 63 and end with a
+  truncation-marker entry, so the cap holds and the loss stays visible, all
+  within the shared budget.
+- **Transcript tool/MCP rows.** The state word takes its status mark's ink,
+  matching right-host status rows; the ` · ` separator before it stays muted.
+- **Activity inspector, no repeated status.** The Status pair appears only
+  when the activity itself carries no state; a plain muted "Reported" pair
+  appears only when the agent-reported `Tool.Status` differs from the
+  effective state. Neither repaints or duplicates the row's own status mark.
+- **Right-host Terminal surface.** Opens with a `TERMINAL` heading and rule
+  like other right-host surfaces. The bottom terminal panel is unchanged: it
+  reuses the same blocks without a title row.
+- **Git checkout facts are all pairs.** The checkout path is a long pair;
+  Branch/HEAD/Revision are explicit pairs for their structured states;
+  loading, unavailable and `Repository · not a Git checkout` are muted pairs.
+  No status marks and no green ink appear on checkout facts.
+- **Agents surface Parent.** Shows the owning thread's title when the parent
+  thread is known locally, falling back to the raw parent ID otherwise.
+- **Menu group separators.** A separator rule spans the same width as the
+  menu's heading and hint rules.
+- **Settings dense pairs.** App General's "Project starting folder" and
+  Project "Icon" are dense actionable pair rows, with a long path
+  left-truncated (keeping its identifying tail) rather than wrapped. Name,
+  segmented-choice button fallbacks, "Use built-in defaults" and "Remove
+  project…" keep the banded-button treatment.
+- **Menu Note rows.** Menus support a non-selectable, muted `Note` row
+  (`menuItem.Note`) with no hit rectangle, skipped by keyboard/wheel
+  navigation and by the `n of N` position counter — for example "Files on
+  disk will be kept" in the remove-project confirmation.
 
 ## Building components
 

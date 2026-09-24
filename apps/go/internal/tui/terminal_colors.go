@@ -97,15 +97,27 @@ func supportsColorQueries(name string) bool {
 	return false
 }
 
-func (m *Model) colorDiagnostics() string {
+// colorDiagnostic is the structured color diagnostic: the effective profile
+// and an optional caveat about how it was established.
+type colorDiagnostic struct{ profile, note string }
+
+func (m *Model) colorDiagnosticParts() colorDiagnostic {
 	if m.colorProbe.noColor {
-		return "Colors: disabled by NO_COLOR"
+		return colorDiagnostic{profile: "disabled by NO_COLOR"}
 	}
 	if m.colorProbe.confirmed {
-		return "Colors: true color · terminal capability confirmed"
+		return colorDiagnostic{profile: "true color", note: "terminal capability confirmed"}
 	}
 	if m.colorProfile == colorprofile.TrueColor {
-		return "Colors: true color · startup detection"
+		return colorDiagnostic{profile: "true color", note: "startup detection"}
 	}
-	return "Colors: " + m.colorProfile.String() + " fallback · true color unconfirmed"
+	return colorDiagnostic{profile: m.colorProfile.String() + " fallback", note: "true color unconfirmed"}
+}
+
+func (m *Model) colorDiagnostics() string {
+	d := m.colorDiagnosticParts()
+	if d.note == "" {
+		return "Colors: " + d.profile
+	}
+	return "Colors: " + d.profile + " · " + d.note
 }

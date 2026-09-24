@@ -251,8 +251,11 @@ explicit Submit and bounded drafts, and changes the following.
   otherwise, only while the tab row hides tabs, a muted `n of N` counter.
 - **Tabs.** Each question tab is ` <label> <mark> `: the answered-marker cell is
   always reserved, so answering never moves the label. The marker uses the
-  check icon and its plain fallback. Selected tabs keep accent fill plus bold;
-  keyboard focus marks the leading end cap.
+  check icon and its plain fallback. An unsubmitted local draft answer paints
+  that mark in the tab's own ink, not the success-green completed ink, which
+  is reserved for a confirmed submission; a filled-but-not-submitted question
+  must never read as successfully answered. Selected tabs keep accent fill
+  plus bold; keyboard focus marks the leading end cap.
 - **Question and choices.** The question text is bold. Each choice keeps the
   gutter cell for the focus mark, then its glyph, one gap and its label, with a
   hanging indent for wrapped rows. At rest the glyph is muted; selection is an

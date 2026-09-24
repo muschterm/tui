@@ -13,6 +13,39 @@ import (
 
 func singleLine(s string) string { return strings.ReplaceAll(safe(s), "\n", " ") }
 
+// settingsFieldValueRoom mirrors the value width a settingsField row leaves
+// after its inset and label, matching renderSettingsField/panelPairRowStyled's
+// own room formula so a value pre-truncated to this width is never truncated
+// again from the wrong side at paint time.
+func settingsFieldValueRoom(width int, label string) int {
+	inner := max(1, width-2)
+	return max(1, inner/2, inner-ansi.StringWidth(label)-2)
+}
+
+// truncatePathLeft shortens a long filesystem path from the left, keeping the
+// tail (the most identifying part of a path) visible, unlike the pair
+// construct's default right-truncation used for ordinary values.
+func truncatePathLeft(value string, room int) string {
+	value = singleLine(value)
+	if room <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(value) <= room {
+		return value
+	}
+	if room == 1 {
+		return "…"
+	}
+	total := len([]rune(value))
+	for n := 1; n <= total; n++ {
+		out := ansi.TruncateLeft(value, n, "…")
+		if ansi.StringWidth(out) <= room {
+			return out
+		}
+	}
+	return "…"
+}
+
 func (m *Model) updateThreadSearch(msg tea.Msg) tea.Cmd {
 	cmd := updateInput(&m.threadSearch, msg)
 	m.state.ThreadFilter = singleLine(m.threadSearch.Value())
@@ -63,7 +96,7 @@ func (m *Model) hasCapability(name string) bool {
 }
 
 func (m *Model) settingsUnavailable(capability string) tea.Cmd {
-	return m.showNotice("Update this server to use " + strings.ReplaceAll(capability, "-", " "))
+	return m.showNoticeAs(noticeUnavailable, "Update this server to use "+strings.ReplaceAll(capability, "-", " "))
 }
 
 func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
@@ -210,7 +243,7 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 		}
 		if p, ok := m.projectByID(a.ID); ok {
 			if reason := protocol.ProjectRemoveBlocked(m.snapshot, p.ID); reason != "" {
-				return true, m.showNotice("Cannot remove project: " + reason)
+				return true, m.showNoticeAs(noticeError, "Cannot remove project: "+reason)
 			}
 			count := 0
 			for _, t := range m.snapshot.Threads {
@@ -220,10 +253,10 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 			}
 			// Cancel is deliberately first. Thread membership revisions bind this exact
 			// confirmation to the project and count the user reviewed.
-			m.showMenuFor("Remove project: ", p.Name, []menuItem{
+			m.showMenuFor("Remove project · ", p.Name, []menuItem{
 				{Label: "Cancel", Action: action{Kind: "noop"}},
 				{Label: fmt.Sprintf("Delete project and %d threads permanently", count), Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
-				{Label: "Files on disk will be kept", Action: action{Kind: "noop"}},
+				{Note: "Files on disk will be kept"},
 			})
 		}
 	case "project-remove-confirm":
@@ -263,7 +296,7 @@ func workspaceLabel(value string) string {
 func (m *Model) saveProjectSetting(a action, field string) tea.Cmd {
 	p, ok := m.projectByID(a.ID)
 	if !ok {
-		return m.showNotice("Project was removed")
+		return m.showNoticeAs(noticeUnavailable, "Project was removed")
 	}
 	settings := protocol.ProjectSettings{Name: p.Name, Icon: p.Icon, Color: p.Color, WorkspaceDefault: p.WorkspaceDefault}
 	switch field {
@@ -293,6 +326,7 @@ const (
 	settingsSegments
 	settingsToggle
 	settingsPair
+	settingsField
 )
 
 // A segment is one choice of a small closed option set. Each has its own key,
@@ -313,6 +347,7 @@ type settingsRow struct {
 	value      string
 	action     action
 	danger, on bool
+	fixed      bool // A field whose value the agent offers no choice for.
 	segments   []settingsSegment
 	band       int
 	bandRows   int
@@ -354,6 +389,11 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 	}
 	button := func(label, key string, a action) {
 		band(settingsRow{kind: settingsButton, label: label, key: "sidebar-setting:" + key, action: a})
+	}
+	// field is an actionable label/value pair: one dense row whose whole width
+	// opens the value's menu. The pair is explicit, never split from text.
+	field := func(label, value, key string, a action, fixed bool) {
+		rows = append(rows, settingsRow{kind: settingsField, label: label, value: value, key: "sidebar-setting:" + key, action: a, fixed: fixed})
 	}
 	pair := func(label, value string) {
 		rows = append(rows, settingsRow{kind: settingsPair, label: label, value: value})
@@ -435,11 +475,14 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 		paragraph("Used for new threads unless a project overrides it.")
 		paragraph("Worktree creation is unavailable in this build.")
 		section("Project starting folder")
+		const directoryLabel = "Project starting folder"
 		directory := m.snapshot.AppSettings.ProjectDirectory
 		if directory == "" || directory == "~" {
 			directory = "Home directory (~)"
+		} else {
+			directory = truncatePathLeft(directory, settingsFieldValueRoom(width, directoryLabel))
 		}
-		button(directory, "project-directory", action{Kind: "app-project-directory"})
+		field(directoryLabel, directory, "project-directory", action{Kind: "app-project-directory"}, false)
 		paragraph("Start browsing for projects here on the connected server.")
 		rule()
 		toggle("Continue threads after restart", "restart", m.snapshot.AppSettings.ContinueAfterRestart, action{Kind: "restart-toggle"})
@@ -453,17 +496,19 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 	case "agents":
 		name = "Agents"
 		section("New thread defaults")
-		button(m.newThreadDefaultAgentLabel(), "agent", action{Kind: "app-thread-agent"})
+		// Fields are dense one-row pairs rather than banded buttons: six banded
+		// fields took 18 rows and pushed the reset button below a 30-row screen.
+		field("Agent", m.newThreadDefaultAgentValue(), "agent", action{Kind: "app-thread-agent"}, false)
+		gap()
 		paragraph("Used when a new project draft is first opened. Existing drafts and threads keep their selections.")
 		if saved := m.snapshot.AppSettings.NewThreadDefaults; saved != nil && saved.AgentID != "" {
 			if a, ok := m.agentByID(saved.AgentID); ok {
 				if a.Kind != "fixture" && a.State != "ready" {
 					paragraph("Saved agent is " + agentReadiness(a) + "; refresh its options before using this default.")
 				}
-				gap()
-				for _, field := range settingFieldOrder {
-					label := m.newThreadDefaultFieldLabel(a, field, saved.Settings)
-					button(label, field, action{Kind: "app-thread-field", ID: field})
+				section("Agent settings")
+				for _, name := range settingFieldOrder {
+					field(title(name), m.newThreadDefaultFieldValue(a, name, saved.Settings), name, action{Kind: "app-thread-field", ID: name}, !newThreadDefaultFieldSelectable(a, name, saved.Settings))
 				}
 			} else {
 				paragraph("Saved agent is no longer configured; choose another agent.")
@@ -546,7 +591,7 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 		if icon == "" {
 			icon = "Name initials"
 		}
-		button(icon, "icon", action{Kind: "project-icon", ID: p.ID})
+		field("Icon", icon, "icon", action{Kind: "project-icon", ID: p.ID}, false)
 		section("Remove")
 		button("Remove project…", "remove", action{Kind: "project-remove", ID: p.ID})
 		for i := len(rows) - 1; i >= 0 && rows[i].key == "sidebar-setting:remove"; i-- {

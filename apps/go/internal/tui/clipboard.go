@@ -89,14 +89,14 @@ func (m *Model) pasteClipboard() tea.Cmd {
 	generation := m.clipboardReadGeneration
 	if reason := m.clipboardPasteBlocked(); reason != "" {
 		m.status = ""
-		return m.showNotice("Paste unavailable · " + reason)
+		return m.showNoticeAs(noticeUnavailable, "Paste unavailable · "+reason)
 	}
 	if terminalClipboardSession() {
 		m.status = ""
 		if strings.TrimSpace(os.Getenv("HERDR_ENV")) == "1" {
-			return m.showNotice("Use your outer terminal's Paste (usually Ctrl+Shift+V) · herdr's host clipboard may be on another machine")
+			return m.showNoticeAs(noticeUnavailable, "Use your outer terminal's Paste (usually Ctrl+Shift+V) · herdr's host clipboard may be on another machine")
 		}
-		return m.showNotice("Clipboard read unavailable over SSH · use your terminal's paste shortcut")
+		return m.showNoticeAs(noticeUnavailable, "Clipboard read unavailable over SSH · use your terminal's paste shortcut")
 	}
 	read := m.clipboardRead
 	if read == nil {
@@ -160,11 +160,11 @@ func (m *Model) acceptClipboardRead(msg clipboardReadMsg) tea.Cmd {
 	}
 	if msg.err != nil {
 		m.status = ""
-		return m.showNotice("Clipboard read failed: " + safe(msg.err.Error()) + " · use your terminal's paste shortcut")
+		return m.showNoticeAs(noticeError, "Clipboard read failed: "+safe(msg.err.Error())+" · use your terminal's paste shortcut")
 	}
 	if len(msg.text) > clipboardPasteMaxBytes {
 		m.status = ""
-		return m.showNotice("Paste unavailable · clipboard text exceeds the 1 MiB limit")
+		return m.showNoticeAs(noticeUnavailable, "Paste unavailable · clipboard text exceeds the 1 MiB limit")
 	}
 	content := safe(msg.text)
 	if content == "" {

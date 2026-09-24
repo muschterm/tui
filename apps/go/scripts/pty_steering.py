@@ -79,7 +79,7 @@ def main():
             a.resize(48, 22)
             a.pump(.5)
             check(any('Steer' in line for line in a.screen()[:-1]), 'narrow queue keeps labelled Steer reachable')
-            a.click_label('queued')
+            a.click_label('QUEUED')
             a.send(b'\r', .7)
             after = thread()
             check(not after['Queue'] and len([i for i in after['Activity'] if i['ID'] == second]) == 1,
