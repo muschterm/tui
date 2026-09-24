@@ -16,12 +16,27 @@ import (
 // including its padding and border, rather than just the interactive items.
 func (m *Model) menuRect() shell.Rect {
 	w := min(68, max(20, m.width-6))
-	extra := 0
-	if m.projectMode != "" {
-		extra = 2
-	}
-	h := min(len(m.menu)+4+extra, max(5+extra, m.height-4))
+	extra := m.menuExtraRows()
+	h := min(len(m.menu)+menuChromeRows+extra, max(menuChromeRows+1+extra, m.height-4))
 	return shell.Rect{X: max(0, (m.width-w)/2), Y: max(1, (m.height-h)/2), W: w, H: h}
+}
+
+// menuChromeRows are a centered menu's non-item rows: its outline, the title
+// heading and the rule beneath it, and the rule above the hint row plus that
+// row.
+const menuChromeRows = 6
+
+// menuExtraRows are the project search input and its caption row.
+func (m *Model) menuExtraRows() int {
+	if m.projectMode != "" {
+		return 2
+	}
+	return 0
+}
+
+// menuVisibleItems is how many menu items fit the menu's rectangle.
+func (m *Model) menuVisibleItems() int {
+	return m.menuRect().H - menuChromeRows - m.menuExtraRows()
 }
 
 func (m *Model) dismissMenuOutside(x, y int) (bool, tea.Cmd) {

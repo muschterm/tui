@@ -97,7 +97,7 @@ def main():
             check(view['Active'] == '' and view['DraftProjectID'] == p['ID'], 'new thread starts as local draft')
             paste(term, 'Settings start')
             term.send(b'\x13', .8)
-            check('Cannot send message' in '\n'.join(term.screen()) and get('views/sidebar-review')['data']['Active'] == '',
+            check('CANNOT SEND MESSAGE' in '\n'.join(term.screen()) and get('views/sidebar-review')['data']['Active'] == '',
                   'Send without a model opens an error dialog without creating a thread')
             term.click_label('Choose model')
             term.click_label('Reference · Demo model')
@@ -180,7 +180,7 @@ def main():
             check(next(p for p in snap()['projects'] if p['ID'] == p_id)['Icon'] == 'rocket', 'project icon persists')
             check('Settings / Project / Renamed workspace' in term.screen()[0], 'breadcrumb follows accepted project rename')
             term.click_label('Rocket')
-            term.click_label('Icon color:')
+            term.click_label('Icon color')  # A menu pair row: label left, value right.
             term.click_label('Teal')
             term.pump(.8)
             check(next(p for p in snap()['projects'] if p['ID'] == p_id)['Color'] == 'teal', 'icon menu retains color customization')

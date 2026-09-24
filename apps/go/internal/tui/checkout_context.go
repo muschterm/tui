@@ -101,14 +101,14 @@ func (m *Model) renderCheckoutContext(f *frame, r shell.Rect) {
 func (m *Model) openCheckoutInfo() {
 	info := m.displayedCheckout()
 	left, right := m.checkoutLabels()
-	items := []menuItem{{left, action{Kind: "noop"}}, {info.Path, action{Kind: "noop"}}, {right, action{Kind: "noop"}}}
+	items := []menuItem{{Label: left, Action: action{Kind: "noop"}}, {Label: info.Path, Action: action{Kind: "noop"}}, {Label: right, Action: action{Kind: "noop"}}}
 	if info.Error != "" {
-		items = append(items, menuItem{info.Error, action{Kind: "noop"}})
+		items = append(items, menuItem{Label: info.Error, Action: action{Kind: "noop"}})
 	}
 	if m.hasCapability("workspace-info") {
-		items = append(items, menuItem{"Refresh checkout / branch", action{Kind: "checkout-refresh"}})
+		items = append(items, menuItem{Label: "Refresh checkout / branch", Action: action{Kind: "checkout-refresh"}})
 	} else {
-		items = append(items, menuItem{"Update this server to inspect the branch", action{Kind: "noop"}})
+		items = append(items, menuItem{Label: "Update this server to inspect the branch", Action: action{Kind: "noop"}})
 	}
 	m.showMenu("Checkout", items)
 }

@@ -322,7 +322,7 @@ func TestNavigationClosedHeaderAndEmptyDeletedReconciliation(t *testing.T) {
 	m := navigationModel()
 	m.snapshot.Threads[1].Closed = true
 	text := ansi.Strip(strings.Join(m.render().rows, "\n"))
-	if !strings.Contains(text, "Closed") || strings.Contains(text, "RECENTS") {
+	if !strings.Contains(text, "CLOSED") || strings.Contains(text, "RECENTS") {
 		t.Fatal("Closed did not replace Recents")
 	}
 	deleted := m.state.Active

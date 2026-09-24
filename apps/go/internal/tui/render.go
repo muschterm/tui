@@ -635,7 +635,10 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 			f.button(m, x, r.Y+min(1, r.H-1), w, "Choose a surface…", "chooser", action{Kind: "chooser"}, p.blue, p.panel)
 			return
 		}
-		f.text(x, y, w, "Add surface", p.text, p.panel)
+		if m.renderChooserTiles(f, r, x, y, w, kinds) {
+			return
+		}
+		panelSectionHeadingOn(f, m, x, y, w, "Add surface", p.panel)
 		spacing := 1
 		if r.H >= len(kinds)*2+2 {
 			spacing = 2
@@ -670,82 +673,15 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 		return
 	}
 	f.hits = append(f.hits, hit{Rect: f.detail, Action: action{}, Label: "Surface · wheel / arrows to scroll", Key: "right-body"})
-	text := m.surfaceText(active)
-	lines := strings.Split(ansi.Wrap(safe(text), f.detail.W, ""), "\n")
-	f.detailMax = max(0, len(lines)-f.detail.H)
+	// One blank cell keeps right-aligned values off the scrollbar.
+	rows := m.surfaceRows(m.surfaceBlocks(active), max(1, f.detail.W-1))
+	f.detailMax = max(0, len(rows)-f.detail.H)
 	offset := min(max(0, v.DetailScroll), f.detailMax)
-	for i := 0; i < f.detail.H && offset+i < len(lines); i++ {
-		fg := p.text
-		if i == 0 {
-			fg = p.violet
-		}
-		f.text(f.detail.X, f.detail.Y+i, f.detail.W, lines[offset+i], fg, p.panel)
+	for i := 0; i < f.detail.H && offset+i < len(rows); i++ {
+		f.text(f.detail.X, f.detail.Y+i, f.detail.W, "", p.text, p.panel)
+		m.paintSurfaceRow(f, f.detail.X, f.detail.Y+i, max(1, f.detail.W-1), rows[offset+i])
 	}
-	f.scrollbar(m, shell.Rect{X: f.detail.X + f.detail.W, Y: f.detail.Y, W: 1, H: f.detail.H}, "detail", len(lines), f.detail.H, offset, p.panel)
-}
-
-func (m *Model) surfaceText(s shell.Surface) string {
-	t := m.thread()
-	v := m.viewState()
-	var b strings.Builder
-	switch s.Kind {
-	case "plan":
-		b.WriteString("CURRENT PLAN\n\n")
-		for _, step := range t.Plan {
-			mark := "○"
-			if step.State == "completed" {
-				mark = "✓"
-			}
-			if step.State == "active" {
-				mark = "●"
-			}
-			fmt.Fprintf(&b, "%s %s\n  %s\n\n", mark, step.Title, step.State)
-		}
-	case "agents":
-		for _, c := range t.Children {
-			if v.DetailID != "" && c.ID != v.DetailID {
-				continue
-			}
-			fmt.Fprintf(&b, "%s · %s\nParent: %s\n\n", c.Name, c.State, c.ParentID)
-			for _, a := range c.Activity {
-				fmt.Fprintf(&b, "%s\n%s\n%s\n\n", a.Title, a.Text, a.Detail)
-			}
-		}
-		if b.Len() == 0 {
-			b.WriteString("Child history unavailable")
-		}
-	case "activity":
-		if v.DetailID == "usage" {
-			return "USAGE\n\n" + strings.Join(m.usageLines(), "\n") + "\n\nCapabilities\n" + strings.Join(m.snapshot.Capabilities, "\n") + "\n\n" + m.keyboard + "\n" + m.colorDiagnostics() + "\nGraphics: not probed; text fallback"
-		}
-		for _, a := range t.Activity {
-			if v.DetailID != "" && a.ID != v.DetailID {
-				continue
-			}
-			fmt.Fprintf(&b, "%s · %s\n%s\n\n%s\n\n", a.Title, a.State, a.Text, activityDetail(a))
-		}
-		for _, r := range t.Requests {
-			if v.DetailID != "" && r.ID != v.DetailID {
-				continue
-			}
-			delivery := requestDeliveryDescription(r.Delivery)
-			fmt.Fprintf(&b, "%s\n%s\nState: %s\nDelivery: %s\nChoices: %s\n", r.Title, r.Detail, r.State, delivery, strings.Join(r.Choices, ", "))
-			if r.Action != "" {
-				fmt.Fprintf(&b, "Response: %s · no answer sent\n", questionActionOutcome(r.Action))
-			}
-			b.WriteString("\n")
-		}
-		if b.Len() == 0 {
-			b.WriteString("No retained activity for this selection")
-		}
-	case "terminal":
-		return m.terminalText(s.ID)
-	case "files":
-		return "FILES\n\nCheckout: " + t.Checkout + "\n\nCollaborative editor unavailable\n\nFile writes are not enabled in this slice.\n\nPlanned validation\n• Concurrent edits and own-edit undo\n• Durable buffers versus disk saves\n• External-change reconciliation"
-	case "git":
-		return "GIT\n\nCheckout: " + t.Checkout + "\n\nGit integration unavailable\n\nWorking-tree, staged and branch diffs will remain separate from recorded turn changes."
-	}
-	return b.String()
+	f.scrollbar(m, shell.Rect{X: f.detail.X + f.detail.W, Y: f.detail.Y, W: 1, H: f.detail.H}, "detail", len(rows), f.detail.H, offset, p.panel)
 }
 
 func (m *Model) terminalText(id string) string {
@@ -799,22 +735,23 @@ func (m *Model) renderMenu(f *frame) {
 	p := m.colors()
 	r := m.menuRect()
 	w, h := r.W, r.H
-	extra := 0
-	if m.projectMode != "" {
-		extra = 2
-	}
+	extra := m.menuExtraRows()
 	m.renderModalBackdrop(f)
 	f.componentBox(m, r, roundedOutline, m.componentStyle(roundedOutline, componentState{Focused: true}, p.text, p.input), p.canvas)
 	f.hits = nil
 	f.scrollbars = nil
-	titleInk := p.violet
+	// The title is a panel heading over a rule; an error keeps its red ink.
+	titleInk := p.muted
 	if m.menuTitle == "Cannot send message" {
 		titleInk = p.red
 	}
-	f.text(r.X+2, r.Y+1, w-7, m.menuTitle, titleInk, p.input)
+	tv := componentVisual{foreground: titleInk, background: p.input, bold: true}
+	f.componentText(r.X+2, r.Y+1, w-7, m.menuTitleText(), tv)
 	f.iconButton(m, r.X+w-4, r.Y+1, 3, centered(m.icon("close"), 3), "menu-close", action{Kind: "menu-close"}, p.muted, p.input)
+	panelRuleOn(f, m, r.X+2, r.Y+2, w-4, p.input)
+	top := r.Y + 3
 	if extra > 0 {
-		input := shell.Rect{X: r.X + 2, Y: r.Y + 2, W: w - 4, H: 1}
+		input := shell.Rect{X: r.X + 2, Y: top, W: w - 4, H: 1}
 		if f.rows != nil {
 			f.put(input, m.projectInput.View())
 		}
@@ -823,16 +760,17 @@ func (m *Model) renderMenu(f *frame) {
 		if caption == "" && (m.projectMode == "add" || m.projectMode == "project-root") {
 			caption, ink = m.paths.result.Directory, p.muted
 		}
-		f.text(r.X+2, r.Y+3, w-4, caption, ink, p.input)
+		f.text(r.X+2, top+1, w-4, caption, ink, p.input)
 	}
-	visible := h - 4 - extra
+	visible := m.menuVisibleItems()
 	start := m.menuStart(visible)
 	for i := 0; i < visible && start+i < len(m.menu); i++ {
 		index := start + i
 		item := m.menu[index]
+		y := top + extra + i
 		if m.projectMode == "filter" && item.Action.Kind == "project-filter" && item.Action.ID != "" {
 			if project, ok := m.projectByID(item.Action.ID); ok {
-				y, key := r.Y+2+extra+i, fmt.Sprintf("menu:%d", index)
+				key := fmt.Sprintf("menu:%d", index)
 				state := m.controlState(index == m.menuIndex && !m.projectGear, key)
 				f.styledButton(r.X+2, y, w-8, "   "+project.Name, key, action{Kind: "menu-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
 				f.hits[len(f.hits)-1].Label = project.Name + " · " + project.Path
@@ -843,7 +781,7 @@ func (m *Model) renderMenu(f *frame) {
 				f.hits[len(f.hits)-1].Label = "Project settings · " + project.Name
 			}
 		} else if item.Action.Kind == "tab" {
-			f.tab(m, r.X+2, r.Y+2+extra+i, w-5, item.Label, item.Action.Value,
+			f.tab(m, r.X+2, y, w-5, item.Label, item.Action.Value,
 				fmt.Sprintf("menu:%d", index), "menu-tab-close:"+item.Action.ID,
 				action{Kind: "menu-select", Index: index}, action{Kind: "menu-tab-close", ID: item.Action.ID}, index == m.menuIndex)
 		} else {
@@ -854,15 +792,70 @@ func (m *Model) renderMenu(f *frame) {
 			key := fmt.Sprintf("menu:%d", index)
 			state := m.controlState(index == m.menuIndex, key)
 			state.Focused = state.Focused || index == m.menuIndex && m.focus != "project-input"
-			f.styledButton(r.X+2, r.Y+2+extra+i, w-5, label, key, action{Kind: "menu-select", Index: index}, m.componentStyle(squareFill, state, p.text, p.input))
+			fg := p.text
+			if menuItemDestructive(item) {
+				fg = p.red
+			}
+			v := m.componentStyle(squareFill, state, fg, p.input)
+			if name, value, ok := menuPair(item, w-5); ok {
+				m.menuPairButton(f, r.X+2, y, w-5, name, value, key, action{Kind: "menu-select", Index: index}, v)
+			} else {
+				f.styledButton(r.X+2, y, w-5, label, key, action{Kind: "menu-select", Index: index}, v)
+			}
 		}
 	}
-	f.scrollbar(m, shell.Rect{X: r.X + w - 2, Y: r.Y + 2 + extra, W: 1, H: visible}, "menu", len(m.menu), visible, start, p.input)
+	f.scrollbar(m, shell.Rect{X: r.X + w - 2, Y: top + extra, W: 1, H: visible}, "menu", len(m.menu), visible, start, p.input)
+	panelRuleOn(f, m, r.X+2, r.Y+h-3, w-4, p.input)
 	help := fmt.Sprintf("↑ ↓  Enter  Esc  %d/%d", m.menuIndex+1, len(m.menu))
 	if m.projectMode == "add" || m.projectMode == "project-root" {
 		help = "↑ ↓  Tab browse  Enter choose  Esc"
 	}
 	f.text(r.X+2, r.Y+h-2, w-4, help, p.muted, p.input)
+}
+
+// menuItemDestructive reports items whose action discards or deletes work,
+// which keep red ink.
+func menuItemDestructive(item menuItem) bool {
+	switch item.Action.Kind {
+	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove":
+		return true
+	}
+	return false
+}
+
+// menuPair paints an explicit pair item (pairMenuItem) as a pair row when the
+// whole value fits beside its label; otherwise the item keeps its one-line label.
+func menuPair(item menuItem, width int) (string, string, bool) {
+	name, value := item.PairLabel, item.PairValue
+	if name == "" || value == "" || ansi.StringWidth(name) > 24 {
+		return "", "", false
+	}
+	// Keep one inset cell after the value.
+	if !panelPairShort(width-1, name, value) {
+		return "", "", false
+	}
+	return name, value, true
+}
+
+// menuPairButton is a selectable pair row: the row takes the square fill's
+// state, the muted label sits at the left like any item label and the value
+// flush right, inset by one cell; the focus mark takes the blank cell before the row.
+func (m *Model) menuPairButton(f *frame, x, y, width int, name, value, key string, a action, v componentVisual) {
+	p := m.colors()
+	marked := v.focused && f.blank(x-1, y)
+	labelInk, valueInk := p.muted, v.foreground
+	if v.bold {
+		labelInk = v.foreground
+	}
+	f.text(x, y, width, "", valueInk, v.background)
+	panelPairRowStyled(f, x, y, width-1, name, value, labelInk, valueInk, v.background)
+	if v.focused && !marked {
+		f.styledText(x, y, ansi.StringWidth(name), name, componentVisual{foreground: labelInk, background: v.background}, true)
+	}
+	if marked {
+		f.focusMark(x-1, y, v, v.base)
+	}
+	f.hits = append(f.hits, hit{Rect: shell.Rect{X: x, Y: y, W: width, H: 1}, Action: a, Label: name + ": " + value, Key: key})
 }
 
 // View composes the frame and overlays the live text selection.

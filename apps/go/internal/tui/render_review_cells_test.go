@@ -214,7 +214,7 @@ func TestReviewSingleRowTextCollapsesNewlines(t *testing.T) {
 	m.status = "status\nnext"
 	for _, menu := range []bool{false, true} {
 		if menu {
-			m.showMenu("Pick\none", []menuItem{{"item\nwith newline", action{Kind: "theme"}}})
+			m.showMenu("Pick\none", []menuItem{{Label: "item\nwith newline", Action: action{Kind: "theme"}}})
 		}
 		rows := m.render().rows
 		if len(rows) != m.height {
@@ -232,7 +232,7 @@ func TestReviewSingleRowTextCollapsesNewlines(t *testing.T) {
 		if !menu && !strings.Contains(text, "status next") {
 			t.Fatal("status newline not collapsed")
 		}
-		if menu && (!strings.Contains(text, "item with newline") || !strings.Contains(text, "Pick one")) {
+		if menu && (!strings.Contains(text, "item with newline") || !strings.Contains(text, "PICK ONE")) {
 			t.Fatal("menu newline not collapsed")
 		}
 	}

@@ -258,18 +258,18 @@ def main():
                   'narrow composer keeps model and Send on the same row')
             question_y, question_row = next((i, row) for i, row in enumerate(narrow) if '▶' in row)
             a.click(question_row.index('\ueb10'), question_y)
-            check('Questions' in '\n'.join(a.screen()) and '3 Notes' in '\n'.join(a.screen()),
+            check('QUESTIONS' in '\n'.join(a.screen()) and '3 Notes' in '\n'.join(a.screen()),
                   'question overflow opens direct access to hidden pages in the narrow header')
             a.send(b'\x1b')
             footer_y, footer_row = next((i, row) for i, row in enumerate(a.screen()) if '\uf0aa' in row)
             a.click(footer_row.index('\ueb10'), footer_y)  # Scope to settings, not question overflow.
-            check('More settings' in '\n'.join(a.screen()) and 'Effort: Medium' in '\n'.join(a.screen()),
+            check('MORE SETTINGS' in '\n'.join(a.screen()) and any(re.search(r'Effort\s{2,}Medium', row) for row in a.screen()),
                   'SGR pointer opens hidden composer settings from vertical ellipsis')
             (artifacts / 'composer-overflow.screen.txt').write_text('\n'.join(a.screen())+'\n')
             a.resize(160, 50)
             a.pump(.5)
             a.send(b'\r')  # First overflow setting remains effort across resize.
-            check('Settings · effort' in '\n'.join(a.screen()),
+            check('SETTINGS · EFFORT' in '\n'.join(a.screen()),
                   'Enter routes the stable overflow selection to its settings picker after resize')
             a.send(b'\x1b')
             a.pump(1.1)
@@ -283,8 +283,8 @@ def main():
                   'one prompt outline encloses typing and composer controls')
             a.click(row.index('Ctx') if 'Ctx' in row else row.rfind('\ueb10'), row_index)  # Independent usage control.
             usage_screen = '\n'.join(a.screen())
-            check('Context percentage: unavailable' in usage_screen and 'API cost: unavailable' in usage_screen
-                  and 'Effort: Medium' not in usage_screen,
+            check(re.search(r'Context percentage\s{2,}unavailable', usage_screen) and re.search(r'API cost\s{2,}unavailable', usage_screen)
+                  and not re.search(r'Effort(:|\s{2,})\s*Medium', usage_screen),
                   'separate usage ellipsis opens context percentage and cost without settings')
             (artifacts / 'composer-usage.screen.txt').write_text(usage_screen+'\n')
             a.send(b'\x1b')

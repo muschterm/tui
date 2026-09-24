@@ -32,7 +32,7 @@ func TestModalOutsideClickConsumesUnderlyingActions(t *testing.T) {
 			if !found {
 				t.Fatalf("missing underlying target %s", key)
 			}
-			m.showMenu("Delete confirmation", []menuItem{{"Cancel", action{Kind: "menu-close"}}, {"Delete", action{Kind: "thread-delete-confirm", ID: active}}})
+			m.showMenu("Delete confirmation", []menuItem{{Label: "Cancel", Action: action{Kind: "menu-close"}}, {Label: "Delete", Action: action{Kind: "thread-delete-confirm", ID: active}}})
 			if m.menuRect().Contains(target.Rect.X, target.Rect.Y) {
 				t.Fatal("test target is inside modal")
 			}
@@ -46,7 +46,7 @@ func TestModalOutsideClickConsumesUnderlyingActions(t *testing.T) {
 
 func TestModalInsideAndOtherPointerEventsDoNotDismiss(t *testing.T) {
 	m := testModel()
-	m.showMenu("Choose", []menuItem{{"Keep open", action{Kind: "noop"}}})
+	m.showMenu("Choose", []menuItem{{Label: "Keep open", Action: action{Kind: "noop"}}})
 	r := m.menuRect()
 	for _, point := range [][2]int{{r.X, r.Y}, {r.X + r.W - 1, r.Y + r.H - 1}, {r.X + 1, r.Y + 2}} {
 		m.mouse(tea.MouseClickMsg{X: point[0], Y: point[1], Button: tea.MouseLeft})
@@ -64,7 +64,7 @@ func TestModalInsideAndOtherPointerEventsDoNotDismiss(t *testing.T) {
 func TestModalDismissPreservesProjectInput(t *testing.T) {
 	for _, mode := range []string{"add", "rename"} {
 		m := testModel()
-		m.showMenu("Project", []menuItem{{"Apply", action{Kind: "project-submit"}}})
+		m.showMenu("Project", []menuItem{{Label: "Apply", Action: action{Kind: "project-submit"}}})
 		m.projectMode = mode
 		m.projectInput.SetValue("unfinished project value")
 		m.prompt.SetValue("draft")
@@ -94,7 +94,7 @@ func TestModalBackdropPreservesTextRolesAndModalContrast(t *testing.T) {
 				if profile == colorprofile.ASCII && f.rows[0] != original {
 					t.Fatal("monochrome fallback changed styling")
 				}
-				m.showMenu("Normal contrast", []menuItem{{"Selected item", action{Kind: "noop"}}})
+				m.showMenu("Normal contrast", []menuItem{{Label: "Selected item", Action: action{Kind: "noop"}}})
 				painted := m.render()
 				var isolated frame
 				isolated.rows = make([]string, m.height)

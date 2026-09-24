@@ -34,7 +34,8 @@ def main():
 
     def thread_row(term):
         for y, line in enumerate(term.screen()):
-            if y >= 5 and 'New thread' in line[:24]:
+            # Titles derive from the first prompt ("Navigation start").
+            if y >= 5 and any(t in line[:24] for t in ('New thread', 'Navigation start', 'Navigation…')):
                 return y
         raise AssertionError('New thread navigation row missing')
 
@@ -136,7 +137,7 @@ def main():
             a.click_label('Choose model')
             # Outside click dismisses without activating underlying New thread.
             a.click(20, 2)
-            check('Settings · model' not in '\n'.join(a.screen())
+            check('SETTINGS · MODEL' not in '\n'.join(a.screen())
                   and view('navigation-a')['DraftThreads'][selected['ID']]['Draft'] == 'Navigation start',
                   'outside click dismisses centered model modal without pass-through')
             a.click_label('Choose model')
@@ -181,7 +182,7 @@ def main():
             a.pump(1.2)
             check(next(t for t in snapshot()['threads'] if t['ID'] == current).get('Closed', False),
                   'hover check closes idle thread without submitting its draft')
-            a.click_label('Closed (')
+            a.click_label('CLOSED (')
             a.pump(.8)
             a.click(22, thread_row(a) + 1)
             a.pump(1.2)

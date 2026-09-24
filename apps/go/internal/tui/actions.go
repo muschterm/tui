@@ -16,34 +16,51 @@ func (m *Model) showMenu(title string, items []menuItem) {
 	m.projectInput.Blur()
 	m.contextMenu = nil
 	m.menuTitle = title
+	m.menuTitleUser = ""
 	m.menu = items
 	m.menuIndex = 0
 	m.menuOffset = 0
 }
 
+// showMenuFor shows a menu titled by a static prefix followed by user text,
+// such as a thread or project name, which keeps its original case.
+func (m *Model) showMenuFor(prefix, user string, items []menuItem) {
+	m.showMenu(prefix+user, items)
+	m.menuTitleUser = user
+}
+
+// menuTitleText is the painted dialog title: the static prefix uppercased
+// like a panel heading and any user-supplied tail in its original case.
+func (m *Model) menuTitleText() string {
+	if m.menuTitleUser != "" && strings.HasSuffix(m.menuTitle, m.menuTitleUser) {
+		return strings.ToUpper(strings.TrimSuffix(m.menuTitle, m.menuTitleUser)) + m.menuTitleUser
+	}
+	return strings.ToUpper(m.menuTitle)
+}
+
 func (m *Model) openCommands() {
 	if m.terminalTooSmall() {
 		// Nothing here submits, stops, deletes or changes queue/lifecycle state.
-		m.showMenu("Commands", []menuItem{{"Detach TUI (Ctrl+Q)", action{Kind: "quit"}}, {"Suspend (Ctrl+Z)", action{Kind: "suspend"}}, {"Switch dark / light theme (F8)", action{Kind: "theme"}}})
+		m.showMenu("Commands", []menuItem{{Label: "Detach TUI (Ctrl+Q)", Action: action{Kind: "quit"}}, {Label: "Suspend (Ctrl+Z)", Action: action{Kind: "suspend"}}, {Label: "Switch dark / light theme (F8)", Action: action{Kind: "theme"}}})
 		return
 	}
-	items := []menuItem{{"Navigation · show / hide (F2)", action{Kind: "left"}}, {"Right surfaces · show / hide (F3)", action{Kind: "right"}}, {"Bottom panel · show / hide (F5)", action{Kind: "bottom"}}, {"Maximize / restore surface (F7)", action{Kind: "maximize"}}, {"Switch dark / light theme (F8)", action{Kind: "theme"}}, {"Attention", action{Kind: "attention"}}, {"Resume selected thread", action{Kind: "resume"}}, {"Stop selected thread", action{Kind: "interrupt"}}, {"Send / save queued edit (Ctrl+S)", action{Kind: "send"}}, {"Retry pending command", action{Kind: "retry"}}, {"Rebase queued edit after conflict", action{Kind: "refresh-edit"}}, {"Closed · collapse / expand", action{Kind: "recents-collapse"}}, {"Closed · hide / restore", action{Kind: "recents-hide"}}, {"Navigation · grow", action{Kind: "resize-left", Index: 2}}, {"Navigation · shrink", action{Kind: "resize-left", Index: -2}}, {"Right · grow (Alt+Left)", action{Kind: "resize-right", Index: 2}}, {"Right · shrink (Alt+Right)", action{Kind: "resize-right", Index: -2}}, {"Bottom · grow (Alt+Up)", action{Kind: "resize-bottom", Index: 1}}, {"Bottom · shrink (Alt+Down)", action{Kind: "resize-bottom", Index: -1}}, {"Usage details", action{Kind: "usage"}}, {"Copy visible transcript", action{Kind: "copy-transcript"}}, {"Detach TUI (Ctrl+Q)", action{Kind: "quit"}}}
+	items := []menuItem{{Label: "Navigation · show / hide (F2)", Action: action{Kind: "left"}}, {Label: "Right surfaces · show / hide (F3)", Action: action{Kind: "right"}}, {Label: "Bottom panel · show / hide (F5)", Action: action{Kind: "bottom"}}, {Label: "Maximize / restore surface (F7)", Action: action{Kind: "maximize"}}, {Label: "Switch dark / light theme (F8)", Action: action{Kind: "theme"}}, {Label: "Attention", Action: action{Kind: "attention"}}, {Label: "Resume selected thread", Action: action{Kind: "resume"}}, {Label: "Stop selected thread", Action: action{Kind: "interrupt"}}, {Label: "Send / save queued edit (Ctrl+S)", Action: action{Kind: "send"}}, {Label: "Retry pending command", Action: action{Kind: "retry"}}, {Label: "Rebase queued edit after conflict", Action: action{Kind: "refresh-edit"}}, {Label: "Closed · collapse / expand", Action: action{Kind: "recents-collapse"}}, {Label: "Closed · hide / restore", Action: action{Kind: "recents-hide"}}, {Label: "Navigation · grow", Action: action{Kind: "resize-left", Index: 2}}, {Label: "Navigation · shrink", Action: action{Kind: "resize-left", Index: -2}}, {Label: "Right · grow (Alt+Left)", Action: action{Kind: "resize-right", Index: 2}}, {Label: "Right · shrink (Alt+Right)", Action: action{Kind: "resize-right", Index: -2}}, {Label: "Bottom · grow (Alt+Up)", Action: action{Kind: "resize-bottom", Index: 1}}, {Label: "Bottom · shrink (Alt+Down)", Action: action{Kind: "resize-bottom", Index: -1}}, {Label: "Usage details", Action: action{Kind: "usage"}}, {Label: "Copy visible transcript", Action: action{Kind: "copy-transcript"}}, {Label: "Detach TUI (Ctrl+Q)", Action: action{Kind: "quit"}}}
 	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
-		items = append(items, menuItem{"Open " + title(kind), action{Kind: "open", Value: kind}})
+		items = append(items, menuItem{Label: "Open " + title(kind), Action: action{Kind: "open", Value: kind}})
 	}
 	if m.singleColumn() {
-		items[0] = menuItem{"Choose column (F2)", action{Kind: "columns"}}
-		items[1] = menuItem{"Surfaces (F3)", action{Kind: "column", Index: int(shell.RightRegion)}}
-		items[2] = menuItem{"Terminal (F5)", action{Kind: "column", Index: int(shell.BottomRegion)}}
-		items[3] = menuItem{"Conversation", action{Kind: "column", Index: int(shell.CenterRegion)}}
+		items[0] = menuItem{Label: "Choose column (F2)", Action: action{Kind: "columns"}}
+		items[1] = menuItem{Label: "Surfaces (F3)", Action: action{Kind: "column", Index: int(shell.RightRegion)}}
+		items[2] = menuItem{Label: "Terminal (F5)", Action: action{Kind: "column", Index: int(shell.BottomRegion)}}
+		items[3] = menuItem{Label: "Conversation", Action: action{Kind: "column", Index: int(shell.CenterRegion)}}
 	}
 	for _, t := range m.snapshot.Threads {
-		items = append(items, menuItem{"Thread · " + t.Title, action{Kind: "thread", ID: t.ID}})
+		items = append(items, menuItem{Label: "Thread · " + t.Title, Action: action{Kind: "thread", ID: t.ID}})
 	}
 	for _, tab := range m.viewState().Host.Tabs {
 		items = append(items, tabEntry(tab))
 	}
-	items = append(items, menuItem{"App settings", action{Kind: "app-settings"}}, menuItem{"Select / filter projects", action{Kind: "projects"}}, menuItem{"Add project", action{Kind: "project-add"}}, menuItem{"New thread", action{Kind: "thread-create"}}, menuItem{"Closed threads", action{Kind: "closed-threads"}}, menuItem{"Selected thread options", action{Kind: "thread-menu", ID: m.state.Active}})
+	items = append(items, menuItem{Label: "App settings", Action: action{Kind: "app-settings"}}, menuItem{Label: "Select / filter projects", Action: action{Kind: "projects"}}, menuItem{Label: "Add project", Action: action{Kind: "project-add"}}, menuItem{Label: "New thread", Action: action{Kind: "thread-create"}}, menuItem{Label: "Closed threads", Action: action{Kind: "closed-threads"}}, menuItem{Label: "Selected thread options", Action: action{Kind: "thread-menu", ID: m.state.Active}})
 	m.showMenu("Commands", items)
 }
 
@@ -280,7 +297,7 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "bottom-tabs":
 		var items []menuItem
 		for _, tab := range v.Bottom.Tabs {
-			items = append(items, menuItem{tab.Title, action{Kind: "bottom-tab", ID: tab.ID, Value: tab.Kind}})
+			items = append(items, menuItem{Label: tab.Title, Action: action{Kind: "bottom-tab", ID: tab.ID, Value: tab.Kind}})
 		}
 		m.showMenu("Bottom terminals", items)
 	case "bottom-close":
@@ -387,7 +404,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		var items []menuItem
 		for _, t := range m.snapshot.Threads {
 			if t.Closed && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
-				items = append(items, menuItem{t.Title, action{Kind: "thread", ID: t.ID}})
+				items = append(items, menuItem{Label: t.Title, Action: action{Kind: "thread", ID: t.ID}})
 			}
 		}
 		if len(items) == 0 {
@@ -410,11 +427,11 @@ func (m *Model) activate(a action) tea.Cmd {
 		for _, thread := range m.snapshot.Threads {
 			for _, r := range thread.Requests {
 				if r.State == "pending" {
-					items = append(items, menuItem{thread.Title + " · " + r.Title, action{Kind: "attention-item", ID: thread.ID, Value: r.ID}})
+					items = append(items, menuItem{Label: thread.Title + " · " + r.Title, Action: action{Kind: "attention-item", ID: thread.ID, Value: r.ID}})
 				}
 			}
 			if thread.State == "failed" {
-				items = append(items, menuItem{thread.Title + " · failed", action{Kind: "thread", ID: thread.ID}})
+				items = append(items, menuItem{Label: thread.Title + " · failed", Action: action{Kind: "thread", ID: thread.ID}})
 			}
 		}
 		if len(items) == 0 {
@@ -524,7 +541,7 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "queue":
 		var items []menuItem
 		for _, q := range t.Queue {
-			items = append(items, menuItem{"Steer · " + safe(q.Text), m.steerAction(q.ID)})
+			items = append(items, menuItem{Label: "Steer · " + safe(q.Text), Action: m.steerAction(q.ID)})
 			for _, op := range []string{"edit", "remove", "up", "down"} {
 				act := action{Kind: op, ID: q.ID}
 				if op == "up" {
@@ -535,7 +552,7 @@ func (m *Model) activate(a action) tea.Cmd {
 					act.Kind = "move"
 					act.Index = 1
 				}
-				items = append(items, menuItem{title(op) + " · " + safe(q.Text), act})
+				items = append(items, menuItem{Label: title(op) + " · " + safe(q.Text), Action: act})
 			}
 		}
 		m.showMenu("Prompt queue", items)
@@ -583,7 +600,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		var items []menuItem
 		for _, kind := range []string{"file", "lines", "image", "git-diff", "terminal-output"} {
-			items = append(items, menuItem{title(kind) + " context", action{Kind: "attach-kind", Value: kind}})
+			items = append(items, menuItem{Label: title(kind) + " context", Action: action{Kind: "attach-kind", Value: kind}})
 		}
 		m.showMenu("Context", items)
 	case "attach-kind":
@@ -606,14 +623,14 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		var items []menuItem
 		for i, x := range v.Attachments {
-			items = append(items, menuItem{"Remove " + x.Name, action{Kind: "attachment-remove", Index: i}})
+			items = append(items, menuItem{Label: "Remove " + x.Name, Action: action{Kind: "attachment-remove", Index: i}})
 		}
 		m.showMenu("Attached context", items)
 	case "children":
 		var items []menuItem
 		for _, c := range t.Children {
 			if c.State == "running" {
-				items = append(items, menuItem{c.Name, action{Kind: "open", Value: "agents", ID: c.ID}})
+				items = append(items, menuItem{Label: c.Name, Action: action{Kind: "open", Value: "agents", ID: c.ID}})
 			}
 		}
 		m.showMenu("Running agents", items)
@@ -629,7 +646,7 @@ func (m *Model) activate(a action) tea.Cmd {
 			if origin := m.requestOriginLabel(r); origin != "" {
 				label = origin + " · " + label
 			}
-			items = append(items, menuItem{label, action{Kind: "request-index", ID: r.ID}})
+			items = append(items, menuItem{Label: label, Action: action{Kind: "request-index", ID: r.ID}})
 		}
 		m.showMenu("Pending requests", items)
 	case "request-index":
@@ -648,7 +665,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		if r, ok := m.request(); ok {
 			var items []menuItem
 			for i, q := range r.Questions {
-				items = append(items, menuItem{questionTabLabel(q, i), action{Kind: "question-index", ID: r.ID, Index: i, Revision: r.Revision}})
+				items = append(items, menuItem{Label: questionTabLabel(q, i), Action: action{Kind: "question-index", ID: r.ID, Index: i, Revision: r.Revision}})
 			}
 			m.showMenu("Questions", items)
 		}
@@ -661,7 +678,7 @@ func (m *Model) activate(a action) tea.Cmd {
 			q, _, _ := m.activeQuestion(r)
 			var items []menuItem
 			for _, o := range m.questionOptions(r) {
-				items = append(items, menuItem{m.questionMarker(protocol.QuestionKind(q), o.selected) + " " + o.label, o.action})
+				items = append(items, menuItem{Label: m.questionMarker(protocol.QuestionKind(q), o.selected) + " " + o.label, Action: o.action})
 			}
 			if len(items) > 0 {
 				m.showMenu("Answer options", items)
@@ -671,7 +688,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		if r, ok := m.request(); ok && r.Kind == "approval" {
 			var items []menuItem
 			for i, choice := range r.Choices {
-				items = append(items, menuItem{choice, m.approvalAction(r, i)})
+				items = append(items, menuItem{Label: choice, Action: m.approvalAction(r, i)})
 			}
 			m.showMenu("Approval choices", items)
 		}
@@ -683,7 +700,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		if r, ok := m.request(); ok {
 			var items []menuItem
 			for _, name := range questionOfferedActions(r) {
-				items = append(items, menuItem{questionActionLabel(name), action{Kind: "answer-action", ID: r.ID, Revision: r.Revision, Value: name}})
+				items = append(items, menuItem{Label: questionActionLabel(name), Action: action{Kind: "answer-action", ID: r.ID, Revision: r.Revision, Value: name}})
 			}
 			if len(items) > 0 {
 				m.showMenu("Request actions", items)
@@ -734,7 +751,7 @@ func (m *Model) activate(a action) tea.Cmd {
 func (m *Model) showChooser() {
 	var items []menuItem
 	for _, kind := range []string{"files", "git", "terminal", "agents", "plan", "activity"} {
-		items = append(items, menuItem{title(kind), action{Kind: "open", Value: kind}})
+		items = append(items, menuItem{Label: title(kind), Action: action{Kind: "open", Value: kind}})
 	}
 	m.showMenu("Add surface", items)
 }

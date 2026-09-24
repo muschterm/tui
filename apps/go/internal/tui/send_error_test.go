@@ -20,7 +20,7 @@ func TestRejectedSendOpensActionableDialogAndKeepsDraft(t *testing.T) {
 	if selected := m.menu[m.menuIndex]; selected.Action.Kind != "settings" || selected.Action.Value != "model" {
 		t.Fatalf("no direct fix: %+v", selected)
 	}
-	if !strings.Contains(m.View().Content, "Cannot send message") {
+	if !strings.Contains(m.View().Content, "CANNOT SEND MESSAGE") {
 		t.Fatal("dialog not rendered")
 	}
 	if dir := os.Getenv("TUI_GO_CAPTURE_DIR"); dir != "" {

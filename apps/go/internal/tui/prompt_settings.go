@@ -40,20 +40,20 @@ func (m *Model) openFixtureSettings(field string) {
 	var items []menuItem
 	switch field {
 	case "agent", "model":
-		items = []menuItem{{"Reference · Demo model", action{Kind: "setting-model"}}}
+		items = []menuItem{{Label: "Reference · Demo model", Action: action{Kind: "setting-model"}}}
 		if !m.acpAgents() {
 			items = append(items,
-				menuItem{"Codex · integration not connected", action{Kind: "provider-unavailable", Value: "Codex"}},
-				menuItem{"Claude · integration not connected", action{Kind: "provider-unavailable", Value: "Claude"}},
+				menuItem{Label: "Codex · integration not connected", Action: action{Kind: "provider-unavailable", Value: "Codex"}},
+				menuItem{Label: "Claude · integration not connected", Action: action{Kind: "provider-unavailable", Value: "Claude"}},
 			)
 		}
 	case "effort":
 		for _, value := range []string{"low", "medium", "high"} {
-			items = append(items, menuItem{effortDisplayName(value), action{Kind: "setting", Value: value}})
+			items = append(items, menuItem{Label: effortDisplayName(value), Action: action{Kind: "setting", Value: value}})
 		}
 	default:
 		s := m.composerSelection()
-		items = []menuItem{{"Permissions: " + permissionDisplayName(s.Permissions), action{Kind: "noop"}}, {"Context: " + s.Context + " · Speed: " + s.Speed, action{Kind: "noop"}}, {"Demo supports only these fixed options", action{Kind: "noop"}}}
+		items = []menuItem{pairMenuItem("Permissions", permissionDisplayName(s.Permissions), action{Kind: "noop"}), {Label: "Context: " + s.Context + " · Speed: " + s.Speed, Action: action{Kind: "noop"}}, {Label: "Demo supports only these fixed options", Action: action{Kind: "noop"}}}
 	}
 	m.showMenu("Settings · "+field, items)
 }
@@ -67,12 +67,12 @@ func (m *Model) agentMenuItems(chosen protocol.Agent) []menuItem {
 		if detail := strings.TrimSpace(singleLine(a.Detail)); detail != "" {
 			label += " · " + ansi.Truncate(detail, maxSettingHelp, "…")
 		}
-		items = append(items, menuItem{label, action{Kind: "setting-agent", Value: a.ID}})
+		items = append(items, menuItem{Label: label, Action: action{Kind: "setting-agent", Value: a.ID}})
 	}
 	if chosen.Kind != "fixture" {
-		items = append(items, menuItem{probeLabel(chosen), action{Kind: "agent-probe", ID: chosen.ID}})
+		items = append(items, menuItem{Label: probeLabel(chosen), Action: action{Kind: "agent-probe", ID: chosen.ID}})
 	}
-	return append(items, menuItem{"Agent defaults…", action{Kind: "settings", Value: "details"}})
+	return append(items, menuItem{Label: "Agent defaults…", Action: action{Kind: "settings", Value: "details"}})
 }
 
 func probeLabel(a protocol.Agent) string {
@@ -90,27 +90,27 @@ func (m *Model) optionMenuItems(c agentConfig, field string) []menuItem {
 	o, ok := c.option(field)
 	if !ok {
 		if a.Kind == "fixture" {
-			return []menuItem{{"Agent default · " + safe(a.Name) + " supports only its fixed " + field, action{Kind: "noop"}}}
+			return []menuItem{{Label: "Agent default · " + safe(a.Name) + " supports only its fixed " + field, Action: action{Kind: "noop"}}}
 		}
 		if agentNeedsProbe(a) {
-			return []menuItem{{"No probed options · " + field + " uses the agent default", action{Kind: "noop"}}, {probeLabel(a), action{Kind: "agent-probe", ID: a.ID}}}
+			return []menuItem{{Label: "No probed options · " + field + " uses the agent default", Action: action{Kind: "noop"}}, {Label: probeLabel(a), Action: action{Kind: "agent-probe", ID: a.ID}}}
 		}
-		return []menuItem{{"Agent default · " + safe(a.Name) + " offers no " + field + " option", action{Kind: "noop"}}}
+		return []menuItem{{Label: "Agent default · " + safe(a.Name) + " offers no " + field + " option", Action: action{Kind: "noop"}}}
 	}
 	selected := settingValue(m.composerSelection(), field)
 	var items []menuItem
 	if field == "speed" && o.Description != "" {
-		items = append(items, menuItem{safe(o.Description), action{Kind: "noop"}})
+		items = append(items, menuItem{Label: safe(o.Description), Action: action{Kind: "noop"}})
 	}
 	for _, v := range o.Values {
 		label := m.questionMarker("single", v.Value == selected) + " " + settingValueLabel(field, v)
 		if description := strings.TrimSpace(singleLine(v.Description)); description != "" && field != "effort" {
 			label += " · " + ansi.Truncate(description, maxSettingHelp, "…")
 		}
-		items = append(items, menuItem{label, action{Kind: "setting-field", ID: field, Value: v.Value}})
+		items = append(items, menuItem{Label: label, Action: action{Kind: "setting-field", ID: field, Value: v.Value}})
 	}
 	if len(items) == 0 {
-		items = append(items, menuItem{"Agent default · " + safe(o.Name) + " offers no values", action{Kind: "noop"}})
+		items = append(items, menuItem{Label: "Agent default · " + safe(o.Name) + " offers no values", Action: action{Kind: "noop"}})
 	}
 	return items
 }
@@ -119,10 +119,10 @@ func (m *Model) optionMenuItems(c agentConfig, field string) []menuItem {
 // read-only, as opaque agent defaults.
 func agentDetailItems(c agentConfig) []menuItem {
 	a := c.agent
-	items := []menuItem{{safe(a.Name) + " · " + agentReadiness(a), action{Kind: "noop"}}}
+	items := []menuItem{{Label: safe(a.Name) + " · " + agentReadiness(a), Action: action{Kind: "noop"}}}
 	for _, field := range settingFieldOrder {
 		if o, ok := c.option(field); ok {
-			items = append(items, menuItem{title(field) + ": " + safe(o.Name), action{Kind: "settings", Value: field}})
+			items = append(items, pairMenuItem(title(field), safe(o.Name), action{Kind: "settings", Value: field}))
 		}
 	}
 	for _, o := range c.unmapped() {
@@ -130,10 +130,10 @@ func agentDetailItems(c agentConfig) []menuItem {
 		if current == "" {
 			current = safe(o.Current)
 		}
-		items = append(items, menuItem{safe(o.Name) + ": " + current + " · agent default", action{Kind: "noop"}})
+		items = append(items, pairMenuItem(safe(o.Name), current+" · agent default", action{Kind: "noop"}))
 	}
 	if len(a.Capabilities) > 0 {
-		items = append(items, menuItem{"Capabilities: " + strings.Join(a.Capabilities, ", "), action{Kind: "noop"}})
+		items = append(items, pairMenuItem("Capabilities", strings.Join(a.Capabilities, ", "), action{Kind: "noop"}))
 	}
 	return items
 }

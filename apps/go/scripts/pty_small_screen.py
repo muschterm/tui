@@ -102,12 +102,12 @@ def main():
                               f'{width}x22: {label} preserves composer and answer drafts')
                         (artifacts / f'{identity}-column-{expected}.screen.txt').write_text('\n'.join(term.screen()) + '\n')
 
-                    column('Projects & threads', 1, 'Closed')
+                    column('Projects & threads', 1, 'CLOSED')
                     check('Search' in '\n'.join(term.screen()),
                           f'{width}x22: navigation exposes inline thread search')
                     check('Submit' not in '\n'.join(term.screen()),
                           f'{width}x22: navigation uses available space without question card')
-                    column('Surfaces', 2, 'Add surface')
+                    column('Surfaces', 2, 'ADD SURFACE')
                     column('Terminal', 3, 'No terminal sessions')
                     resize(160, 50)
                     check(get('views/' + identity)['data']['Layout'] == layout,

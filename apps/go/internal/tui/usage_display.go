@@ -113,9 +113,13 @@ func (m *Model) usageLines() []string {
 func (m *Model) openUsageSummary() {
 	var items []menuItem
 	for _, line := range m.usageLines() {
-		items = append(items, menuItem{line, action{Kind: "noop"}})
+		if label, value, ok := strings.Cut(line, ": "); ok {
+			items = append(items, pairMenuItem(label, value, action{Kind: "noop"}))
+			continue
+		}
+		items = append(items, menuItem{Label: line, Action: action{Kind: "noop"}})
 	}
-	m.showMenu("Usage", append(items, menuItem{"Usage details", action{Kind: "usage"}}))
+	m.showMenu("Usage", append(items, menuItem{Label: "Usage details", Action: action{Kind: "usage"}}))
 }
 
 // The compact percentage is clamped for layout; details preserve an over-capacity

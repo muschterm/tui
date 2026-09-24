@@ -49,9 +49,9 @@ func (m *Model) openPromptContextMenu() tea.Cmd {
 	items := make([]menuItem, 0, 2)
 	normalizeInputSelection(&m.prompt)
 	if m.prompt.HasSelection() && m.prompt.SelectedText() != "" {
-		items = append(items, menuItem{"Copy", action{Kind: "context-copy", Value: m.prompt.SelectedText()}})
+		items = append(items, menuItem{Label: "Copy", Action: action{Kind: "context-copy", Value: m.prompt.SelectedText()}})
 	}
-	items = append(items, menuItem{"Paste", action{Kind: "context-paste"}})
+	items = append(items, menuItem{Label: "Paste", Action: action{Kind: "context-paste"}})
 	m.showMenu("Prompt", items)
 	m.contextMenu = &contextMenuState{returnFocus: "prompt"}
 	return cmd
@@ -68,7 +68,7 @@ func (m *Model) openSelectionContextMenu(focus string) tea.Cmd {
 	if m.focus != focus {
 		cmd = m.setFocus(focus)
 	}
-	m.showMenu("Selected text", []menuItem{{"Copy", action{Kind: "context-copy", Value: m.selectedText}}})
+	m.showMenu("Selected text", []menuItem{{Label: "Copy", Action: action{Kind: "context-copy", Value: m.selectedText}}})
 	m.contextMenu = &contextMenuState{returnFocus: focus}
 	return cmd
 }

@@ -132,6 +132,33 @@ cell-native constructs approximate its polish instead.
   separated by a full-width rule in the line color. Read-only label/value rows put a
   muted label at the left and a bright value flush right.
 
+### Panel style across surfaces — 2026-09-23
+
+The user then asked for the same language across the app. It applies to
+content-reading and choosing areas, not to the compact controls governed above:
+
+- **Right-host surfaces** (Plan, Agents, Activity, Usage, Files, Git, Terminal
+  headers) paint structured rows: uppercase muted headings, rules between entries,
+  status rows and label/value pairs. Only short values sit right-aligned; longer
+  values stack under a muted label. Terminal output stays raw, sanitized text.
+- **Status glyphs** keep semantic ink: completed `✓` green, active/working `●`
+  blue, pending `○` muted, failed `✕` red, interrupted/waiting/stale `!` amber,
+  unknown/unavailable `?` neutral, and any other reported state a neutral `·`.
+  Only completed states read as success. ASCII symbols use `+ * o x ! ? .`.
+- **Empty host chooser** shows banded tiles in two or three columns, each its own
+  hit rectangle and Tab stop, falling back to the list and then to the "Choose a
+  surface…" button as space or color support shrinks.
+- **Centered menus and dialogs** use an uppercase muted title (user-supplied names
+  keep their case) with a rule beneath, and a muted hint row with a rule above.
+  Pair rows are explicit per item for settings and usage facts; free-form text such
+  as thread titles or option labels is never split. Destructive items use red ink;
+  Cancel and informational items never do.
+- **Navigation** labels its Closed section with the same uppercase heading, still
+  dimmed, with the count only while collapsed.
+
+Unchanged by this refinement: the composer and footer, question card and tabs,
+queue card, thread cards, surface tabs, top chrome and activity strip.
+
 ## Building components
 
 ### Centered menus and dialogs

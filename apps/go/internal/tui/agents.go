@@ -389,8 +389,8 @@ func (m *Model) probeOffer(a protocol.Agent) tea.Cmd {
 		return nil
 	}
 	m.showMenu("Settings · agent", []menuItem{
-		{probeLabel(a), action{Kind: "agent-probe", ID: a.ID}},
-		{"Keep " + safe(a.Name) + " agent defaults", action{Kind: "noop"}},
+		{Label: probeLabel(a), Action: action{Kind: "agent-probe", ID: a.ID}},
+		{Label: "Keep " + safe(a.Name) + " agent defaults", Action: action{Kind: "noop"}},
 	})
 	return nil
 }

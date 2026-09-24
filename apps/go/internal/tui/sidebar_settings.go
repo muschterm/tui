@@ -220,7 +220,7 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 			}
 			// Cancel is deliberately first. Thread membership revisions bind this exact
 			// confirmation to the project and count the user reviewed.
-			m.showMenu("Remove project: "+p.Name, []menuItem{
+			m.showMenuFor("Remove project: ", p.Name, []menuItem{
 				{Label: "Cancel", Action: action{Kind: "noop"}},
 				{Label: fmt.Sprintf("Delete project and %d threads permanently", count), Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
 				{Label: "Files on disk will be kept", Action: action{Kind: "noop"}},

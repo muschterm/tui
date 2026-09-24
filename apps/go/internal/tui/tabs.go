@@ -49,7 +49,7 @@ func visibleTabs(tabs []shell.Surface, active string, width int) ([]tabSlot, boo
 }
 
 func tabEntry(tab shell.Surface) menuItem {
-	return menuItem{tab.Title, action{Kind: "tab", ID: tab.ID, Value: tab.Kind}}
+	return menuItem{Label: tab.Title, Action: action{Kind: "tab", ID: tab.ID, Value: tab.Kind}}
 }
 
 // The icon and name occupy disjoint hit areas. Only the icon slot closes;

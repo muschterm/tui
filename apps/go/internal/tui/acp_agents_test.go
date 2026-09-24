@@ -117,12 +117,14 @@ func TestAgentMenuViewCapture(t *testing.T) {
 	// ASCII symbols keep the capture independent of the reviewer's font.
 	want := strings.Join([]string{
 		"+------------------------------------------------------------------+",
-		"| Settings · agent                                               x |",
+		"| SETTINGS · AGENT                                               x |",
+		"| ---------------------------------------------------------------- |",
 		"|>( ) Fixture agent · ready · fixture                              |",
 		"| (*) Claude · ready                                               |",
 		"| ( ) Codex · unauthenticated · Sign in with the codex CLI first   |",
 		"| Refresh options · Claude                                         |",
 		"| Agent defaults…                                                  |",
+		"| ---------------------------------------------------------------- |",
 		"| ↑ ↓  Enter  Esc  1/5                                             |",
 		"+------------------------------------------------------------------+",
 	}, "\n")
@@ -397,7 +399,7 @@ func TestAcpThreadKeepsSurfacesAndResumePath(t *testing.T) {
 	m.viewState().DetailID = ""
 	for _, surface := range []struct{ kind, want string }{
 		{"agents", "Child history unavailable"},
-		{"plan", "✓ Read"},
+		{"plan", "Read · completed"},
 		{"activity", "Inspect layout contract · completed"},
 	} {
 		m.openSurface(surface.kind, "")

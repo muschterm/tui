@@ -76,6 +76,16 @@ type action struct {
 type menuItem struct {
 	Label  string
 	Action action
+	// PairLabel and PairValue opt a settings or usage fact into a label/value
+	// pair row. Free-form labels are never split, since user text such as a
+	// thread title may contain ": ".
+	PairLabel, PairValue string
+}
+
+// pairMenuItem is a label/value fact row; Label keeps "Label: value" for
+// hit help and the plain one-line fallback.
+func pairMenuItem(label, value string, a action) menuItem {
+	return menuItem{Label: label + ": " + value, Action: a, PairLabel: label, PairValue: value}
 }
 
 type hit struct {
@@ -187,25 +197,28 @@ type Model struct {
 	focus, hover                         string
 	menu                                 []menuItem
 	menuTitle                            string
-	menuIndex                            int
-	contextMenu                          *contextMenuState
-	status                               string
-	notice                               transientNotice
-	connected                            bool
-	busy                                 *protocol.Command
-	busyAction                           action
-	inFlight                             bool
-	writer                               *viewWriter
-	dirty, saving                        bool
-	generation                           int
-	drag                                 shell.Divider
-	lastX, lastY                         int
-	selecting                            bool
-	selectionStart, selectionEnd         [2]int
-	selectedText                         string
-	selectionRegion                      shell.Rect
-	selectionBasis                       selectionBasis
-	clipboardGeneration                  uint64
+	// menuTitleUser is the user-supplied tail of menuTitle (a thread or
+	// project name) that keeps its case; only the static prefix is uppercased.
+	menuTitleUser                string
+	menuIndex                    int
+	contextMenu                  *contextMenuState
+	status                       string
+	notice                       transientNotice
+	connected                    bool
+	busy                         *protocol.Command
+	busyAction                   action
+	inFlight                     bool
+	writer                       *viewWriter
+	dirty, saving                bool
+	generation                   int
+	drag                         shell.Divider
+	lastX, lastY                 int
+	selecting                    bool
+	selectionStart, selectionEnd [2]int
+	selectedText                 string
+	selectionRegion              shell.Rect
+	selectionBasis               selectionBasis
+	clipboardGeneration          uint64
 	// clipboardWrite is injectable for tests; production leaves it nil so the
 	// pinned OS clipboard adapter is used by clipboardCommand.
 	clipboardWrite          func(string) error
@@ -962,12 +975,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.promptMetrics = inputViewportMetrics(m.prompt, m.promptMetrics.Total)
 	m.answerMetrics = inputViewportMetrics(m.answer, m.answerMetrics.Total)
 	if len(m.menu) > 0 {
-		extra := 0
-		if m.projectMode != "" {
-			extra = 2
-		}
-		visible := min(len(m.menu)+4+extra, max(5+extra, m.height-4)) - 4 - extra
-		m.menuOffset = m.menuStart(visible)
+		m.menuOffset = m.menuStart(m.menuVisibleItems())
 	}
 	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery())
 }

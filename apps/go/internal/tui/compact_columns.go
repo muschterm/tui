@@ -62,9 +62,9 @@ func (m *Model) openColumns() {
 		if region == m.viewState().CompactColumn {
 			label += " · " + m.icon("check")
 		}
-		items = append(items, menuItem{label, action{Kind: "column", Index: int(region)}})
+		items = append(items, menuItem{Label: label, Action: action{Kind: "column", Index: int(region)}})
 	}
-	items = append(items, menuItem{"Commands", action{Kind: "commands"}})
+	items = append(items, menuItem{Label: "Commands", Action: action{Kind: "commands"}})
 	m.showMenu("Choose column", items)
 }
 

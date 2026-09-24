@@ -70,7 +70,7 @@ def main():
             check(snap()['app_settings']['ProjectDirectory'] == str(start.resolve()), 'General saves project starting folder')
             term.send(b'\x1b')
             term.click(20, 2)
-            check('New thread in project' in '\n'.join(term.screen()), 'New thread opens destination picker')
+            check('NEW THREAD IN PROJECT' in '\n'.join(term.screen()), 'New thread opens destination picker')
             term.click_label('Add project')
             paste('Sam')
             check('Sample project/' in '\n'.join(term.screen()), 'relative typeahead begins at configured folder')
@@ -112,7 +112,7 @@ def main():
             check(v['Threads'][thread_id]['Draft'] == 'Check @bad.bin ' and len(v['Threads'][thread_id]['Attachments']) == 1,
                   'binary capture failure preserves text and selected file')
             check(v['Pending'] is None, 'rejected capture clears command uncertainty')
-            check('Cannot send message' in '\n'.join(term.screen()), 'rejected capture opens a visible error dialog')
+            check('CANNOT SEND MESSAGE' in '\n'.join(term.screen()), 'rejected capture opens a visible error dialog')
             term.send(b'\x1b')
             term.click_label('context attachments')
             term.click_label('Remove bad.bin')
@@ -137,7 +137,7 @@ def main():
             term.resize(160, 50)
             term.pump(.5)
             term.click(20, 2)
-            check('New thread in project' in '\n'.join(term.screen()), 'filtered project still opens destination picker')
+            check('NEW THREAD IN PROJECT' in '\n'.join(term.screen()), 'filtered project still opens destination picker')
             term.send(b'\x1b')
             term.close()
             term = None

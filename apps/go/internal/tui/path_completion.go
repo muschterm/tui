@@ -47,9 +47,9 @@ func (m *Model) showContextError() {
 	width := max(1, min(68, max(20, m.width-6))-5)
 	var items []menuItem
 	for _, line := range strings.Split(ansi.Wrap(safe(m.viewState().ContextError), width, ""), "\n") {
-		items = append(items, menuItem{line, action{Kind: "context-error"}})
+		items = append(items, menuItem{Label: line, Action: action{Kind: "context-error"}})
 	}
-	items = append(items, menuItem{"Manage attached files…", action{Kind: "attachments"}}, menuItem{"Close", action{Kind: "menu-close"}})
+	items = append(items, menuItem{Label: "Manage attached files…", Action: action{Kind: "attachments"}}, menuItem{Label: "Close", Action: action{Kind: "menu-close"}})
 	m.showMenu("Send failed · draft preserved", items)
 }
 
@@ -181,14 +181,14 @@ func (m *Model) folderMenu() []menuItem {
 	if !m.hasCapability("path-completion") {
 		// Older backends still support manual registration, with explicit guidance.
 		m.projectError = "Update this server for folder suggestions"
-		return []menuItem{{"Add folder as project", action{Kind: "project-submit"}}, {"Cancel", action{Kind: "project-cancel"}}}
+		return []menuItem{{Label: "Add folder as project", Action: action{Kind: "project-submit"}}, {Label: "Cancel", Action: action{Kind: "project-cancel"}}}
 	}
 	current := m.paths.result.Directory
 	var items []menuItem
 	if key != m.paths.key || m.paths.loading {
-		items = append(items, menuItem{"Looking for folders…", action{Kind: "path-noop"}})
+		items = append(items, menuItem{Label: "Looking for folders…", Action: action{Kind: "path-noop"}})
 	} else if m.paths.err != "" {
-		items = append(items, menuItem{m.paths.err, action{Kind: "path-noop"}})
+		items = append(items, menuItem{Label: m.paths.err, Action: action{Kind: "path-noop"}})
 	} else {
 		if current != "" {
 			label, kind := "Add this folder", "project-submit"
@@ -197,27 +197,27 @@ func (m *Model) folderMenu() []menuItem {
 			}
 			query := m.projectInput.Value()
 			if query == "" || query == "~" || strings.HasSuffix(query, "/") {
-				items = append(items, menuItem{label, action{Kind: kind, Value: current}})
+				items = append(items, menuItem{Label: label, Action: action{Kind: kind, Value: current}})
 			}
 			parent := path.Dir(strings.TrimSuffix(current, "/"))
 			if current != "/" {
-				items = append(items, menuItem{"../ · Parent folder", action{Kind: "path-directory", Value: strings.TrimSuffix(parent, "/") + "/"}})
+				items = append(items, menuItem{Label: "../ · Parent folder", Action: action{Kind: "path-directory", Value: strings.TrimSuffix(parent, "/") + "/"}})
 			}
 		}
 		for _, entry := range m.paths.result.Entries {
-			items = append(items, menuItem{entry.Name + "/", action{Kind: "path-directory", Value: entry.Path}})
+			items = append(items, menuItem{Label: entry.Name + "/", Action: action{Kind: "path-directory", Value: entry.Path}})
 		}
 		if m.paths.result.Truncated {
-			items = append(items, menuItem{"More matches · type to narrow", action{Kind: "path-noop"}})
+			items = append(items, menuItem{Label: "More matches · type to narrow", Action: action{Kind: "path-noop"}})
 		}
 		if len(m.paths.result.Entries) == 0 {
-			items = append(items, menuItem{"No matching subfolders", action{Kind: "path-noop"}})
+			items = append(items, menuItem{Label: "No matching subfolders", Action: action{Kind: "path-noop"}})
 		}
 	}
 	if m.projectMode == "project-root" {
-		items = append(items, menuItem{"Use home directory…", action{Kind: "path-project-root-home"}})
+		items = append(items, menuItem{Label: "Use home directory…", Action: action{Kind: "path-project-root-home"}})
 	}
-	return append(items, menuItem{"Cancel", action{Kind: "project-cancel"}})
+	return append(items, menuItem{Label: "Cancel", Action: action{Kind: "project-cancel"}})
 }
 
 func (m *Model) saveProjectDirectory(value string) tea.Cmd {

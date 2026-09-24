@@ -100,15 +100,17 @@ func (m *Model) renderNav(f *frame, r shell.Rect) {
 		m.renderNavigationRows(f, f.closedNavigation, closed, m.closedScroll, "closed-navigation")
 	}
 	count := (len(closed) + 1) / 4
-	label := fmt.Sprintf("Closed (%d)", count)
+	// An uppercase, bold panel heading in the dimmed ink of closed rows;
+	// the count shows only while collapsed.
+	label := fmt.Sprintf("CLOSED (%d)", count)
 	caret := m.icon("caret-down")
 	a := action{Kind: "recents-collapse"}
 	if !m.state.RecentsCollapsed && !m.state.RecentsHidden {
-		label = "Closed"
+		label = "CLOSED"
 		caret = m.icon("caret-up")
 	}
 	if m.state.RecentsHidden {
-		label = "Show Closed"
+		label = "SHOW CLOSED"
 		a.Kind = "recents-hide"
 	}
 	rule := "─"

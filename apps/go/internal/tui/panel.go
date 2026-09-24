@@ -64,6 +64,51 @@ func panelPairRowStyled(f *frame, x, y, width int, label, value, labelInk, value
 	f.text(x+width-vw, y, vw, rendered, valueInk, bg)
 }
 
+// panelPairFits reports whether a label/value pair fits one row of width with
+// a two-cell gap and without truncating the value; callers otherwise put the
+// muted label above the wrapped value.
+func panelPairFits(width int, label, value string) bool {
+	return ansi.StringWidth(label)+2+ansi.StringWidth(singleLine(value)) <= width
+}
+
+// panelPairShort reports whether a pair's value is short enough to sit flush
+// right of its label: it fits one row, takes at most 40% of the width and at
+// most 32 cells. Longer values would drift far from their labels, so callers
+// stack them (muted label row, wrapped value below) instead.
+func panelPairShort(width int, label, value string) bool {
+	vw := ansi.StringWidth(singleLine(value))
+	return panelPairFits(width, label, value) && vw <= 32 && vw*5 <= width*2
+}
+
+// panelStatusMark returns a status glyph and its semantic ink: completed is
+// green, active or working blue, pending muted, failed red and interrupted,
+// waiting or stale gold, and unknown or unavailable a neutral "?". No other
+// state reads as success.
+func panelStatusMark(m *Model, state string) (string, string) {
+	p := m.colors()
+	// Other reported states (idle, ready, accepted…) get a neutral dot: they are
+	// neither success nor uncertainty.
+	glyph, plain, ink := "·", ".", p.muted
+	switch strings.ToLower(state) {
+	case "unknown", "unavailable", "disconnected":
+		glyph, plain = "?", "?"
+	case "completed", "complete", "done", "finished", "succeeded", "success", "answered", "resolved":
+		glyph, plain, ink = "✓", "+", p.green
+	case "active", "working", "running", "in_progress", "in-progress", "started", "thinking":
+		glyph, plain, ink = "●", "*", p.blue
+	case "pending", "queued", "planned":
+		glyph, plain, ink = "○", "o", p.muted
+	case "failed", "error", "rejected", "denied":
+		glyph, plain, ink = "✕", "x", p.red
+	case "interrupted", "cancelled", "canceled", "waiting", "stale", "blocked", "timeout":
+		glyph, plain, ink = "!", "!", p.gold
+	}
+	if m.plainIcons {
+		glyph = plain
+	}
+	return glyph, ink
+}
+
 const toggleTrackWidth = 6
 
 // toggleTrack returns the switch cells: a track of background fills with a

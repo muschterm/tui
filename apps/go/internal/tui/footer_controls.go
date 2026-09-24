@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
@@ -10,6 +12,8 @@ type composerControl struct {
 	label, key, help, tone string
 	action                 action
 	icon                   bool // glyph-only: no fill, hit on the glyph cells
+	// field names a setting control, shown as a pair row in More settings.
+	field string
 }
 
 // Shared by prompt text and the settings/action rows. Collapse only for tiny
@@ -32,6 +36,7 @@ func (m *Model) composerLayout(width int) (visible, overflow []composerControl) 
 	for _, s := range m.composerSettingDisplays(t, selected) {
 		label, help, tone := s.label, title(s.field)+": "+s.label, "setting"
 		settings = append(settings, control(label, "settings:"+s.field, help, tone, action{Kind: "settings", Value: s.field}))
+		settings[len(settings)-1].field = title(s.field)
 		if m.configurationLocked() {
 			settings[len(settings)-1].tone = "muted"
 			settings[len(settings)-1].help += " · read-only during active work"
@@ -183,7 +188,11 @@ func (m *Model) openComposerOverflow() {
 	_, hidden := m.composerLayout(max(1, m.measure().geom.Center.W-2))
 	var items []menuItem
 	for _, c := range hidden {
-		items = append(items, menuItem{c.help, c.action})
+		if value, ok := strings.CutPrefix(c.help, c.field+": "); c.field != "" && ok {
+			items = append(items, pairMenuItem(c.field, value, c.action))
+			continue
+		}
+		items = append(items, menuItem{Label: c.help, Action: c.action})
 	}
 	if len(items) > 0 {
 		m.showMenu("More settings", items)

@@ -17,7 +17,7 @@ func (m *Model) showSendError(reason string) tea.Cmd {
 	width := max(12, min(63, m.width-11))
 	items := []menuItem{}
 	for _, line := range strings.Split(ansi.Wrap(safe(reason), width, ""), "\n") {
-		items = append(items, menuItem{line, action{Kind: "noop"}})
+		items = append(items, menuItem{Label: line, Action: action{Kind: "noop"}})
 	}
 	if !m.configurationLocked() && m.agentSendBlocked(m.composerSelection()) != "" {
 		field := "agent"
@@ -32,9 +32,9 @@ func (m *Model) showSendError(reason string) tea.Cmd {
 				}
 			}
 		}
-		items = append(items, menuItem{"Choose " + field, action{Kind: "settings", Value: field}})
+		items = append(items, menuItem{Label: "Choose " + field, Action: action{Kind: "settings", Value: field}})
 	}
-	items = append(items, menuItem{"Back to prompt", action{Kind: "menu-close"}})
+	items = append(items, menuItem{Label: "Back to prompt", Action: action{Kind: "menu-close"}})
 	m.showMenu("Cannot send message", items)
 	m.menuIndex = len(items) - 1
 	if len(items) > 1 && items[len(items)-2].Action.Kind == "settings" {

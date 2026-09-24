@@ -35,7 +35,7 @@ func TestSidebarHeaderAndPinnedClosedShelf(t *testing.T) {
 				t.Fatal("obsolete header retained")
 			}
 			collapsed, gear := controlHit(t, f, "recents"), controlHit(t, f, "app-settings")
-			if collapsed.Rect.Y >= gear.Rect.Y || f.closedNavigation.H != 0 || !strings.Contains(ansi.Strip(f.rows[collapsed.Rect.Y]), "Closed (10)") {
+			if collapsed.Rect.Y >= gear.Rect.Y || f.closedNavigation.H != 0 || !strings.Contains(ansi.Strip(f.rows[collapsed.Rect.Y]), "CLOSED (10)") {
 				t.Fatal("collapsed shelf or count incorrect")
 			}
 			m.navScroll = f.navMax

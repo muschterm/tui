@@ -47,7 +47,7 @@ func (m *Model) openProjectDialog(mode string) {
 
 func (m *Model) refreshProjectMenu() {
 	if m.projectMode == "rename" {
-		m.menu = []menuItem{{"Save name", action{Kind: "project-rename-submit"}}, {"Cancel", action{Kind: "project-cancel"}}}
+		m.menu = []menuItem{{Label: "Save name", Action: action{Kind: "project-rename-submit"}}, {Label: "Cancel", Action: action{Kind: "project-cancel"}}}
 		return
 	}
 	if m.projectMode == "add" || m.projectMode == "project-root" {
@@ -58,7 +58,7 @@ func (m *Model) refreshProjectMenu() {
 	query := strings.ToLower(strings.TrimSpace(m.projectInput.Value()))
 	m.menu = nil
 	if m.projectMode != "new-thread" && (query == "" || strings.Contains("all projects", query)) {
-		m.menu = append(m.menu, menuItem{"All projects", action{Kind: "project-filter"}})
+		m.menu = append(m.menu, menuItem{Label: "All projects", Action: action{Kind: "project-filter"}})
 	}
 	for _, p := range m.snapshot.Projects {
 		if query == "" || strings.Contains(strings.ToLower(p.Name+" "+p.Path), query) {
@@ -66,17 +66,17 @@ func (m *Model) refreshProjectMenu() {
 			if m.projectMode == "new-thread" {
 				a = action{Kind: "thread-create", Value: p.ID}
 			}
-			m.menu = append(m.menu, menuItem{p.Name + " · " + p.Path, a})
+			m.menu = append(m.menu, menuItem{Label: p.Name + " · " + p.Path, Action: a})
 		}
 	}
 	if len(m.menu) == 0 {
-		m.menu = append(m.menu, menuItem{"No matching projects", action{Kind: "project-no-match"}})
+		m.menu = append(m.menu, menuItem{Label: "No matching projects", Action: action{Kind: "project-no-match"}})
 	}
 	kind := "project-add"
 	if m.projectMode == "new-thread" {
 		kind = "project-add-thread"
 	}
-	m.menu = append(m.menu, menuItem{m.icon("project-add") + " Add project…", action{Kind: kind}})
+	m.menu = append(m.menu, menuItem{Label: m.icon("project-add") + " Add project…", Action: action{Kind: kind}})
 	m.menuIndex = min(max(0, m.menuIndex), len(m.menu)-1)
 	m.menuOffset = 0
 }
@@ -219,7 +219,7 @@ func (m *Model) threadMenu(id string) {
 	if t.Closed {
 		verb, kind = "Reopen", "thread-reopen"
 	}
-	m.showMenu(t.Title, []menuItem{{verb, action{Kind: kind, ID: id}}, {"Delete permanently…", action{Kind: "thread-delete", ID: id}}})
+	m.showMenuFor("", t.Title, []menuItem{{Label: verb, Action: action{Kind: kind, ID: id}}, {Label: "Delete permanently…", Action: action{Kind: "thread-delete", ID: id}}})
 }
 
 func (m *Model) confirmThreadDelete(id string) {
@@ -227,9 +227,9 @@ func (m *Model) confirmThreadDelete(id string) {
 	if !ok {
 		return
 	}
-	m.showMenu("Delete thread: "+t.Title, []menuItem{
-		{"Cancel", action{Kind: "thread-delete-cancel"}},
-		{"Delete permanently · history, drafts and owned work", action{Kind: "thread-delete-confirm", ID: id, Index: int(t.LifecycleRevision)}},
+	m.showMenuFor("Delete thread: ", t.Title, []menuItem{
+		{Label: "Cancel", Action: action{Kind: "thread-delete-cancel"}},
+		{Label: "Delete permanently · history, drafts and owned work", Action: action{Kind: "thread-delete-confirm", ID: id, Index: int(t.LifecycleRevision)}},
 	})
 	m.status = fmt.Sprintf("Delete %q? This cannot be undone.", t.Title)
 }

@@ -59,11 +59,11 @@ func (m *Model) openNewThreadDefaultMenu(a action) tea.Cmd {
 			label := safe(candidate.Name) + " · " + agentReadiness(candidate)
 			if candidate.Kind != "fixture" && (candidate.State != "ready" || len(candidate.Options) == 0) {
 				label += " · probe before selecting"
-				items = append(items, menuItem{label, action{Kind: "app-thread-agent-set", ID: candidate.ID, Revision: rev}})
-				items = append(items, menuItem{probeLabel(candidate), action{Kind: "app-thread-agent-probe", ID: candidate.ID}})
+				items = append(items, menuItem{Label: label, Action: action{Kind: "app-thread-agent-set", ID: candidate.ID, Revision: rev}})
+				items = append(items, menuItem{Label: probeLabel(candidate), Action: action{Kind: "app-thread-agent-probe", ID: candidate.ID}})
 				continue
 			}
-			items = append(items, menuItem{label, action{Kind: "app-thread-agent-set", ID: candidate.ID, Revision: rev}})
+			items = append(items, menuItem{Label: label, Action: action{Kind: "app-thread-agent-set", ID: candidate.ID, Revision: rev}})
 		}
 		m.showMenu("Default agent for new threads", items)
 		return nil
@@ -80,19 +80,19 @@ func (m *Model) openNewThreadDefaultMenu(a action) tea.Cmd {
 	if agent.Kind == "fixture" {
 		if a.ID == "effort" {
 			for _, value := range []string{"low", "medium", "high"} {
-				items = append(items, menuItem{effortDisplayName(value), action{Kind: "app-thread-field-set", ID: a.ID, Value: value, Revision: rev}})
+				items = append(items, menuItem{Label: effortDisplayName(value), Action: action{Kind: "app-thread-field-set", ID: a.ID, Value: value, Revision: rev}})
 			}
 		}
 	} else if option, mapped := agentConfigFor(agent).forModel(saved.Settings.Model).option(a.ID); mapped {
 		if a.ID == "speed" && option.Description != "" {
-			items = append(items, menuItem{safe(option.Description), action{Kind: "noop"}})
+			items = append(items, menuItem{Label: safe(option.Description), Action: action{Kind: "noop"}})
 		}
 		for _, value := range option.Values {
 			label := settingValueLabel(a.ID, value)
 			if description := strings.TrimSpace(singleLine(value.Description)); description != "" && a.ID != "effort" {
 				label += " · " + description
 			}
-			items = append(items, menuItem{label, action{Kind: "app-thread-field-set", ID: a.ID, Value: value.Value, Revision: rev}})
+			items = append(items, menuItem{Label: label, Action: action{Kind: "app-thread-field-set", ID: a.ID, Value: value.Value, Revision: rev}})
 		}
 	}
 	if len(items) == 0 {
@@ -137,13 +137,13 @@ func (m *Model) saveNewThreadDefault(a action) tea.Cmd {
 				var items []menuItem
 				if option, offered := agentConfigFor(candidate).option("model"); offered {
 					for _, value := range option.Values {
-						items = append(items, menuItem{settingValueLabel("model", value), action{Kind: "app-thread-agent-set", ID: candidate.ID, Value: value.Value, Revision: a.Revision}})
+						items = append(items, menuItem{Label: settingValueLabel("model", value), Action: action{Kind: "app-thread-agent-set", ID: candidate.ID, Value: value.Value, Revision: a.Revision}})
 					}
 				}
 				if len(items) == 0 {
 					return m.showNotice("Probe this agent to discover its models")
 				}
-				m.showMenu("Default model for "+safe(candidate.Name), items)
+				m.showMenuFor("Default model for ", safe(candidate.Name), items)
 				return nil
 			}
 		}
