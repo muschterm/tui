@@ -28,7 +28,7 @@ func (m *Model) openContextMenuForFocus() tea.Cmd {
 	switch m.focus {
 	case "prompt":
 		return m.openPromptContextMenu()
-	case "transcript", "right-body":
+	case "transcript", "right-body", "viewer-body":
 		f := m.measure()
 		if m.selectionLive(f) && m.selectedText != "" {
 			return m.openSelectionContextMenu(m.focus)
@@ -61,7 +61,7 @@ func (m *Model) openSelectionContextMenu(focus string) tea.Cmd {
 	if len(m.menu) != 0 || m.settingsPage != "" || m.terminalTooSmall() {
 		return nil
 	}
-	if focus != "transcript" && focus != "right-body" {
+	if focus != "transcript" && focus != "right-body" && focus != "viewer-body" {
 		return nil
 	}
 	var cmd tea.Cmd

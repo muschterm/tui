@@ -90,12 +90,24 @@ func selectionSpans(a, b [2]int, region shell.Rect, width, height int) []selecti
 	return spans
 }
 
+// selection joins the selected rows' text. A row recorded in f.wrapRows is a
+// soft-wrap continuation of the same source line as the row below it: that
+// pair is joined without a newline, and the continuing row's real trailing
+// spaces are kept instead of being trimmed as trailing padding.
 func (f *frame) selection(a, b [2]int, region shell.Rect) string {
-	var lines []string
-	for _, s := range selectionSpans(a, b, region, region.X+region.W, len(f.rows)) {
-		lines = append(lines, strings.TrimRight(ansi.Strip(cutCells(f.rows[s.y], s.start, s.end)), " "))
+	spans := selectionSpans(a, b, region, region.X+region.W, len(f.rows))
+	var out strings.Builder
+	for i, s := range spans {
+		text := ansi.Strip(cutCells(f.rows[s.y], s.start, s.end))
+		if !f.wrapRows[s.y] {
+			text = strings.TrimRight(text, " ")
+		}
+		if i > 0 && !f.wrapRows[spans[i-1].y] {
+			out.WriteString("\n")
+		}
+		out.WriteString(text)
 	}
-	return strings.Join(lines, "\n")
+	return out.String()
 }
 
 // A selection is screen coordinates plus copied text. It only means anything
@@ -186,11 +198,15 @@ func (m *Model) compose(paint bool) frame {
 		f.text(1, 1, max(1, m.width-2), fmt.Sprintf("tui-go · resize to at least %d × %d", minTerminalWidth, minTerminalHeight), p.gold, p.canvas)
 		f.button(m, 1, 3, 12, "Commands", "commands", action{Kind: "commands"}, p.blue, p.canvas)
 		f.text(1, 5, max(1, m.width-2), "Draft preserved · Ctrl+Q detaches", p.text, p.canvas)
-		if len(m.menu) > 0 {
-			m.renderMenu(&f)
-		}
+		// A context menu opened over the viewer must layer above it, so the
+		// viewer paints first when both are present.
 		if m.viewer != nil {
 			m.renderViewer(&f)
+			if len(m.menu) > 0 {
+				m.renderMenu(&f)
+			}
+		} else if len(m.menu) > 0 {
+			m.renderMenu(&f)
 		}
 		return f
 	}
@@ -270,11 +286,15 @@ func (m *Model) compose(paint bool) frame {
 		}
 	}
 	m.renderMentions(&f)
-	if len(m.menu) > 0 {
-		m.renderMenu(&f)
-	}
+	// A context menu opened over the viewer must layer above it, so the
+	// viewer paints first when both are present.
 	if m.viewer != nil {
 		m.renderViewer(&f)
+		if len(m.menu) > 0 {
+			m.renderMenu(&f)
+		}
+	} else if len(m.menu) > 0 {
+		m.renderMenu(&f)
 	}
 	return f
 }

@@ -80,6 +80,10 @@ type viewerLine struct {
 	number string // raw mode's line number, empty on wrapped continuations
 	text   string
 	styled bool // renderer-generated SGR from markdownLines
+	// wrap marks a raw-mode row that continues into the next row as a
+	// soft-wrap of the same source line (hardWrap produced more than one
+	// row for it, and this is not the last one).
+	wrap bool
 }
 
 // viewerIcons are the viewer's own glyphs: Nerd Fonts v3.4.0 cod-eye and
@@ -320,12 +324,13 @@ func (m *Model) viewerLines(width int) []viewerLine {
 		source := vw.sourceLines()
 		room := max(1, width-m.viewerGutter())
 		for i, line := range source {
-			for j, part := range hardWrap(line, room) {
+			parts := hardWrap(line, room)
+			for j, part := range parts {
 				n := ""
 				if j == 0 {
 					n = strconv.Itoa(i + 1)
 				}
-				out = append(out, viewerLine{number: n, text: part})
+				out = append(out, viewerLine{number: n, text: part, wrap: j < len(parts)-1})
 			}
 		}
 	}
@@ -438,6 +443,12 @@ func (m *Model) renderViewer(f *frame) {
 	for i := 0; i < body.H && offset+i < len(lines); i++ {
 		line := lines[offset+i]
 		yy := body.Y + i
+		if line.wrap {
+			if f.wrapRows == nil {
+				f.wrapRows = map[int]bool{}
+			}
+			f.wrapRows[yy] = true
+		}
 		if gutter > 0 {
 			f.text(body.X, yy, gutter-2, fmt.Sprintf("%*s", gutter-2, line.number), p.muted, p.input)
 		}
@@ -498,6 +509,11 @@ func (m *Model) viewerKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	if k.Keystroke() == "super+c" {
+		return nil, false
+	}
+	if contextMenuKey(k) {
+		// Let the caller's normal context-menu handling open the "Selected
+		// text" menu for the focused viewer body over a live selection.
 		return nil, false
 	}
 	switch s {
@@ -567,6 +583,12 @@ func (m *Model) viewerMouse(msg tea.MouseMsg, f frame) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case tea.MouseClickMsg:
+		if p.Button == tea.MouseRight {
+			if len(m.menu) == 0 && m.selectionContains(f, p.X, p.Y) {
+				return m.openSelectionContextMenu("viewer-body"), true
+			}
+			return nil, true
+		}
 		if p.Button != tea.MouseLeft {
 			return nil, true
 		}

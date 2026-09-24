@@ -125,6 +125,11 @@ type frame struct {
 	// viewerBody is the attachment viewer's selectable text area.
 	viewerBody shell.Rect
 	viewerMax  int
+	// wrapRows marks, by absolute screen row, a raw-mode viewer row that is a
+	// soft-wrap continuation of the same source line as the row below it: the
+	// shared selection joins such a pair without a newline and keeps the
+	// wrapped row's trailing spaces instead of trimming them.
+	wrapRows map[int]bool
 }
 
 type snapshotMsg protocol.Snapshot
@@ -1002,7 +1007,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	s := k.String()
-	if m.viewer != nil {
+	if m.viewer != nil && m.contextMenu == nil {
 		if cmd, handled := m.viewerKey(k); handled {
 			return cmd
 		}
@@ -1271,7 +1276,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	f := m.measure()
 	p := msg.Mouse()
-	if m.viewer != nil {
+	if m.viewer != nil && m.contextMenu == nil {
 		if cmd, handled := m.viewerMouse(msg, f); handled {
 			return cmd
 		}

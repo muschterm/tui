@@ -447,6 +447,105 @@ func TestViewerQueueIdentityAndLabels(t *testing.T) {
 	}
 }
 
+func TestViewerContextMenuRightClickCopyAndEsc(t *testing.T) {
+	m := viewerTestModel(t)
+	openViewer(m, protocol.Attachment{Kind: "file", Name: "a.txt", Content: "alpha beta"})
+	f := m.measure()
+	b := f.viewerBody
+	// Without a selection, right-click is a no-op.
+	m.mouse(tea.MouseClickMsg{X: b.X, Y: b.Y, Button: tea.MouseRight})
+	if len(m.menu) != 0 || m.contextMenu != nil {
+		t.Fatal("right-click without a selection opened a menu")
+	}
+	m.mouse(tea.MouseClickMsg{X: b.X, Y: b.Y, Button: tea.MouseLeft})
+	m.mouse(tea.MouseMotionMsg{X: b.X + 4, Y: b.Y, Button: tea.MouseLeft})
+	m.mouse(tea.MouseReleaseMsg{X: b.X + 4, Y: b.Y, Button: tea.MouseLeft})
+	if m.selectedText != "alpha" {
+		t.Fatalf("selection %q", m.selectedText)
+	}
+	// Right-click on the selection opens Copy, layered over the still-open
+	// viewer, and preserves the selection.
+	m.mouse(tea.MouseClickMsg{X: b.X, Y: b.Y, Button: tea.MouseRight})
+	if len(m.menu) == 0 || m.contextMenu == nil {
+		t.Fatal("right-click on the selection did not open the context menu")
+	}
+	if m.viewer == nil {
+		t.Fatal("opening the context menu closed the viewer")
+	}
+	if m.selectedText != "alpha" {
+		t.Fatal("selection lost when the menu opened")
+	}
+	text := screenText(m)
+	if !strings.Contains(text, "Copy") {
+		t.Fatal("menu missing Copy")
+	}
+	// Esc dismisses the menu back to the viewer, not the viewer itself.
+	m.key(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if len(m.menu) != 0 || m.contextMenu != nil {
+		t.Fatal("Esc did not dismiss the context menu")
+	}
+	if m.viewer == nil {
+		t.Fatal("Esc closed the viewer instead of the menu")
+	}
+	if m.focus != "viewer-body" {
+		t.Fatalf("focus %q, want viewer-body after Esc", m.focus)
+	}
+	if m.selectedText != "alpha" {
+		t.Fatal("selection lost after dismissing the menu")
+	}
+	// Reopen through the keyboard (Shift+F10) and activate Copy.
+	m.key(tea.KeyPressMsg{Code: tea.KeyF10, Mod: tea.ModShift})
+	if len(m.menu) == 0 || m.contextMenu == nil {
+		t.Fatal("Shift+F10 did not open the context menu in the viewer")
+	}
+	i := menuIndexOf(m, "Copy")
+	if i < 0 {
+		t.Fatal("no Copy item")
+	}
+	m.activate(action{Kind: "menu-select", Index: i})
+	if len(m.menu) != 0 || m.contextMenu != nil {
+		t.Fatal("Copy did not close the menu")
+	}
+	if m.viewer == nil || m.focus != "viewer-body" {
+		t.Fatal("Copy did not return focus to the viewer body")
+	}
+}
+
+func TestViewerRawWrapSelectionIsSourceExact(t *testing.T) {
+	m := viewerTestModel(t)
+	openViewer(m, protocol.Attachment{Kind: "file", Name: "a.txt", Content: "x"})
+	room := m.viewerLayout().body.W - m.viewerGutter()
+	// A line that fills exactly one wrapped row (real trailing spaces at the
+	// wrap point) before continuing onto a shorter final row.
+	line := strings.Repeat("a", room-3) + "   END"
+	openViewer(m, protocol.Attachment{Kind: "file", Name: "a.txt", Content: line})
+	lines := m.viewerLines(m.viewerLayout().body.W)
+	if len(lines) != 2 || !lines[0].wrap || lines[1].wrap {
+		t.Fatalf("expected one wrapped continuation, got %+v", lines)
+	}
+	f := m.measure()
+	b := f.viewerBody
+	m.mouse(tea.MouseClickMsg{X: b.X, Y: b.Y, Button: tea.MouseLeft})
+	m.mouse(tea.MouseMotionMsg{X: b.X + b.W - 1, Y: b.Y + 1, Button: tea.MouseLeft})
+	m.mouse(tea.MouseReleaseMsg{X: b.X + b.W - 1, Y: b.Y + 1, Button: tea.MouseLeft})
+	if m.selectedText != line {
+		t.Fatalf("selected %q\nwant   %q", m.selectedText, line)
+	}
+}
+
+func TestViewerHardNewlineSelectionKeepsNewline(t *testing.T) {
+	m := viewerTestModel(t)
+	openViewer(m, protocol.Attachment{Kind: "file", Name: "a.txt", Content: "alpha\nbeta"})
+	f := m.measure()
+	b := f.viewerBody
+	m.mouse(tea.MouseClickMsg{X: b.X, Y: b.Y, Button: tea.MouseLeft})
+	m.mouse(tea.MouseMotionMsg{X: b.X + 3, Y: b.Y + 1, Button: tea.MouseLeft})
+	m.mouse(tea.MouseReleaseMsg{X: b.X + 3, Y: b.Y + 1, Button: tea.MouseLeft})
+	if m.selectedText != "alpha\nbeta" {
+		t.Fatalf("selected %q", m.selectedText)
+	}
+}
+
 func TestViewerBodyFocusMark(t *testing.T) {
 	m := viewerTestModel(t)
 	openViewer(m, protocol.Attachment{Kind: "file", Name: "a.txt", Content: "text"})

@@ -800,7 +800,12 @@ draft or snapshot changes never alter what it shows.
   pastes are captured; Ctrl+Q/Ctrl+Z and copy keep their global meaning.
   Clicking outside closes and consumes the click. Dragging over the body
   selects text through the existing transcript/surface selection, and
-  Ctrl+C/Ctrl+Shift+C copies it.
+  Ctrl+C/Ctrl+Shift+C copies it. Right-clicking selected body text (or the
+  Menu key/Shift+F10) opens the same "Selected text" Copy menu used elsewhere,
+  layered above the still-open viewer; Esc dismisses the menu back to the
+  viewer, and the selection survives it. Copying a raw-mode selection that
+  spans a soft-wrapped source line reproduces that line exactly, including
+  trailing spaces at the wrap point; only hard line ends join with a newline.
 - **Honest states:** an unsent draft attachment shows `not captured yet` and
   "Captured when you send" (the client never reads the source); `image` shows
   "Image preview unavailable"; an accepted empty capture shows "Empty capture".
@@ -809,6 +814,5 @@ draft or snapshot changes never alter what it shows.
 
 Not implemented: clipboard image/file intake, thumbnails and kitty graphics,
 image previews, identifying and reviewing source changes since a draft preview
-(draft previews show no content yet), a right-click Copy menu inside the viewer,
-source-exact copy across wrapped raw lines (the shared selection joins visual
-rows with newlines), and real-terminal (foot) review of the dialog.
+(draft previews show no content yet), and real-terminal (foot) review of the
+dialog.
