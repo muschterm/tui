@@ -771,3 +771,44 @@ The fixture resolves a decline or cancel as it resolves an answer
 peer as `{"action":"decline"|"cancel"}` with no content and stays unconfirmed.
 See [question actions](questions.md#question-actions-and-option-descriptions--2026-09-23)
 and the [implementation note](../implementation/question-actions-2026-09-23.md).
+
+## Read-only attachment viewer — 2026-09-24
+
+First slice of the [read-only preview](activity.md#clipboard-intake-and-read-only-previews)
+viewer (`internal/tui/attachment_viewer.go`). It is a centered rounded dialog over
+the modal backdrop, holding a copy of one attachment taken when it opens, so later
+draft or snapshot changes never alter what it shows.
+
+- **Entry points** (keyboard and pointer through the same `attachment-view`
+  action): **View <name>** beside Remove in the composer's attachments menu;
+  **View · <name>** in the prompt queue menu, showing the queued capture; and one
+  activatable row per captured prompt attachment in Activity/Agents detail
+  (glyph, name and source, with `kind · size` at the right). Activity no longer
+  dumps captured content inline.
+- **Presentation:** kind icon and name, then fixed icon slots for the Markdown
+  mode control (eyeball for Preview; an explicit `Raw` text action in preview;
+  `Preview`/`Raw` text with ASCII symbols), expand/restore and close. Kind,
+  Source (left-truncated), Size (bytes, or KiB plus bytes) and, for Markdown,
+  Mode pairs. Raw text has a line-number gutter and cell-aware wrapping;
+  Markdown (`.md`/`.markdown` name or source) opens raw and previews through
+  `markdownLines`. Default size is at most 96×32, centered; expanded fills the
+  area between the top chrome row and the status row.
+- **Keys:** Esc closes and returns focus to the originating control; `p` toggles
+  Preview/Raw (Markdown only), `f` expands/restores, Tab/Shift+Tab move across
+  the body and header controls, Enter/Space activate, and Up/Down/PgUp/PgDn/
+  Home/End or the wheel scroll, with the normal scrollbar. All other keys and
+  pastes are captured; Ctrl+Q/Ctrl+Z and copy keep their global meaning.
+  Clicking outside closes and consumes the click. Dragging over the body
+  selects text through the existing transcript/surface selection, and
+  Ctrl+C/Ctrl+Shift+C copies it.
+- **Honest states:** an unsent draft attachment shows `not captured yet` and
+  "Captured when you send" (the client never reads the source); `image` shows
+  "Image preview unavailable"; an accepted empty capture shows "Empty capture".
+  Content passes through `safe()`; nothing is fetched, executed or opened in an
+  editor.
+
+Not implemented: clipboard image/file intake, thumbnails and kitty graphics,
+image previews, identifying and reviewing source changes since a draft preview
+(draft previews show no content yet), a right-click Copy menu inside the viewer,
+source-exact copy across wrapped raw lines (the shared selection joins visual
+rows with newlines), and real-terminal (foot) review of the dialog.

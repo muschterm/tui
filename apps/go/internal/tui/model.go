@@ -122,6 +122,9 @@ type frame struct {
 	prompt, answer, transcript, detail, request shell.Rect
 	bottomBody, navigation                      shell.Rect
 	closedNavigation, settingsBody              shell.Rect
+	// viewerBody is the attachment viewer's selectable text area.
+	viewerBody shell.Rect
+	viewerMax  int
 }
 
 type snapshotMsg protocol.Snapshot
@@ -206,9 +209,11 @@ type Model struct {
 	menuTitle                            string
 	// menuTitleUser is the user-supplied tail of menuTitle (a thread or
 	// project name) that keeps its case; only the static prefix is uppercased.
-	menuTitleUser                string
-	menuIndex                    int
-	contextMenu                  *contextMenuState
+	menuTitleUser string
+	menuIndex     int
+	contextMenu   *contextMenuState
+	// viewer is the open read-only attachment viewer, if any.
+	viewer                       *attachmentViewer
 	status                       string
 	notice                       transientNotice
 	connected                    bool
@@ -952,7 +957,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		cmd = m.key(msg)
 	case tea.PasteMsg:
-		if m.terminalTooSmall() || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
+		if m.terminalTooSmall() || m.viewer != nil || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
 			// Nothing behind a modal, the resize notice or settings accepts input.
 			cmd = m.showNoticeAs(noticeUnavailable, "Paste ignored · no visible input")
 		} else if m.projectMode != "" {
@@ -997,6 +1002,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	s := k.String()
+	if m.viewer != nil {
+		if cmd, handled := m.viewerKey(k); handled {
+			return cmd
+		}
+	}
 	if len(m.menu) == 0 && contextMenuKey(k) {
 		return m.openContextMenuForFocus()
 	}
@@ -1261,6 +1271,11 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	f := m.measure()
 	p := msg.Mouse()
+	if m.viewer != nil {
+		if cmd, handled := m.viewerMouse(msg, f); handled {
+			return cmd
+		}
+	}
 	switch msg.(type) {
 	case tea.MouseWheelMsg:
 		d := 3

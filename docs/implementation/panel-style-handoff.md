@@ -164,8 +164,11 @@ Surfaces build typed blocks in `surface_panel.go` (`surfaceBlocks`/`surfaceRows`
 
 ## Remaining candidates
 
-1. **Attachment viewer:** the read-only preview dialog does not exist in the Go
-   slice yet; it is a feature before it is a restyle.
+1. **Attachment viewer:** the first read-only slice exists (see
+   [go-slice.md › Read-only attachment viewer](../design/go-slice.md#read-only-attachment-viewer--2026-09-24)).
+   Remaining: clipboard image/file intake, thumbnails/kitty graphics, draft
+   source-change review, a viewer Copy context menu and a foot review of the
+   dialog.
 2. **Git file lists and upstream ahead/behind:** need protocol data first.
 3. **Terminal exit status** in the protocol, so terminal tabs can show exit marks.
 4. **Attachment chip states** (captured, failed, unavailable) with status marks.

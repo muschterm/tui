@@ -26,6 +26,7 @@ const (
 	surfaceLongBlock                            // muted label above a wrapped value
 	surfaceTextBlock                            // wrapped text in ink
 	surfaceRawBlock                             // sanitized raw output, wrapped
+	surfaceActionBlock                          // full-row activatable entry: glyph and label, muted value at the right
 )
 
 type surfaceBlock struct {
@@ -36,6 +37,9 @@ type surfaceBlock struct {
 	// note is a muted qualifier of a pair's value, shown after it as
 	// "value · note" when that fits, else right-aligned below the value.
 	note string
+	// action and key make an action block's row activatable.
+	action action
+	key    string
 }
 
 type surfaceRowKind int
@@ -46,6 +50,7 @@ const (
 	surfacePairRow
 	surfaceStatusRow
 	surfaceTextRow
+	surfaceActionRow
 )
 
 // surfaceRow is one painted row of a surface body: text holds the heading,
@@ -58,6 +63,8 @@ type surfaceRow struct {
 	indent      int
 	bold        bool
 	note        string // muted suffix after a pair row's value
+	action      action // an action row's command
+	key         string // an action row's hit and focus key
 }
 
 // detailBlocks renders retained detail as muted text lines. Activity detail
@@ -264,8 +271,8 @@ func pairOrText(m *Model, line string) surfaceBlock {
 }
 
 // activityBlocks is one retained activity: a status row, its text, the
-// free-form text of its detail and any captured prompt attachments, each
-// with a muted label above its raw captured content.
+// free-form text of its detail and one activatable row per captured prompt
+// attachment, which opens the read-only viewer on that capture.
 func activityBlocks(m *Model, a protocol.Activity) []surfaceBlock {
 	p := m.colors()
 	var out []surfaceBlock
@@ -281,12 +288,17 @@ func activityBlocks(m *Model, a protocol.Activity) []surfaceBlock {
 		out = append(append(out, surfaceBlock{kind: surfaceGapBlock}), detail...)
 	}
 	if a.Prompt != nil {
-		for _, at := range a.Prompt.Attachments {
+		// Each accepted capture is one activatable row opening the read-only
+		// viewer; the content itself is not dumped inline.
+		for i, at := range a.Prompt.Attachments {
 			name := at.Name
 			if at.Source != "" && at.Source != name {
 				name += " · " + at.Source
 			}
-			out = append(out, surfaceBlock{kind: surfaceLongBlock, label: fmt.Sprintf("%s · %s · %d bytes captured", at.Kind, name, len(at.Content)), value: at.Content})
+			out = append(out, surfaceBlock{kind: surfaceActionBlock, label: name, glyph: m.attachmentKindIcon(at.Kind),
+				value:  attachmentMeta(at),
+				action: action{Kind: "attachment-view", Value: "activity", ID: a.ID, Index: i},
+				key:    fmt.Sprintf("attachment:%s:%d", a.ID, i)})
 		}
 	}
 	return out
@@ -412,6 +424,8 @@ func (m *Model) surfaceText(s shell.Surface) string {
 			lines = append(lines, line)
 		case surfaceLongBlock:
 			lines = append(lines, b.label, b.value)
+		case surfaceActionBlock:
+			lines = append(lines, strings.TrimSpace(b.glyph+" "+b.label)+" · "+b.value)
 		default:
 			lines = append(lines, b.value)
 		}
@@ -509,6 +523,17 @@ func (m *Model) surfaceRows(blocks []surfaceBlock, width int) []surfaceRow {
 					rows = append(rows, surfaceRow{kind: surfaceTextRow, text: line, ink: ink, indent: gw})
 				}
 			}
+		case surfaceActionBlock:
+			label, value := safe(singleLine(b.label)), safe(singleLine(b.value))
+			gw := ansi.StringWidth(b.glyph) + 2
+			if ansi.StringWidth(value)+2+gw+8 > width {
+				// Too narrow for the metadata beside the name: it continues
+				// as a muted row below the activatable one.
+				rows = append(rows, surfaceRow{kind: surfaceActionRow, text: label, glyph: b.glyph, action: b.action, key: b.key, note: value})
+				rows = append(rows, surfaceRow{kind: surfaceTextRow, text: value, ink: p.muted, indent: gw})
+				break
+			}
+			rows = append(rows, surfaceRow{kind: surfaceActionRow, text: label, value: value, glyph: b.glyph, action: b.action, key: b.key})
 		case surfaceRawBlock:
 			for _, line := range wrapCells(b.value, width) {
 				rows = append(rows, surfaceRow{kind: surfaceTextRow, text: line, ink: p.text})
@@ -550,6 +575,23 @@ func (m *Model) paintSurfaceRow(f *frame, x, y, width int, row surfaceRow) {
 		panelPairRowStyled(f, x, y, width, row.text, row.value+suffix, p.muted, ink, bg)
 		sw := ansi.StringWidth(suffix)
 		f.text(x+width-sw, y, sw, suffix, p.muted, bg)
+	case surfaceActionRow:
+		// Full-row activation with square-fill hover/focus feedback; the
+		// focus mark takes the blank cell before the row.
+		v := m.componentStyle(squareFill, m.controlState(false, row.key), p.text, bg)
+		gw := ansi.StringWidth(row.glyph) + 2
+		f.styledButton(x, y, width, "", row.key, row.action, v)
+		f.hits[len(f.hits)-1].Label = "View attachment · " + row.text
+		f.text(x, y, max(0, min(gw-2, width)), row.glyph, p.blue, v.background)
+		vw := ansi.StringWidth(row.value)
+		room := width - gw
+		if vw > 0 {
+			room -= vw + 2
+		}
+		f.componentText(x+gw, y, max(0, room), row.text, v)
+		if vw > 0 && vw < width {
+			f.text(x+width-vw, y, vw, row.value, p.muted, v.background)
+		}
 	case surfaceStatusRow:
 		gw := 0
 		f.text(x, y, width, "", p.text, bg)

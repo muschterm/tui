@@ -105,6 +105,8 @@ type selectionBasis struct {
 	width, height                    int
 	scroll, lines, detailScroll, max int
 	transcript, detail               shell.Rect
+	viewer                           shell.Rect
+	viewerScroll                     int
 }
 
 func (m *Model) selectionBasisFor(f frame) selectionBasis {
@@ -115,12 +117,20 @@ func (m *Model) selectionBasisFor(f frame) selectionBasis {
 		scroll: min(max(0, v.Scroll), f.transcriptMax), lines: f.transcriptMax,
 		detailScroll: min(max(0, v.DetailScroll), f.detailMax), max: f.detailMax,
 		transcript: f.transcript, detail: f.detail,
+		viewer: f.viewerBody, viewerScroll: m.viewerScrollBasis(f),
 	}
+}
+
+func (m *Model) viewerScrollBasis(f frame) int {
+	if m.viewer == nil {
+		return 0
+	}
+	return min(max(0, m.viewer.scroll), f.viewerMax)
 }
 
 func (m *Model) selectionLive(f frame) bool {
 	return (m.selecting || m.selectedText != "") && m.settingsPage == "" && !m.terminalTooSmall() &&
-		(m.selectionRegion == f.transcript || m.selectionRegion == f.detail) &&
+		(m.selectionRegion == f.transcript || m.selectionRegion == f.detail || f.viewerBody.W > 0 && m.selectionRegion == f.viewerBody) &&
 		m.selectionBasis == m.selectionBasisFor(f)
 }
 
@@ -179,6 +189,9 @@ func (m *Model) compose(paint bool) frame {
 		if len(m.menu) > 0 {
 			m.renderMenu(&f)
 		}
+		if m.viewer != nil {
+			m.renderViewer(&f)
+		}
 		return f
 	}
 	footer := m.footerHeight()
@@ -186,6 +199,9 @@ func (m *Model) compose(paint bool) frame {
 	g := f.geom
 	if m.settingsPage != "" {
 		m.renderSettingsWorkspace(&f)
+		if m.viewer != nil {
+			m.renderViewer(&f)
+		}
 		return f
 	}
 	m.renderChrome(&f, g)
@@ -256,6 +272,9 @@ func (m *Model) compose(paint bool) frame {
 	m.renderMentions(&f)
 	if len(m.menu) > 0 {
 		m.renderMenu(&f)
+	}
+	if m.viewer != nil {
+		m.renderViewer(&f)
 	}
 	return f
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"slices"
 	"strings"
 
@@ -118,6 +119,9 @@ func (m *Model) hiddenWorkBlocked() string {
 }
 
 func (m *Model) activate(a action) tea.Cmd {
+	if strings.HasPrefix(a.Kind, "viewer-") {
+		return m.viewerAction(a)
+	}
 	if m.terminalTooSmall() && !slices.Contains([]string{"commands", "quit", "suspend", "theme", "menu-close", "menu-select", "scrollbar"}, a.Kind) {
 		// A menu opened before the resize must not act on hidden content.
 		return m.showNotice(m.hiddenWorkBlocked())
@@ -130,6 +134,9 @@ func (m *Model) activate(a action) tea.Cmd {
 		if reason := m.hiddenWorkBlocked(); reason != "" {
 			return m.showNoticeAs(noticeUnavailable, reason)
 		}
+	}
+	if a.Kind == "attachment-view" {
+		return m.openAttachmentViewer(a)
 	}
 	if handled, cmd := m.activateSidebarSettings(a); handled {
 		m.configureInputs()
@@ -572,6 +579,14 @@ func (m *Model) activate(a action) tea.Cmd {
 				}
 				items = append(items, menuItem{Label: title(op) + " · " + safe(q.Text), Action: act})
 			}
+			for i, at := range q.Attachments {
+				label := "View · " + safe(singleLine(at.Name))
+				if len(t.Queue) > 1 {
+					// Name the owning message when several are queued.
+					label += " · " + ansi.Truncate(strings.Join(strings.Fields(safe(q.Text)), " "), 24, "…")
+				}
+				items = append(items, menuItem{Label: label, Action: action{Kind: "attachment-view", Value: "queue:" + at.Name, ID: q.ID, Index: i}})
+			}
 		}
 		m.showMenu("Prompt queue", items)
 	case "usage-summary":
@@ -641,7 +656,9 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		var items []menuItem
 		for i, x := range v.Attachments {
-			items = append(items, menuItem{Label: "Remove " + x.Name, Action: action{Kind: "attachment-remove", Index: i}})
+			items = append(items,
+				menuItem{Label: "View " + x.Name, Action: action{Kind: "attachment-view", Value: "draft:" + x.Name, Index: i}},
+				menuItem{Label: "Remove " + x.Name, Action: action{Kind: "attachment-remove", Index: i}})
 		}
 		m.showMenu("Attached context", items)
 	case "children":
