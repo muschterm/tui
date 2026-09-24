@@ -21,6 +21,7 @@ SSH or tmux compatibility.
 | `pty_acp.py` | Opt-in real ACP prompt, menus and cancel/resume; requires live login and consumes account quota |
 | `live_agent_recovery.py` | Opt-in live HTTP Claude native question / Codex prompt, exact answer retry, Stop/Resume and restart; selects an installed official runtime explicitly |
 | `render-capture.py` | Rasterizes deterministic Go View captures to PNG for `docs/research/*-captures` (needs Pillow) |
+| `foot_capture.py` | Runs the binary in a dedicated foot window (Hyprland + grim) with scripted keys and screenshots only that window; real-terminal visual evidence, not a PTY assertion harness |
 | `scroll_benchmark.py` | Wheel-burst input latency measurement |
 
 Everything except `render-capture.py` and `pty_acp.py` uses only the standard library. Dated
