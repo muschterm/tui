@@ -94,12 +94,32 @@ func TestColorQueryResponderAndCapabilityValidation(t *testing.T) {
 }
 
 func TestColorProbingRespectsDisabledAndAlreadyDetectedProfiles(t *testing.T) {
-	for _, profile := range []colorprofile.Profile{colorprofile.NoTTY, colorprofile.ASCII, colorprofile.TrueColor} {
+	for _, profile := range []colorprofile.Profile{colorprofile.NoTTY, colorprofile.ASCII} {
 		m := testModel()
 		m.terminalColorOptions(func(string) string { return "" })
 		if cmd := m.updateColorProfile(profile); cmd != nil || m.colorProbe.versionRequested {
 			t.Fatal("unnecessary probe for", profile)
 		}
+	}
+	// True color needs no color probe; XTVERSION is requested only for the
+	// kitty graphics gate, and never when graphics are opted out.
+	m := testModel()
+	m.terminalColorOptions(func(string) string { return "" })
+	if cmd := m.updateColorProfile(colorprofile.TrueColor); cmd == nil || !m.colorProbe.versionRequested {
+		t.Fatal("true color did not request XTVERSION for the graphics gate")
+	}
+	if m.probeTerminalColors("kitty(0.43.0)") != nil {
+		t.Fatal("true color started the color capability probe")
+	}
+	m = testModel()
+	m.terminalColorOptions(func(k string) string {
+		if k == graphicsOptOutEnv {
+			return "off"
+		}
+		return ""
+	})
+	if cmd := m.updateColorProfile(colorprofile.TrueColor); cmd != nil || m.colorProbe.versionRequested {
+		t.Fatal("opted-out graphics still requested XTVERSION under true color")
 	}
 	for _, value := range []string{"1", "0", "false", "please"} {
 		m := testModel()
@@ -116,7 +136,7 @@ func TestColorProbingRespectsDisabledAndAlreadyDetectedProfiles(t *testing.T) {
 			t.Fatal("unsolicited reply overrode NO_COLOR")
 		}
 	}
-	m := testModel()
+	m = testModel()
 	m.terminalColorOptions(func(key string) string {
 		if key == "TERM_PROGRAM" {
 			return "Apple_Terminal"

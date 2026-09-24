@@ -299,6 +299,10 @@ func activityBlocks(m *Model, a protocol.Activity) []surfaceBlock {
 				value:  attachmentMeta(at),
 				action: action{Kind: "attachment-view", Value: "activity", ID: a.ID, Index: i},
 				key:    fmt.Sprintf("attachment:%s:%d", a.ID, i)})
+			if at.ChangedSincePreview {
+				glyph, ink := panelStatusMark(m, "stale")
+				out = append(out, surfaceBlock{kind: surfaceStatusBlock, label: "Changed since preview", glyph: glyph, ink: ink})
+			}
 		}
 	}
 	return out

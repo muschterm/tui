@@ -52,7 +52,7 @@ func TestViewerFromComposerMenuPreservesDraftAndRestoresFocus(t *testing.T) {
 	atts := []protocol.Attachment{{Kind: "file", Name: "notes.md", Source: "docs/notes.md"}, {Kind: "image", Name: "shot.png"}}
 	m.viewState().Attachments = slices.Clone(atts)
 	m.configureInputs()
-	m.setFocus("attachments")
+	m.setFocus("attachment-chip:0")
 	m.activate(action{Kind: "attachments"})
 	i := menuIndexOf(m, "View notes.md")
 	if i < 0 || menuIndexOf(m, "Remove notes.md") < 0 {
@@ -82,8 +82,8 @@ func TestViewerFromComposerMenuPreservesDraftAndRestoresFocus(t *testing.T) {
 	if m.viewer != nil {
 		t.Fatal("Esc did not close")
 	}
-	if m.focus != "attachments" {
-		t.Fatalf("focus %q, want attachments", m.focus)
+	if m.focus != "attachment-chip:0" {
+		t.Fatalf("focus %q, want the chip", m.focus)
 	}
 	if m.prompt.Value() != "unsent é 👩🏽‍💻" || !slices.Equal(m.viewState().Attachments, atts) {
 		t.Fatal("draft or attachments changed")
@@ -258,7 +258,7 @@ func TestViewerScrollBounds(t *testing.T) {
 func TestViewerHonestStates(t *testing.T) {
 	m := viewerTestModel(t)
 	openViewer(m, protocol.Attachment{Kind: "image", Name: "shot.png", Content: "\x89PNG..."})
-	if s := screenText(m); !strings.Contains(s, "Image preview unavailable") || strings.Contains(s, "PNG...") {
+	if s := screenText(m); !strings.Contains(s, "shot.png") || strings.Contains(s, "Loading") || strings.Contains(s, "PNG...") {
 		t.Fatal("image state")
 	}
 	openViewer(m, protocol.Attachment{Kind: "file", Name: "empty.txt"})
@@ -341,13 +341,33 @@ func TestAttachmentViewerCaptures(t *testing.T) {
 	}
 	md := "# Attachment viewer\n\nA **read-only** preview of `notes.md`.\n\n- first item\n- second item with a longer line that needs to wrap across the dialog width to show wrapping\n\n```go\nfunc main() {}\n```\n\n" + longText(40)
 	for _, light := range []bool{false, true} {
-		for _, scenario := range []string{"default", "expanded", "preview", "image", "draft", "activity"} {
+		for _, scenario := range []string{"default", "expanded", "preview", "image", "draft", "activity", "strip", "strip-thumbs", "image-placed"} {
 			m := testModel()
 			m.state.Light = light
 			m.Update(tea.WindowSizeMsg{Width: 140, Height: 44})
 			switch scenario {
 			case "image":
 				openViewer(m, protocol.Attachment{Kind: "image", Name: "screenshot.png", Source: "fixture://context/image", Content: "binary"})
+			case "strip", "strip-thumbs", "image-placed":
+				api := &fakeArtifacts{fetch: map[string][]byte{"art-a": pngBytes(t, 160, 120)}, fetchType: map[string]string{"art-a": "image/png"}}
+				m.artifacts = api
+				if scenario != "strip" {
+					m.graphics.state = graphicsSupported
+					m.graphics.cellW, m.graphics.cellH = 10, 20
+				}
+				m.viewState().Attachments = []protocol.Attachment{
+					{Kind: "workspace-file", Name: "docs/design/layout.md", Source: "docs/design/layout.md"},
+					{Kind: "artifact", Name: "clipboard-20260924.png", ArtifactID: "art-a", MediaType: "image/png", Size: 48213, Width: 160, Height: 120},
+					{Kind: "copied-file", Name: "report with a long name.txt", Source: "/tmp/report with a long name.txt"},
+				}
+				m.configureInputs()
+				_, cmd := m.Update(tea.WindowSizeMsg{Width: 140, Height: 44})
+				pump(t, m, cmd)
+				m.hover = chipPrefix + "0"
+				if scenario == "image-placed" {
+					m.hover = ""
+					pump(t, m, m.activate(action{Kind: "attachment-view", Value: "draft:clipboard-20260924.png", Index: 1}))
+				}
 			case "draft":
 				m.viewer = &attachmentViewer{att: protocol.Attachment{Kind: "workspace-file", Name: "main.go", Source: "cmd/main.go"}, draft: true, origin: "prompt"}
 				m.setFocus("viewer-close")

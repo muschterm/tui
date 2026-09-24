@@ -166,11 +166,9 @@ func (m *Model) reconcileStartedDraft() {
 			v.Settings = *c.Settings
 		}
 	}
+	removeSentAttachments(v, c.Attachments)
 	if v.Draft == c.Text {
 		v.Draft = ""
-		if sameAttachmentSources(v.Attachments, c.Attachments) {
-			v.Attachments = nil
-		}
 	}
 	// A snapshot can expose the created thread before its receipt. Preserve a
 	// view the user has already opened, including text typed there. If both

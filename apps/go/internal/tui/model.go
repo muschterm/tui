@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -21,14 +22,17 @@ import (
 )
 
 type threadView struct {
-	Agent                                                            string
-	CompactColumn                                                    shell.Region
-	Host                                                             shell.Host
-	RightVisible                                                     bool
-	Draft                                                            string
-	ContextError                                                     string
-	Settings                                                         protocol.Settings
-	Attachments                                                      []protocol.Attachment
+	Agent         string
+	CompactColumn shell.Region
+	Host          shell.Host
+	RightVisible  bool
+	Draft         string
+	ContextError  string
+	Settings      protocol.Settings
+	Attachments   []protocol.Attachment
+	// DraftID identifies one New-thread draft instance; it changes when that
+	// draft is sent, so late results never attach to a later draft.
+	DraftID                                                          string `json:",omitempty"`
 	Scroll, DetailScroll, RequestIndex, QuestionIndex, RequestScroll int
 	BottomScroll                                                     int
 	DetailID                                                         string
@@ -130,6 +134,8 @@ type frame struct {
 	// shared selection joins such a pair without a newline and keeps the
 	// wrapped row's trailing spaces instead of trimming them.
 	wrapRows map[int]bool
+	// composer is the prompt outline, including any attachment strip.
+	composer shell.Rect
 }
 
 type snapshotMsg protocol.Snapshot
@@ -241,9 +247,25 @@ type Model struct {
 	clipboardWrite          func(string) error
 	clipboardRead           func() (string, error)
 	clipboardReadGeneration uint64
-	keyboard                string
-	activityPhase           int
-	activityTickPending     bool
+	// clipboardSource and artifacts are injectable for tests; production
+	// uses wl-paste (when available) and the server client.
+	clipboardSource clipboardSource
+	artifacts       artifactAPI
+	intakes         map[uint64]draftOwner
+	intakeSeq       uint64
+	sendCapture     *sendCapture
+	captureSeq      uint64
+	viewerSeq       uint64
+	// Kitty graphics (graphics_model.go): per-connection capability, owned
+	// image ids and the composer's thumbnail loads.
+	graphics            graphicsProbe
+	images              *graphicsRegistry
+	thumbs              map[string]*thumbnail
+	thumbCache          thumbCache
+	graphicsSeq         uint64
+	keyboard            string
+	activityPhase       int
+	activityTickPending bool
 }
 
 func newInput(placeholder string) textarea.Model {
@@ -266,6 +288,7 @@ func newInput(placeholder string) textarea.Model {
 func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *Model {
 	m := &Model{client: c, clientID: id, snapshot: snapshot, ctx: context.Background(), width: 120, height: 40, connected: true, colorProfile: colorprofile.TrueColor, focus: "prompt", keyboard: "legacy keyboard", prompt: newInput(promptPlaceholder), answer: newInput("Type an answer…")}
 	m.state = savedView{Layout: shell.NewState(), Threads: map[string]*threadView{}, RecentsCollapsed: true}
+	m.images = newGraphicsRegistry(os.Getpid() ^ time.Now().Nanosecond())
 	m.projectInput = newInput("Project name or path…")
 	m.threadSearch = newInput("Search")
 	m.threadSearch.SetHeight(1)
@@ -619,6 +642,11 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	c.ClientID = m.clientID
 	m.busy = &c
 	m.busyAction = a
+	if c.Kind == "thread.start" {
+		if v := m.state.DraftThreads[c.ProjectID]; v != nil {
+			v.DraftID = identity()
+		}
+	}
 	m.state.Pending = &c
 	m.state.PendingAction = a
 	m.markDirty()
@@ -669,7 +697,17 @@ func (m *Model) save() tea.Cmd {
 }
 
 // Update routes every message through the model's explicit state transitions.
+// Graphics replies are consumed first; afterwards the composer's thumbnail
+// loads follow whatever the message changed.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if cmd, handled := m.graphicsUpdate(msg); handled {
+		return m, tea.Batch(cmd, m.syncThumbnails())
+	}
+	_, cmd := m.update(msg)
+	return m, tea.Batch(cmd, m.syncThumbnails())
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case pathQueryReady:
@@ -694,6 +732,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptClipboardWrite(msg)
 	case clipboardReadMsg:
 		cmd = m.acceptClipboardRead(msg)
+	case clipboardImageMsg:
+		cmd = m.acceptClipboardImage(msg)
+	case clipboardFilesMsg:
+		cmd = m.acceptClipboardFiles(msg)
+	case sendCaptureMsg:
+		cmd = m.acceptSendCapture(msg)
+	case viewerLoadMsg:
+		cmd = m.acceptViewerLoad(msg)
+	case viewerImageMsg:
+		cmd = m.acceptViewerImage(msg)
+	case thumbnailMsg:
+		cmd = m.acceptThumbnail(msg)
+	case tea.ResumeMsg:
+		return m, m.reshowGraphics()
 	case terminalReplyStarted:
 		return m, tea.Tick(terminalReplyWindow, func(time.Time) tea.Msg { return terminalReplyExpired(msg) })
 	case terminalReplyReplay:
@@ -706,7 +758,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.ColorProfileMsg:
 		return m, m.updateColorProfile(msg.Profile)
 	case tea.TerminalVersionMsg:
-		return m, m.probeTerminalColors(msg.Name)
+		return m, tea.Batch(m.probeTerminalColors(msg.Name), m.graphics.Start(msg.Name, m.colorProfile))
 	case tea.CapabilityMsg:
 		if m.colorProbe.capabilitiesRequested && (msg.Content == "RGB" || msg.Content == "Tc") {
 			m.colorProbe.confirmed = true
@@ -723,6 +775,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
 		m.configureInputs()
+		cmd = m.resizeGraphics()
 	case tea.KeyboardEnhancementsMsg:
 		m.keyboard = "enhanced keyboard negotiated"
 	case connectionMsg:
@@ -875,11 +928,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.local.Kind {
 		case "send":
+			// Exactly the sent captures leave the draft; attachments added
+			// while Send captured files stay for the next Send.
+			removeSentAttachments(v, msg.command.Attachments)
 			if v.Draft == msg.command.Text {
 				v.Draft = ""
-				if sameAttachmentSources(v.Attachments, msg.command.Attachments) {
-					v.Attachments = nil
-				}
 				if m.state.Active == msg.command.ThreadID {
 					m.prompt.SetValue("")
 				}
@@ -1019,10 +1072,10 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return m.pasteClipboard()
 	}
 	if s == "ctrl+q" {
-		return tea.Quit
+		return m.quit()
 	}
 	if s == "ctrl+z" {
-		return tea.Suspend
+		return m.suspend()
 	}
 	if s == "f4" && m.contextMenu == nil {
 		if m.settingsPage != "" && !m.terminalTooSmall() {
@@ -1049,7 +1102,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			}
 		}
 		if s == "ctrl+c" {
-			return tea.Quit
+			return m.quit()
 		}
 		m.status = "No text is selected"
 		return nil
@@ -1128,6 +1181,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	}
 	switch s {
 	case "esc":
+		if m.sendCapture != nil && m.focus == "prompt" {
+			return m.cancelSendCapture()
+		}
 		if m.state.Edit != nil {
 			return m.activate(action{Kind: "cancel-edit"})
 		}
@@ -1238,6 +1294,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		c := updateInput(&m.answer, k)
 		m.storeAnswer(m.answer.Value())
 		return c
+	}
+	if a, ok := m.chipKey(s); ok {
+		return m.activate(a)
 	}
 	if handled, cmd := m.questionCardKey(s); handled {
 		return cmd
@@ -1445,16 +1504,20 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
-func sameAttachmentSources(a, b []protocol.Attachment) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Kind != b[i].Kind || a[i].Name != b[i].Name || a[i].Source != b[i].Source {
-			return false
+// removeSentAttachments removes from v each attachment a command sent, once
+// per sent capture (matched by artifact id, else kind/name/source).
+func removeSentAttachments(v *threadView, sent []protocol.Attachment) {
+	for _, s := range sent {
+		for i, d := range v.Attachments {
+			if sameCapture(d, s) {
+				v.Attachments = slices.Delete(v.Attachments, i, i+1)
+				break
+			}
 		}
 	}
-	return true
+	if len(v.Attachments) == 0 {
+		v.Attachments = nil
+	}
 }
 
 // Clamp before applying the delta so saved offsets from an older viewport (or

@@ -250,6 +250,10 @@ Surfaces build typed blocks in `surface_panel.go` (`surfaceBlocks`/`surfaceRows`
 - **Never send keystrokes to whichever window has focus.** The user may have their
   own `tui-go` running in foot, and Hyprland focus follows the mouse.
   `foot_capture.py` writes to its own child PTY for this reason.
+- **Any relay into a real terminal must disable OPOST/ONLCR** (`tty.setraw`).
+  Bubble Tea's renderer uses bare LF as a cursor-down; a cooked relay turns it
+  into CRLF, which looks like shifted, duplicated and stuck rows. That artifact
+  was once mistaken for an app defect; `foot_capture.py` already sets raw mode.
 - **Early foot captures showed a doubled scrollbar.** It came from a wrapper that
   ignored window resizes, not from the app. `foot_capture.py` forwards SIGWINCH.
 - **`render-capture.py` drawing limits:** it draws block elements and `─`/`│` as

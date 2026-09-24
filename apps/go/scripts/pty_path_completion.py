@@ -114,9 +114,14 @@ def main():
             check(v['Pending'] is None, 'rejected capture clears command uncertainty')
             check('CANNOT SEND MESSAGE' in '\n'.join(term.screen()), 'rejected capture opens a visible error dialog')
             term.send(b'\x1b')
-            term.click_label('context attachments')
-            term.click_label('Remove bad.bin')
-            term.send(b'\x1b')
+            # The composer strip's chip removes bad.bin from its icon slot
+            # (two cells before the name), separate from its viewer label.
+            chip = next((y, line) for y, line in enumerate(term.screen()) if ' bad.bin ' in line and '@bad.bin' not in line)
+            term.click(chip[1].find('bad.bin') - 2, chip[0])
+            term.pump(.5)
+            v = view()
+            check(v['Threads'][thread_id]['Draft'] == 'Check @bad.bin ' and len(v['Threads'][thread_id]['Attachments']) == 0,
+                  'chip icon slot removes only the attachment and keeps the draft')
             term.send(b'\x01\x0b')
             paste('Read @spa')
             term.send(b'\t', .6)

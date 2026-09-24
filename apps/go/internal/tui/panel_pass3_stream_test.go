@@ -311,7 +311,7 @@ func TestAttachedContextMenuKeepsNames(t *testing.T) {
 func TestAttachmentsButtonGeometryAcrossProfiles(t *testing.T) {
 	var want *hit
 	for name, setup := range streamProfiles {
-		m := streamModel(false, 120, 40, "idle")
+		m := streamModel(false, 120, 26, "idle") // compact: the aggregate control
 		setup(m)
 		m.viewState().Attachments = []protocol.Attachment{{Kind: "file", Name: "a.go"}}
 		f := m.render()

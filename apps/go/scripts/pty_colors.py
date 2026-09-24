@@ -19,6 +19,7 @@ from pty_smoke import Terminal
 VERSION = b'\x1b[>q'
 RGB = b'\x1bP+q524742\x1b\\'
 TC = b'\x1bP+q5463\x1b\\'
+GRAPHICS = b'\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\'
 
 
 def has_rgb(output):
@@ -49,6 +50,7 @@ def main():
         ('no-color', {'NO_COLOR': '0'}, None, None),
         ('apple', {'TERM_PROGRAM': 'Apple_Terminal'}, None, None),
         ('env-truecolor', {'COLORTERM': 'truecolor'}, None, None),
+        ('env-truecolor-graphics-off', {'COLORTERM': 'truecolor', 'TUI_GO_GRAPHICS': 'off'}, None, None),
     ]
     report = {'harness': 'OS PTY + native binary + synthetic terminal responses', 'cases': []}
     with tempfile.TemporaryDirectory(prefix='tui-color-home-', dir='/tmp') as directory:
@@ -60,11 +62,14 @@ def main():
                 terminal = Terminal(binary, home, name, artifacts, dict(base, **overrides))
                 draft = 'draft survives ' + name
                 try:
-                    initially_true = name == 'env-truecolor'
-                    should_probe = name not in ('no-color', 'apple', 'env-truecolor')
+                    initially_true = name.startswith('env-truecolor')
+                    # True color needs no color probe; XTVERSION then gates only
+                    # the kitty graphics query, unless graphics are opted out.
+                    should_probe = name not in ('no-color', 'apple', 'env-truecolor-graphics-off')
                     assert terminal.output.count(VERSION) == int(should_probe), (name, 'version query count')
                     assert has_rgb(terminal.output) == initially_true, (name, 'initial color profile')
                     assert RGB not in terminal.output and TC not in terminal.output, (name, 'ungated DCS query')
+                    assert GRAPHICS not in terminal.output, (name, 'graphics query before XTVERSION')
                     terminal.send(draft.encode(), .15)
                     if version:
                         response = b'\x1bP>|' + version.encode() + b'\x1b\\'
@@ -86,6 +91,12 @@ def main():
                             assert has_rgb(terminal.output) == expected, (name, 'capability result')
                         terminal.send(response, .1)
                         assert terminal.output.count(RGB) == int(allowed) and terminal.output.count(TC) == int(allowed), (name, 'repeated negotiation')
+                    elif name == 'env-truecolor':
+                        terminal.send(b'\x1bP>|kitty(0.43.0)\x1b\\', .3)
+                        assert terminal.output.count(GRAPHICS) == 1, (name, 'kitty graphics query')
+                        assert RGB not in terminal.output and TC not in terminal.output, (name, 'color probe under true color')
+                        # The DA1 terminator without a kitty reply leaves the fallback.
+                        terminal.send(b'\x1b[?62;22c', .2)
                     else:
                         # Unsolicited positive replies must not bypass policy.
                         terminal.send(b'\x1bP1+r524742=38\x1b\\\x1bP1+r5463\x1b\\', .2)

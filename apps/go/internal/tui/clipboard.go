@@ -94,15 +94,19 @@ func (m *Model) pasteClipboard() tea.Cmd {
 	if terminalClipboardSession() {
 		m.status = ""
 		if strings.TrimSpace(os.Getenv("HERDR_ENV")) == "1" {
-			return m.showNoticeAs(noticeUnavailable, "Use your outer terminal's Paste (usually Ctrl+Shift+V) · herdr's host clipboard may be on another machine")
+			return m.showNoticeAs(noticeUnavailable, "Use your outer terminal's Paste (usually Ctrl+Shift+V) · herdr's host clipboard may be on another machine; attach files with @")
 		}
-		return m.showNoticeAs(noticeUnavailable, "Clipboard read unavailable over SSH · use your terminal's paste shortcut")
+		return m.showNoticeAs(noticeUnavailable, "Clipboard read unavailable over SSH · use your terminal's paste shortcut; attach files with @")
+	}
+	target := m.clipboardTarget()
+	if src := m.clipboardSourceFor(); src != nil {
+		m.status = "Reading system clipboard…"
+		return m.nativePaste(src, generation, target)
 	}
 	read := m.clipboardRead
 	if read == nil {
 		read = clipboard.ReadAll
 	}
-	target := m.clipboardTarget()
 	m.status = "Reading system clipboard…"
 	return func() tea.Msg {
 		text, err := read()

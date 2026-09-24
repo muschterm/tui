@@ -61,7 +61,9 @@ func (m *Model) filterTerminalReply(msg tea.Msg, now time.Time) tea.Msg {
 			s := string(unknown)
 			version := m.colorProbe.versionRequested && strings.HasPrefix(s, "\x1bP>|")
 			capability := m.colorProbe.capabilitiesRequested && (strings.HasPrefix(s, "\x1bP1+r") || strings.HasPrefix(s, "\x1bP0+r"))
-			if (version || capability) && len(s) < terminalReplyLimit {
+			// An incomplete kitty graphics reply (APC ESC _ G …) to the probe.
+			graphics := m.graphics.state == graphicsQuerying && strings.HasPrefix(s, "\x1b_G")
+			if (version || capability || graphics) && len(s) < terminalReplyLimit {
 				r.serial++
 				r.buffer, r.deadline = s, now.Add(terminalReplyWindow)
 				return terminalReplyStarted(r.serial)
@@ -105,6 +107,9 @@ func (m *Model) filterTerminalReply(msg tea.Msg, now time.Time) tea.Msg {
 			case uv.TerminalVersionEvent:
 				r.buffer, r.keys = "", nil
 				return tea.TerminalVersionMsg(event)
+			case uv.KittyGraphicsEvent, uv.UnknownApcEvent:
+				r.buffer, r.keys = "", nil
+				return event
 			}
 			if strings.HasPrefix(encoded, "\x1bP0+r") {
 				r.buffer, r.keys = "", nil

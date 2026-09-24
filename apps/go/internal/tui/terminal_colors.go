@@ -21,6 +21,7 @@ func (m *Model) terminalColorOptions(getenv func(string) string) []tea.ProgramOp
 		noColor:   getenv("NO_COLOR") != "",
 		skipProbe: getenv("TERM_PROGRAM") == "Apple_Terminal",
 	}
+	m.graphics = newGraphicsProbe(getenv)
 	// Use neutral surfaces even in the initial cached frame before Bubble Tea
 	// delivers its environment/terminfo/tmux detection result.
 	m.colorProfile = colorprofile.ANSI
@@ -57,17 +58,23 @@ func (m *Model) updateColorProfile(profile colorprofile.Profile) tea.Cmd {
 	if m.colorProbe.noColor {
 		profile = colorprofile.ASCII
 	}
+	var cleanup tea.Cmd
 	if m.colorProfile != profile {
 		m.colorProfile = profile
 		m.configureInputs()
 		m.promptView.Refresh(&m.prompt, m.promptMetrics.Total)
 		m.answerView.Refresh(&m.answer, m.answerMetrics.Total)
+		cleanup = m.graphicsProfileChanged(profile)
 	}
-	if (profile != colorprofile.ANSI && profile != colorprofile.ANSI256) || m.colorProbe.noColor || m.colorProbe.skipProbe || m.colorProbe.versionRequested {
-		return nil
+	// XTVERSION gates both the color capability probe (256/16-color
+	// fallbacks) and the kitty graphics query (256 colors or better).
+	colorProbe := profile == colorprofile.ANSI || profile == colorprofile.ANSI256
+	graphicsProbe := m.graphics.state == graphicsUnknown && (profile == colorprofile.ANSI256 || profile == colorprofile.TrueColor)
+	if !colorProbe && !graphicsProbe || m.colorProbe.noColor || m.colorProbe.skipProbe || m.colorProbe.versionRequested {
+		return cleanup
 	}
 	m.colorProbe.versionRequested = true
-	return tea.RequestTerminalVersion
+	return tea.Batch(cleanup, tea.RequestTerminalVersion)
 }
 
 func (m *Model) probeTerminalColors(name string) tea.Cmd {

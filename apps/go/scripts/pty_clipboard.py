@@ -14,13 +14,20 @@ from pty_smoke import Terminal
 
 
 def install_clipboard_wrappers(directory):
-    """Install atotto/clipboard-compatible wrappers that never touch the OS clipboard."""
+    """Install atotto/clipboard-compatible wrappers that never touch the OS clipboard.
+
+    Every invocation of either wrapper is logged as "<name> <args>", regardless
+    of which args it was called with, so a single wrapper directory on PATH
+    covers every way the app can reach a real "wl-paste"/"wl-copy" (a plain
+    text read, a `--list-types` probe, or a typed `--type <mime>` read) and
+    the log lets a check assert the exact call sequence, not just the count.
+    """
     data = directory / 'clipboard.data'
     log = directory / 'clipboard.log'
     names = ('pbcopy', 'pbpaste') if sys.platform == 'darwin' else ('wl-copy', 'wl-paste')
     bodies = {
-        names[0]: '#!/bin/sh\nset -eu\nprintf \'%s\\n\' "${0##*/}" >> "$TUI_TEST_CLIPBOARD_LOG"\ncat > "$TUI_TEST_CLIPBOARD_DATA"\n',
-        names[1]: '#!/bin/sh\nset -eu\nprintf \'%s\\n\' "${0##*/}" >> "$TUI_TEST_CLIPBOARD_LOG"\ncat "$TUI_TEST_CLIPBOARD_DATA"\n',
+        names[0]: '#!/bin/sh\nset -eu\nprintf \'%s %s\\n\' "${0##*/}" "$*" >> "$TUI_TEST_CLIPBOARD_LOG"\ncat > "$TUI_TEST_CLIPBOARD_DATA"\n',
+        names[1]: '#!/bin/sh\nset -eu\nprintf \'%s %s\\n\' "${0##*/}" "$*" >> "$TUI_TEST_CLIPBOARD_LOG"\ncat "$TUI_TEST_CLIPBOARD_DATA"\n',
     }
     for name, body in bodies.items():
         path = directory / name
@@ -67,7 +74,29 @@ def require_menu(terminal, title, labels):
 
 
 def operations(log):
+    """Every wrapper invocation logged so far, as "<name> <args>" strings."""
     return log.read_text().splitlines() if log.exists() else []
+
+
+def op_name(line):
+    return Path(line.split(' ', 1)[0]).name
+
+
+# Explicit Paste now probes the isolated wrapper's offered types before
+# falling back to a text read (docs/research/go-image-clipboard-2026-09-24.md),
+# so one Paste costs two wrapper calls, not one. A harness clipboard with no
+# recognized file/image type always takes this exact two-call path.
+PASTE_LIST_TYPES = 'wl-paste --list-types'
+PASTE_TEXT_READ = 'wl-paste --no-newline'
+
+
+def check_paste_sequence(check, before, after, label):
+    """Assert a single Paste appended exactly [list-types, text-read] to the
+    isolated wrapper log, through no path but that wrapper."""
+    added = after[len(before):]
+    check(added == [PASTE_LIST_TYPES, PASTE_TEXT_READ],
+          f'{label} invokes only the isolated wrapper, listing types before reading text '
+          f'(saw {added!r})')
 
 
 def main():
@@ -123,7 +152,7 @@ def main():
             (artifacts / 'transcript-menu.screen.txt').write_text('\n'.join(screen) + '\n')
             check(not operations(log), 'right-clicking selected transcript text opens its menu without copying')
             terminal.send(b'\r', .8)
-            check(len(operations(log)) == 1 and 'copy' in Path(operations(log)[0]).name,
+            check(len(operations(log)) == 1 and op_name(operations(log)[0]) == 'wl-copy',
                   'keyboard selection of Copy invokes only the isolated copy wrapper')
             check(data.read_text() == transcript,
                   'transcript Copy writes the exact selected text to the scratch clipboard')
@@ -145,8 +174,7 @@ def main():
             terminal.send(b'\r', .8)
             check('LEFTCURSOR-PASTE-right' in '\n'.join(terminal.screen()),
                   'keyboard-selected Paste inserts clipboard text at the prompt cursor')
-            check(len(operations(log)) == 1 and 'paste' in Path(operations(log)[0]).name,
-                  'prompt Paste invokes only the isolated paste wrapper')
+            check_paste_sequence(check, [], operations(log), 'prompt Paste')
 
             # Select text in the prompt to expose Copy, navigate to it, and verify
             # that a later explicit Paste replaces the selection in place.
@@ -162,12 +190,14 @@ def main():
             paste_row = next(i for i, line in enumerate(screen[menu_y:], menu_y) if 'Paste' in line)
             copy_row = next(i for i, line in enumerate(screen[menu_y:], menu_y) if 'Copy' in line)
             check(copy_row < paste_row, 'selected prompt menu presents Copy then Paste for keyboard navigation')
-            check(len(operations(log)) == 1,
+            after_first_paste = operations(log)
+            check(len(after_first_paste) == 2,
                   'right-clicking selected prompt text opens Copy without reading or writing clipboard')
             (artifacts / 'prompt-selection-menu.screen.txt').write_text('\n'.join(screen) + '\n')
             terminal.send(b'\r', .8)
-            check(data.read_text() == phrase and len(operations(log)) == 2
-                  and 'copy' in Path(operations(log)[1]).name,
+            after_copy = operations(log)
+            check(data.read_text() == phrase and len(after_copy) == 3
+                  and op_name(after_copy[-1]) == 'wl-copy',
                   'Enter copies the selected prompt text through the isolated wrapper')
 
             data.write_text('REPLACED')
@@ -177,14 +207,13 @@ def main():
             right_click(terminal, sx + 1, sy)
             require_menu(terminal, 'PROMPT', ['Copy', 'Paste'])
             before = operations(log)
-            check(len(before) == 2, 'opening replacement menu does not access the clipboard')
+            check(before == after_copy, 'opening replacement menu does not access the clipboard')
             terminal.send(b'\x1b[B\r', .8)
             rendered = '\n'.join(terminal.screen())
             check('LEFTREPLACED-right' in rendered,
                   'Paste replaces the selected prompt text without changing surrounding text')
             after = operations(log)
-            check(len(after) == 3 and 'paste' in Path(after[-1]).name,
-                  'replacement Paste invokes only the isolated paste wrapper')
+            check_paste_sequence(check, before, after, 'replacement Paste')
 
             # Plain Ctrl+V and enhanced forwarded shortcuts must take the same
             # guarded path as context-menu Paste, without inserting a literal v.
@@ -195,10 +224,9 @@ def main():
             ):
                 marker = 'KEYBOARD-' + label
                 data.write_text(marker)
-                before = len(operations(log))
+                before = operations(log)
                 terminal.send(sequence, .8)
-                check(len(operations(log)) == before + 1,
-                      label + ' invokes the clipboard reader exactly once')
+                check_paste_sequence(check, before, operations(log), label + ' Paste')
                 check(marker in '\n'.join(terminal.screen()),
                       label + ' inserts clipboard text into the prompt')
 

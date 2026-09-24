@@ -359,6 +359,9 @@ func (m *Model) mentionRect(f frame) shell.Rect {
 		}
 	}
 	top := f.prompt.Y - 2
+	if f.composer.H > 0 {
+		top = f.composer.Y
+	}
 	// Outline, heading, rule, entries, rule and hint row.
 	h := min(n+6, max(0, top))
 	return shell.Rect{X: f.prompt.X - inset, Y: top - h, W: f.prompt.W + 2*inset, H: h}

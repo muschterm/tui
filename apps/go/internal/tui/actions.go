@@ -195,9 +195,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "context-paste":
 		return m.pasteClipboard()
 	case "quit":
-		return tea.Quit
+		return m.quit()
 	case "suspend":
-		return tea.Suspend
+		return m.suspend()
 	case "columns":
 		m.openColumns()
 	case "column":
@@ -499,9 +499,17 @@ func (m *Model) activate(a action) tea.Cmd {
 		if m.state.Edit != nil {
 			return m.command(protocol.Command{Kind: "queue.edit", Text: text, TargetID: m.state.Edit.ID, Revision: m.state.Edit.Revision, Settings: &settings}, action{Kind: "save-edit"})
 		}
+		if m.sendCapture != nil {
+			return m.showSendError("Capturing attached files for the previous Send…")
+		}
 		captures := slices.Clone(v.Attachments)
+		pending := false
 		for i := range captures {
-			if captures[i].Kind != "workspace-file" {
+			switch captures[i].Kind {
+			case "workspace-file", "artifact":
+			case "copied-file":
+				pending = pending || captures[i].ArtifactID == ""
+			default:
 				captures[i].Content = fmt.Sprintf("Synthetic %s content captured at Send, fixture tick %d", captures[i].Kind, t.Tick)
 			}
 		}
@@ -510,6 +518,14 @@ func (m *Model) activate(a action) tea.Cmd {
 			c.Kind, c.ProjectID, c.Agent = "thread.start", m.state.DraftProjectID, m.agentCommandID(t)
 		} else if t.Closed {
 			c.Kind, c.Revision = "prompt.reopen-send", t.LifecycleRevision
+		}
+		if pending {
+			// Copied files are read and uploaded now, at Send; the command
+			// keeps the draft as it was when Send was pressed.
+			return m.beginSendCapture(c, a, captures)
+		}
+		for i := range c.Attachments {
+			c.Attachments[i] = sendAttachment(c.Attachments[i])
 		}
 		return m.command(c, a)
 	case "edit":
@@ -643,12 +659,24 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		v.Attachments = append(v.Attachments, protocol.Attachment{Kind: a.Value, Name: a.Value + " sample", Source: "fixture://context/" + a.Value, Content: ""})
 	case "attachment-remove":
-		if a.Index < len(v.Attachments) {
-			v.Attachments = slices.Delete(v.Attachments, a.Index, a.Index+1)
-			if len(v.Attachments) == 0 {
-				v.ContextError = ""
-			}
+		if m.sendCapture != nil {
+			return m.showNoticeAs(noticeUnavailable, "Attachments are being captured for Send · Esc cancels the Send")
 		}
+		if a.Index < 0 || a.Index >= len(v.Attachments) || a.Value != "" && attachmentID(v.Attachments[a.Index], a.Index) != a.Value {
+			// Never remove a different attachment that now sits at this index.
+			return m.showNoticeAs(noticeUnavailable, "That attachment changed or is no longer available")
+		}
+		removed := v.Attachments[a.Index]
+		v.Attachments = slices.Delete(v.Attachments, a.Index, a.Index+1)
+		if len(v.Attachments) == 0 {
+			v.ContextError = ""
+		}
+		// A draft's uploaded capture is staged, never accepted: free it.
+		var drop tea.Cmd
+		if !m.artifactInUse(removed.ArtifactID) {
+			drop = m.deleteStagedArtifact(removed.ArtifactID)
+		}
+		cmd = tea.Batch(drop, m.fixChipFocus())
 	case "attachments":
 		if m.state.Edit != nil {
 			m.status = "Queued attachment captures are unchanged"
@@ -658,7 +686,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		for i, x := range v.Attachments {
 			items = append(items,
 				menuItem{Label: "View " + x.Name, Action: action{Kind: "attachment-view", Value: "draft:" + x.Name, Index: i}},
-				menuItem{Label: "Remove " + x.Name, Action: action{Kind: "attachment-remove", Index: i}})
+				menuItem{Label: "Remove " + x.Name, Action: action{Kind: "attachment-remove", Index: i, Value: attachmentID(x, i)}})
 		}
 		m.showMenu("Attached context", items)
 	case "children":

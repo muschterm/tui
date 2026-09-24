@@ -69,6 +69,13 @@ func Run(ctx context.Context, c *client.Client, home, id string) error {
 	<-done
 	// Final synchronous flush follows cancellation of background saves. Saved
 	// state is scoped to this client, so another client's navigation is untouched.
+	// Every exit, including cancellation, a program error or a recovered
+	// panic (final may then not be the model), deletes each kitty image id
+	// this client may have transmitted. The terminal is restored by now and
+	// the APC deletes are invisible; repeating one after Quit is harmless.
+	if seq := m.imgs().Close(); seq != "" {
+		_, _ = os.Stdout.WriteString(seq)
+	}
 	if result, ok := final.(*pacedModel); ok {
 		state := result.model
 		state.viewState().Draft = state.prompt.Value()

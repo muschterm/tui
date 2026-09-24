@@ -780,7 +780,8 @@ the modal backdrop, holding a copy of one attachment taken when it opens, so lat
 draft or snapshot changes never alter what it shows.
 
 - **Entry points** (keyboard and pointer through the same `attachment-view`
-  action): **View <name>** beside Remove in the composer's attachments menu;
+  action): a composer strip chip's label (below) or **View <name>** beside
+  Remove in the composer's attachments menu;
   **View · <name>** in the prompt queue menu, showing the queued capture; and one
   activatable row per captured prompt attachment in Activity/Agents detail
   (glyph, name and source, with `kind · size` at the right). Activity no longer
@@ -806,13 +807,109 @@ draft or snapshot changes never alter what it shows.
   viewer, and the selection survives it. Copying a raw-mode selection that
   spans a soft-wrapped source line reproduces that line exactly, including
   trailing spaces at the wrap point; only hard line ends join with a newline.
-- **Honest states:** an unsent draft attachment shows `not captured yet` and
-  "Captured when you send" (the client never reads the source); `image` shows
-  "Image preview unavailable"; an accepted empty capture shows "Empty capture".
-  Content passes through `safe()`; nothing is fetched, executed or opened in an
-  editor.
+- **Honest states and loading:** loads run in a `tea.Cmd` tied to that viewer
+  open; a result for a closed or reopened viewer is dropped. Draft workspace
+  files load through `PreviewFile` (Send capture rules) and copied files through
+  a bounded local read (text up to 64 KiB shown; images and other binaries show
+  metadata or "Preview unavailable for <type>"); either records its SHA-256 as
+  the draft attachment's `PreviewSHA256`, which Send passes on. Accepted
+  artifacts with no inline content fetch text types (1 MiB bound) with
+  `FetchArtifact`. Images: see kitty graphics below. Fixture draft kinds
+  still show "Captured when you send"; an accepted empty capture shows "Empty
+  capture". Accepted captures with `ChangedSincePreview` show a Notice pair in
+  the viewer and an attention-marked "Changed since preview" row under the
+  Activity attachment row. Content passes through `safe()`; nothing is executed
+  or opened in an editor.
 
-Not implemented: clipboard image/file intake, thumbnails and kitty graphics,
-image previews, identifying and reviewing source changes since a draft preview
-(draft previews show no content yet), and real-terminal (foot) review of the
-dialog.
+### Clipboard image and file intake — 2026-09-24
+
+`internal/tui/clipboard_intake.go`. Only the explicit app Paste (prompt menu
+Paste and the forwarded paste shortcuts) reads the clipboard; bracketed paste
+stays text-only and nothing polls. SSH/herdr sessions keep the existing notice,
+now pointing at `@` file mentions. On Linux with `WAYLAND_DISPLAY` and
+`wl-paste` on PATH, Paste runs `wl-paste --list-types` (2 s, 64 KiB) off the
+input path and chooses `text/uri-list` or `x-special/gnome-copied-files`, then
+`image/png|jpeg|gif`, else the existing text Paste. Elsewhere (macOS, X11) only
+text Paste is available; image/file intake is a documented gap.
+
+- **Images** are read (16 MiB bound, 10 s) and uploaded to server staging at
+  Paste; the draft keeps `{Kind: artifact, Name: clipboard-<time>.<ext>,
+  ArtifactID, MediaType, Size, Width, Height}`.
+- **Copied files** are local `file://` URIs (percent-decoded; other hosts,
+  non-file schemes, directories and non-regular files are skipped with a
+  notice) kept as `{Kind: copied-file, Name, Source: absolute path}`; nothing is
+  uploaded at Paste. At Send the client reads (16 MiB) and uploads each one,
+  records the artifact id on the draft attachment (a retry reuses it), and only
+  then dispatches the command built when Send was pressed. A failed read or
+  upload sends nothing, keeps the draft and names the attachment; Send is
+  refused while a capture is in flight.
+- Each result carries its originating draft (thread or new-thread project) and
+  an intake id consumed on first delivery; it applies to that stored draft even
+  after navigation, and is dropped with a notice if the draft is gone. The
+  8-attachment cap applies at Paste and when results land.
+
+- A pasted image dropped before it lands (draft gone, queued edit, cap) and a
+  draft artifact removed from the composer are deleted from staging with
+  `DeleteArtifact` off the input path; `accepted`/`not_found` results and other
+  failures are ignored (staging expiry remains the backstop). Accepted captures
+  are never deleted. Copied files sent as artifacts carry their client-local
+  absolute path as display-only `Source`. Upload/preview `busy` and fetch
+  digest `unavailable` errors produce honest notices.
+
+### Composer attachment strip — 2026-09-24
+
+`internal/tui/attachment_strip.go`. While the draft has attachments, a strip
+inside the rounded prompt outline sits directly above the padding and typing
+rows. Each attachment is a single-row square-fill chip (panel fill at rest,
+stronger neutral on hover) built like a surface tab: end cap, kind-icon slot,
+gap, cell-truncated name (chip width ≤ 24), end cap. Hovering the chip or
+focusing its icon slot shows a close glyph there; the glyph and its spill cell
+(`attachment-chip-close:<i>`) remove that attachment, and the label
+(`attachment-chip:<i>`) opens the viewer with focus restored to that chip.
+Chips follow the prompt in Tab order; Enter activates the focused target and
+Delete/Backspace removes the focused chip, keeping focus on the strip. Removal
+is bound to index and name, so a changed index removes nothing. Chips that do
+not fit leave a trailing `+N` chip that opens the attachments menu (View/Remove
+for every attachment). In a compact pane (fewer than 28 rows) the strip
+collapses to the former single aggregate control above the composer, so the
+typing rows and controls row keep their space.
+
+### Kitty graphics — 2026-09-24
+
+`graphics.go`, `graphics_query.go`, wired in `graphics_model.go`
+([ADR 0018](../adr/0018-kitty-graphics-placeholders.md)). XTVERSION is now also
+requested under true color, only for this gate. A reply naming kitty or
+Ghostty (and nothing else) sends one `a=q` probe plus a cell-size request,
+terminated by DA1; `OK` enables graphics, anything else or 1 s of silence keeps
+the fallback. `NO_COLOR`, tmux/screen/herdr, a profile below 256 colours and
+`TUI_GO_GRAPHICS=off|0|false|no|none` disable it. Image ids are 16–255 (a lower
+256-colour index can be re-emitted as a basic SGR colour). With only 240 ids and a random
+base, this client's ids can collide with another program's images in the same
+kitty window; multiplexers are off, so only same-window programs are exposed.
+
+- **Viewer:** image artifacts are fetched (16 MiB) only when graphics are
+  enabled; copied-file drafts are read locally. The image is prepared off the
+  update path for the body box, keeping aspect ratio and never upscaling past
+  its natural cell size, and re-fitted on resize and expand/restore (re-placed,
+  not retransmitted). Ready images render as Unicode placeholder rows centred
+  on the dialog fill; while loading, and on terminals without graphics, a
+  styled metadata block (name, type, pixel size, bytes) of the same size is
+  shown, never claiming a preview. The image is deleted when the viewer closes.
+- **Thumbnails:** with graphics enabled and an image in the draft, the strip
+  grows to three rows: a thumbnail (fitted to 8×2 cells) above each image chip,
+  a loading block until it is placed. Thumbnails of removed attachments, or of a
+  draft no longer shown, are deleted.
+- **Cleanup:** Ctrl+Z/Suspend and every quit/detach path (Ctrl+Q, Ctrl+C,
+  command palette) first delete this client's image ids (`a=d,d=I`, never
+  `d=A`); `Run` repeats it for exits that bypassed them. Images retransmit
+  lazily after resume. A window resize re-requests the cell size, and a changed
+  cell size or capability re-prepares what is shown.
+
+Verified by unit tests and deterministic captures only (placeholders render as
+missing glyphs there). Live kitty/Ghostty rendering is **not** verified: neither
+terminal is installed here. A 2026-09-24 foot review (dark theme, about 144×53
+and 144×22) covered `@` mention, the strip's icon-slot close and focus, viewer
+Raw/Preview/expand/restore/close, queue and Activity View and the collapsed
+strip, with no defects; foot has no kitty graphics, so images showed the
+fallback. Not implemented: image/file intake on macOS and X11, a server
+capability advertising artifact support, and graphics inside multiplexers.

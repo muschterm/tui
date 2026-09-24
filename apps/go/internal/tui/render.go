@@ -155,9 +155,10 @@ func (m *Model) baseFooterHeight(w int) int {
 	if m.conversationVisible() {
 		n += m.activityStripHeight(w) + m.queueHeight()
 	}
-	if len(m.viewState().Attachments) > 0 {
+	if m.attachmentsCollapsed() {
 		n++
 	}
+	n += m.attachmentStripRows()
 	if m.viewState().ContextError != "" {
 		n++
 	}
@@ -667,7 +668,7 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 			y = m.renderRequest(f, shell.Rect{X: x, Y: y, W: w, H: m.requestHeight(w)}, req)
 		}
 	}
-	if len(v.Attachments) > 0 {
+	if m.attachmentsCollapsed() {
 		m.attachmentsButton(f, x, y, w, fmt.Sprintf("%d context attachments · manage / remove", len(v.Attachments)))
 		y++
 	}
@@ -679,16 +680,21 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	f.fill(shell.Rect{X: x, Y: y, W: w, H: max(0, r.Y+r.H-y)}, p, p.canvas)
 	promptHeight := max(1, m.promptRows)
 	controlsHeight := m.composerControlsHeight(w)
-	// Top border, one tinted padding row, typing rows, controls, bottom border.
-	composerHeight := promptHeight + controlsHeight + 3
+	strip := m.attachmentStripRows()
+	// Top border, the attachment strip, one tinted padding row, typing rows,
+	// controls, bottom border.
+	composerHeight := promptHeight + controlsHeight + 3 + strip
 	promptStyle := m.componentStyle(roundedOutline, m.controlState(false, "prompt"), p.text, p.input)
-	f.componentBox(m, shell.Rect{X: x, Y: y, W: w, H: composerHeight}, roundedOutline, promptStyle, p.canvas)
+	f.composer = shell.Rect{X: x, Y: y, W: w, H: composerHeight}
+	f.componentBox(m, f.composer, roundedOutline, promptStyle, p.canvas)
 	inset := composerInset(w)
-	f.prompt = shell.Rect{X: x + inset, Y: y + 2, W: max(1, w-2*inset), H: promptHeight}
+	f.prompt = shell.Rect{X: x + inset, Y: y + 2 + strip, W: max(1, w-2*inset), H: promptHeight}
 	if f.rows != nil {
 		f.put(f.prompt, style(p.text, p.input).Width(f.prompt.W).Height(f.prompt.H).Render(m.promptView.View(&m.prompt)))
 	}
 	f.hits = append(f.hits, hit{Rect: f.prompt, Action: action{}, Label: "Enter sends · Shift+Enter / Ctrl+J adds a line", Key: "prompt"})
+	// Chips follow the prompt in Tab order.
+	m.renderAttachmentStrip(f, f.prompt.X, y+1, f.prompt.W, strip)
 	promptScroll := m.promptView.Metrics(m.promptMetrics)
 	f.scrollbar(m, shell.Rect{X: f.prompt.X + f.prompt.W, Y: f.prompt.Y, W: 1, H: f.prompt.H}, "prompt", promptScroll.Total, f.prompt.H, promptScroll.Offset, p.input)
 	m.renderComposerControls(f, shell.Rect{X: x, W: w}, f.prompt.Y+f.prompt.H)

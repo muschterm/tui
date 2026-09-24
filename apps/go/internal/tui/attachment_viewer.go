@@ -36,6 +36,24 @@ type attachmentViewer struct {
 	// clean is the sanitized content split into source lines, computed once;
 	// nothing else reads the full content per frame.
 	clean []string
+	// Asynchronous preview load (attachment_preview.go). loadID ties a
+	// result to this open; source/index/owner locate the draft attachment
+	// that receives PreviewSHA256.
+	loadID          uint64
+	loading, loaded bool
+	loadErr         string
+	unavailable     string
+	source          string
+	index           int
+	owner           draftOwner
+	// Kitty image state (graphics_model.go): the fetched bytes, the body box
+	// they were prepared for and the prepared placement.
+	imgData      []byte
+	imgBox       graphicsBox
+	imgPrep      *graphicsPrepared
+	imgPreparing bool
+	imgErr       string
+	imgSeq       uint64
 }
 
 // sourceLines sanitizes the content once and splits it into source lines,
@@ -105,7 +123,7 @@ func (m *Model) viewerIcon(name string) string {
 
 func (m *Model) attachmentKindIcon(kind string) string {
 	switch kind {
-	case "image":
+	case "image", "artifact":
 		return m.viewerIcon("image")
 	case "git-diff":
 		return m.icon("git")
@@ -137,7 +155,16 @@ func attachmentSize(n int) string {
 
 // attachmentMeta is the one-line kind and size summary used by activity rows.
 func attachmentMeta(a protocol.Attachment) string {
-	return safe(singleLine(a.Kind)) + " · " + attachmentSize(len(a.Content))
+	return safe(singleLine(a.Kind)) + " · " + attachmentSize(attachmentBytes(a))
+}
+
+// attachmentBytes is the captured size: the reported Size for uploaded
+// artifacts, else the inline content length.
+func attachmentBytes(a protocol.Attachment) int {
+	if a.Size > 0 {
+		return int(a.Size)
+	}
+	return len(a.Content)
 }
 
 // openAttachmentViewer resolves an attachment-view action. Value names the
@@ -189,8 +216,9 @@ func (m *Model) openAttachmentViewer(a action) tea.Cmd {
 	m.hover = ""
 	m.drag = shell.NoDivider
 	m.scrollDrag = ""
-	m.viewer = &attachmentViewer{att: list[a.Index], draft: source == "draft", origin: origin}
-	return m.setFocus("viewer-body")
+	release := m.releaseViewerImage()
+	m.viewer = &attachmentViewer{att: list[a.Index], draft: source == "draft", origin: origin, index: a.Index, source: source}
+	return tea.Batch(release, m.setFocus("viewer-body"), m.loadViewerPreview(source, a.Index))
 }
 
 func (m *Model) closeAttachmentViewer() tea.Cmd {
@@ -199,14 +227,18 @@ func (m *Model) closeAttachmentViewer() tea.Cmd {
 	}
 	origin := m.viewer.origin
 	m.viewer = nil
+	release := m.releaseViewerImage()
 	m.hover = ""
 	m.selecting, m.selectedText = false, ""
 	if m.scrollDrag == "viewer" {
 		m.scrollDrag = ""
 	}
+	if !m.focusable(origin) {
+		origin = "prompt"
+	}
 	cmd := m.setFocus(origin)
 	m.configureInputs()
-	return cmd
+	return tea.Batch(release, cmd)
 }
 
 // viewerAction handles the viewer's own controls.
@@ -219,13 +251,14 @@ func (m *Model) viewerAction(a action) tea.Cmd {
 	case "viewer-close":
 		return m.closeAttachmentViewer()
 	case "viewer-mode":
-		if !attachmentMarkdown(vw.att) || vw.att.Kind == "image" {
+		if !attachmentMarkdown(vw.att) || imageAttachment(vw.att) {
 			return m.showNoticeAs(noticeUnavailable, "Preview is available for Markdown only")
 		}
 		vw.preview = !vw.preview
 		vw.scroll = 0
 	case "viewer-expand":
 		vw.expanded = !vw.expanded
+		return m.syncViewerImage()
 	}
 	return nil
 }
@@ -258,12 +291,27 @@ func (m *Model) viewerPairs() [][2]string {
 	if src := safe(singleLine(a.Source)); src != "" && src != safe(singleLine(a.Name)) {
 		pairs = append(pairs, [2]string{"Source", src})
 	}
-	if m.viewer.draft && a.Content == "" {
+	if mt := safe(singleLine(a.MediaType)); mt != "" {
+		pairs = append(pairs, [2]string{"Type", mt})
+	}
+	switch {
+	case a.Size > 0:
+		pairs = append(pairs, [2]string{"Size", attachmentSize(int(a.Size))})
+	case m.viewer.draft && a.Content == "" && !m.viewer.loaded:
 		pairs = append(pairs, [2]string{"Size", "not captured yet"})
-	} else {
+	default:
 		pairs = append(pairs, [2]string{"Size", attachmentSize(len(a.Content))})
 	}
-	if attachmentMarkdown(a) && a.Kind != "image" {
+	if a.Width > 0 && a.Height > 0 {
+		pairs = append(pairs, [2]string{"Dimensions", fmt.Sprintf("%d × %d px", a.Width, a.Height)})
+	}
+	if m.viewer.draft && (a.Kind == "workspace-file" || a.Kind == "copied-file") && m.viewer.loaded {
+		pairs = append(pairs, [2]string{"Preview", "current file · Send captures it again"})
+	}
+	if a.ChangedSincePreview {
+		pairs = append(pairs, [2]string{"Notice", "Changed since preview · showing the captured content"})
+	}
+	if attachmentMarkdown(a) && !imageAttachment(a) {
 		mode := "Raw"
 		if m.viewer.preview {
 			mode = "Preview"
@@ -278,7 +326,7 @@ func (m *Model) viewerLayout() viewerLayout {
 	l := viewerLayout{r: r, x: r.X + 2, w: max(0, r.W-4)}
 	l.closeX = r.X + r.W - 4
 	l.expandX = l.closeX - 3
-	if attachmentMarkdown(m.viewer.att) && m.viewer.att.Kind != "image" {
+	if attachmentMarkdown(m.viewer.att) && !imageAttachment(m.viewer.att) {
 		l.modeW = 5
 		if m.plainIcons {
 			l.modeW = 9
@@ -297,16 +345,31 @@ func (m *Model) viewerLayout() viewerLayout {
 
 // viewerState is a one-line honest state shown instead of content.
 func (m *Model) viewerState() string {
-	a := m.viewer.att
-	switch {
-	case a.Kind == "image":
-		return "Image preview unavailable"
-	case a.Content == "" && m.viewer.draft:
-		return "Captured when you send"
-	case a.Content == "":
-		return "Empty capture"
+	if lines := m.viewerStateLines(0); len(lines) > 0 {
+		return lines[0]
 	}
 	return ""
+}
+
+// viewerStateLines are the honest state rows shown instead of content.
+func (m *Model) viewerStateLines(width int) []string {
+	vw := m.viewer
+	a := vw.att
+	switch {
+	case vw.loading:
+		return []string{"Loading preview…"}
+	case vw.loadErr != "":
+		return []string{"Preview unavailable · " + vw.loadErr}
+	case imageAttachment(a):
+		return m.viewerImageBody(width)
+	case vw.unavailable != "":
+		return []string{vw.unavailable}
+	case a.Content == "" && vw.draft && !vw.loaded:
+		return []string{"Captured when you send"}
+	case a.Content == "":
+		return []string{"Empty capture"}
+	}
+	return nil
 }
 
 func (m *Model) viewerLines(width int) []viewerLine {
@@ -437,8 +500,14 @@ func (m *Model) renderViewer(f *frame) {
 		v := m.componentStyle(squareFill, componentState{Focused: true}, p.text, p.input)
 		f.focusMark(body.X-1, body.Y, v, p.input)
 	}
-	if state := m.viewerState(); state != "" && body.H > 0 {
-		f.text(body.X, body.Y, body.W, state, p.muted, p.input)
+	if imageAttachment(vw.att) && vw.loadErr == "" {
+		m.renderViewerImage(f, body)
+	} else {
+		for i, state := range m.viewerStateLines(body.W) {
+			if i < body.H {
+				f.text(body.X, body.Y+i, body.W, state, p.muted, p.input)
+			}
+		}
 	}
 	for i := 0; i < body.H && offset+i < len(lines); i++ {
 		line := lines[offset+i]

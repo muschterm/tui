@@ -169,8 +169,9 @@ func TestPromptCapturesSettingsAndContextAtSend(t *testing.T) {
 	}
 	m.activate(action{Kind: "attach-kind", Value: "image"})
 	m.Update(commandMsg{command: captured, local: action{Kind: "send"}})
-	if len(m.viewState().Attachments) != 2 {
-		t.Fatal("receipt discarded newly added attachment")
+	// The sent capture leaves the draft; the one added after Send stays.
+	if atts := m.viewState().Attachments; len(atts) != 1 || atts[0].Kind != "image" {
+		t.Fatal("receipt discarded newly added attachment or kept the sent one")
 	}
 }
 
