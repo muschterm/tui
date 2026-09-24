@@ -35,7 +35,7 @@ hover stronger neutral, and selection accent plus bold. Keyboard focus adds its
 mark in the leading cap independently (2026-09-22; previously an underline).
 Selected tabs keep their treatment when a neighbor is
 hovered. Reserved bracket end cells preserve compact controls in monochrome.
-The Go card is bounded to 13 rows including its interior header (12 before the
+The interior header shows the request state (for example Waiting for answer) and names an origin only when it is not the thread's own agent (2026-09-23). The Go card is bounded to 13 rows including its interior header (12 before the
 [2026-09-23 refinement](#question-card-refinement--2026-09-23)), with scrollable
 content; plain and limited-color modes preserve geometry and hit regions. See the
 accepted [component rule](components.md).
@@ -163,19 +163,21 @@ of a turn that had already ended.
 | --- | --- |
 | Answer accepted, not yet handed to the connection | Accepted; uncertain if the turn fails or the server restarts |
 | Handed to the connection, no further evidence | Unconfirmed: provider confirmation unavailable |
-| Blocking question, built-in bridge receipt, then the same turn ends without error or cancellation | Resolved: Answered |
+| Blocking Claude question, successful tool-result receipt, then the same turn ends without error or cancellation | Resolved: Answered |
+| Codex pipe-write receipt, even followed by a normal turn end | Unconfirmed: provider confirmation unavailable |
 | Handed off, then the turn fails or the server restarts mid-turn | Uncertain |
 | Handed off, then the turn is cancelled | Unconfirmed |
 | Decline or cancel handed off, then the same turn ends normally | Unconfirmed: receipts cover accepted answers only (the failure and restart rows still apply) |
 
-A built-in bridge sends the pinned `tui-go.question-delivery.v1` receipt only
-after the provider took the answer: Claude reports its own successful
-`AskUserQuestion` tool result; Codex's response is written to a native request
-that App Server has not resolved or withdrawn. The receipt precedes the turn's
-prompt response on the ordered ACP stream. Neither the receipt nor turn
-completion alone settles delivery. A continued-work question can outlive its
-turn's normal end, so it stays unconfirmed. Receipts from other adapters are
-ignored.
+The pinned `tui-go.question-delivery.v1` receipt has provider-specific evidence:
+Claude reports its own successful `AskUserQuestion` tool result; Codex only
+reports a complete response write to a native request not yet observed as
+resolved or withdrawn. The receipt precedes the turn's prompt response on the
+ordered ACP stream. A Codex write can still be discarded by App Server, so even
+normal completion of that blocking turn cannot confirm acceptance. A
+continued-work question can outlive its turn's normal end and also stays
+unconfirmed. Receipts from other adapters are ignored. See the
+[pinned Codex evidence](../implementation/codex-question-confirmation-2026-09-23.md).
 
 ## Integration requirements
 
@@ -270,14 +272,16 @@ explicit Submit and bounded drafts, and changes the following.
   reason. Activation still reports that reason and sends nothing.
 - **Bound.** The Go card is at most 13 rows; short windows shrink the content
   viewport first, keeping at least one content row and one answer row.
-- **Answered history.** Answered/submitted cards in the transcript span the
-  prompt outline's extent, like the user message box, instead of the former
-  end-aligned inset. When the transcript overflows, its scrollbar takes the
-  pane's gutter column to the right of that extent; it never paints over a
-  card's border or a user box's tint, so their right edges stay aligned with
-  the prompt outline. Where that gutter abuts the right pane divider, only the
-  thumb is drawn (the blank track still pages), so the two never form a double
-  rule.
+- **Answered history.** Answered/submitted cards in the transcript are the
+  user's contribution, so they are drawn like the user message box
+  (2026-09-23, superseding the full-extent card of 2026-09-22): right-aligned,
+  ending at the prompt outline's extent, hugging their wrapped content up to
+  the same 80% cap of that extent, with the canvas left of a narrower card.
+  When the transcript overflows, its scrollbar takes the pane's gutter column
+  to the right of that extent; it never paints over a card's border or a user
+  box's tint, so their right edges stay aligned with the prompt outline. Where
+  that gutter abuts the right pane divider, only the thumb is drawn (the blank
+  track still pages), so the two never form a double rule.
 - **Choice markers.** A selected choice is marked the same way wherever it is
   shown — pending card, answered card, its compact preview and copied text.
   Single choice, Other… included, uses the filled-dot radio (Nerd Font
@@ -419,7 +423,8 @@ Submission durably records the response before callback handoff. The UI never
 creates an Answered history card from callback return, a pipe write, generic
 tool output or turn completion alone. The 2026-09-23
 [delivery evidence](#server-authority-and-recovery) rule settles a blocking
-answer only on a bridge receipt followed by normal completion of the same turn.
+Claude answer only on its tool-result receipt followed by normal completion of
+the same turn; Codex's pipe-write receipt remains unconfirmed.
 Withdrawal/cancellation preserves any accepted response without replay; a new
 connection cannot revive the callback. Explicit Submit remains the only answer
 action in this slice; omission is represented in the accepted form, and Stop

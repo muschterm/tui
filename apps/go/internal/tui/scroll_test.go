@@ -18,6 +18,8 @@ func scrollModel() *Model {
 	m.snapshot.Threads[0].Activity[0].Detail = strings.Repeat("Inspector line\n", 80)
 	m.openSurface("activity", m.snapshot.Threads[0].Activity[0].ID)
 	m.configureInputs()
+	// Scroll fixtures read from the top; a thread otherwise opens at its end.
+	m.viewState().Pinned, m.viewState().Scroll = false, 0
 	return m
 }
 

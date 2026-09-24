@@ -89,7 +89,7 @@ func (m *Model) composerSettingDisplays(t protocol.Thread, s protocol.Settings) 
 	if !ok {
 		return items
 	}
-	if o, offered := c.option("speed"); offered && len(o.Values) >= 1 && (s.Speed == "standard" || s.Speed == "default" || s.Speed == "") {
+	if o, offered := c.option("speed"); offered && len(o.Values) >= 1 && baselineSpeed(s.Speed) {
 		label := optionValueName(o, s.Speed)
 		if label == "" {
 			label = "Speed"
@@ -117,6 +117,14 @@ func (m *Model) composerSettingDisplays(t protocol.Thread, s protocol.Settings) 
 	return items
 }
 
+// baselineSpeed reports a speed value that means the provider's ordinary
+// tier. Claude reports "standard"; Codex reports "default" when no tier is
+// chosen. composerSettings shows nothing for it, and composerSettingDisplays
+// adds the mapped option once, so both branches never append a speed field.
+func baselineSpeed(value string) bool {
+	return value == "" || value == "standard" || value == "default"
+}
+
 func optionalSetting(value string) bool {
 	return value != "" && value != "unavailable" && value != "unknown"
 }
@@ -125,7 +133,7 @@ type settingDisplay struct{ label, field string }
 
 func composerSettings(agent string, s protocol.Settings) []settingDisplay {
 	result := []settingDisplay{{agentDisplayName(agent), "agent"}, {modelDisplayName(s.Model), "model"}}
-	if optionalSetting(s.Speed) && s.Speed != "standard" {
+	if optionalSetting(s.Speed) && !baselineSpeed(s.Speed) {
 		label := safe(s.Speed)
 		if strings.EqualFold(s.Speed, "fast") {
 			label = "Fast"

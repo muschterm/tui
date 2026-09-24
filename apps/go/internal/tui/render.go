@@ -247,8 +247,9 @@ func (m *Model) compose(paint bool) frame {
 }
 
 type contentLine struct {
-	outset           bool // painted across the prompt outline's extent, as answered question cards are
-	boxed            bool // tinted full-width row of a user message box
+	outset           bool // painted within the prompt outline's extent, as answered question cards are
+	boxed            bool // tinted row of a right-aligned user message box
+	boxW             int  // a boxed or outset row's width, right-aligned at the extent; 0 spans the extent
 	styled           bool // text contains only renderer-generated ANSI, after input sanitization
 	text, fg, bg     string
 	marker, markerFG string
@@ -271,7 +272,7 @@ func (m *Model) activityLinesForThread(t protocol.Thread, items []protocol.Activ
 			if history, handled := m.questionHistoryLines(t, a, w); handled {
 				if len(history) > 0 {
 					lines = append(lines, history...)
-					lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
+					lines = append(lines, contentLine{fg: p.text, bg: p.canvas})
 				}
 				continue
 			}
@@ -316,13 +317,21 @@ func (m *Model) activityLinesForThread(t protocol.Thread, items []protocol.Activ
 		if !message {
 			lines = append(lines, contentLine{text: header, fg: fg, bg: bg, action: act})
 		}
-		// A user message is a tinted box: its text uses the full transcript
-		// column and renderTranscript extends the tint one cell beyond it on
-		// each side, with one tinted padding row above and below.
+		// A user message is a right-aligned tinted box (as in T3 Code) ending
+		// one cell beyond the text column, the prompt outline's extent. It hugs
+		// its content up to 80% of that extent, with one padding cell each side
+		// and one tinted padding row above and below. Agent replies and reported
+		// thinking stay left, unboxed, and stop at the mirrored 80% cap so the
+		// two sides read as a conversation rather than one full-width column.
 		user := a.Role == "user"
+		extent := w + 2
+		maxBox := max(min(extent, 24), extent*4/5)
 		wrapWidth := w - 2
+		boxW := 0
 		if user {
-			wrapWidth = w
+			wrapWidth = maxBox - 2
+		} else if a.Role == "agent" || a.Role == "thought" {
+			wrapWidth = min(wrapWidth, maxBox-2)
 		}
 		bodyLines := strings.Split(ansi.Wrap(safe(a.Text), max(1, wrapWidth), ""), "\n")
 		formatted := a.Role == "agent"
@@ -330,15 +339,20 @@ func (m *Model) activityLinesForThread(t protocol.Thread, items []protocol.Activ
 			bodyLines = markdownLines(a.Text, max(1, wrapWidth), p)
 		}
 		if user {
-			lines = append(lines, contentLine{fg: body, bg: bg, boxed: true})
+			widest := 0
+			for _, line := range bodyLines {
+				widest = max(widest, ansi.StringWidth(line))
+			}
+			boxW = min(max(1, wrapWidth)+2, widest+2)
+			lines = append(lines, contentLine{fg: body, bg: bg, boxed: true, boxW: boxW})
 		}
 		for _, line := range bodyLines {
-			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, boxed: user, styled: formatted})
+			lines = append(lines, contentLine{text: line, fg: body, bg: bg, action: act, boxed: user, boxW: boxW, styled: formatted})
 		}
 		if user {
-			lines = append(lines, contentLine{fg: body, bg: bg, boxed: true})
+			lines = append(lines, contentLine{fg: body, bg: bg, boxed: true, boxW: boxW})
 		}
-		lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
+		lines = append(lines, contentLine{fg: p.text, bg: p.canvas})
 	}
 	return lines
 }
@@ -360,7 +374,7 @@ func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
 	lines := make([]contentLine, 0, len(t.Activity)*4)
 	p := m.colors()
 	appendSpacer := func() {
-		lines = append(lines, contentLine{fg: p.text, bg: p.canvas}, contentLine{fg: p.text, bg: p.canvas})
+		lines = append(lines, contentLine{fg: p.text, bg: p.canvas})
 	}
 	appendHistory := func(group questionHistoryFallbackGroup) {
 		if len(group.Lines) == 0 {
@@ -442,7 +456,11 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 	f.hits = append(f.hits, hit{Rect: r, Action: action{}, Label: "Transcript · wheel / arrows to scroll", Key: "transcript"})
 	lines := m.transcriptLines(m.thread(), r.W)
 	f.transcriptMax = max(0, len(lines)-r.H)
-	offset := min(max(0, m.viewState().Scroll), f.transcriptMax)
+	v := m.viewState()
+	offset := min(max(0, v.Scroll), f.transcriptMax)
+	if v.Pinned || v.Scroll >= f.transcriptMax {
+		offset = f.transcriptMax
+	}
 	// Boxed rows are tinted one cell beyond the text column on each side (the
 	// prompt outline's extent), bounded by the center pane.
 	boxLeft, boxRight := r.X-1, r.X+r.W+1
@@ -453,10 +471,19 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 		line := lines[offset+i]
 		x, width := r.X, r.W
 		if line.outset && boxRight > boxLeft {
+			// A card narrower than the extent is right-aligned like a user box.
 			x, width = boxLeft, boxRight-boxLeft
+			if line.boxW > 0 {
+				x = max(boxLeft, boxRight-line.boxW)
+				width = boxRight - x
+			}
 		}
 		if line.boxed && boxRight > boxLeft {
-			f.fill(shell.Rect{X: boxLeft, Y: r.Y + i, W: boxRight - boxLeft, H: 1}, p, line.bg)
+			// Right-aligned bubble: the tint ends at boxRight and the text is
+			// left-aligned one cell inside its left edge.
+			x0 := max(boxLeft, boxRight-line.boxW)
+			f.fill(shell.Rect{X: x0, Y: r.Y + i, W: boxRight - x0, H: 1}, p, line.bg)
+			x, width = x0+1, max(0, boxRight-x0-2)
 		}
 		if line.border != "" && width >= 2 {
 			m.renderOutlinedRow(f, x, r.Y+i, width, line, i)
@@ -491,6 +518,39 @@ func (m *Model) renderTranscript(f *frame, r shell.Rect) {
 		track = " "
 	}
 	f.scrollbarTrack(m, shell.Rect{X: bar, Y: r.Y, W: 1, H: r.H}, "transcript", len(lines), r.H, offset, p.canvas, track)
+	m.renderJumpToEnd(f, r, offset)
+}
+
+// renderJumpToEnd overlays a centered control on the transcript's last row
+// while the reader is away from the end, counting activity received since.
+// messageCount is the number of conversation messages in a thread. The jump
+// control counts these, not tool, thought or other operational rows, so its
+// label stays truthful while a turn streams.
+func messageCount(t protocol.Thread) int {
+	n := 0
+	for _, a := range t.Activity {
+		if a.Role == "user" || a.Role == "agent" {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *Model) renderJumpToEnd(f *frame, r shell.Rect, offset int) {
+	v := m.viewState()
+	if m.creatingThread() || m.state.Active == "" || offset >= f.transcriptMax || r.H < 1 {
+		return
+	}
+	label := "Jump to bottom"
+	if n := messageCount(m.thread()) - v.SeenActivity; n == 1 {
+		label = "1 new message"
+	} else if n > 1 {
+		label = fmt.Sprintf("%d new messages", n)
+	}
+	label = m.icon("jump-end") + " " + label
+	w := min(r.W, ansi.StringWidth(label)+2)
+	p := m.colors()
+	f.button(m, r.X+(r.W-w)/2, r.Y+r.H-1, w, label, "transcript-end", action{Kind: "transcript-end"}, p.blue, p.input)
 }
 
 // renderOutlinedRow paints one interior row of an outlined transcript card:

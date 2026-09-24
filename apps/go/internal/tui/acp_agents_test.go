@@ -369,8 +369,10 @@ func TestApprovalCardShowsAgentChoices(t *testing.T) {
 	if !strings.Contains(view, "Tool: write · Location: /work/alpha/src/main.go") {
 		t.Fatalf("approval detail missing:\n%s", view)
 	}
-	if !strings.Contains(view, "Claude · Approval required") {
-		t.Fatalf("approval origin missing:\n%s", view)
+	// The thread's own agent is not repeated on its cards; only a different
+	// origin, such as a child run, would be named.
+	if !strings.Contains(view, "Approval required") || strings.Contains(view, "Claude · Approval required") {
+		t.Fatalf("approval header should name the state without the thread agent:\n%s", view)
 	}
 	m.activate(action{Kind: "approve", ID: "perm-1", Value: "Allow once", Revision: 4})
 	if m.busy == nil || m.busy.Kind != "request.answer" || m.busy.TargetID != "perm-1" || len(m.busy.Answers) != 1 || m.busy.Answers[0] != "Allow once" {

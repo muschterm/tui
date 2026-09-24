@@ -41,6 +41,10 @@ type threadView struct {
 	Answers                        map[string][]string
 	QuestionDrafts                 map[string][]answerDraft
 	QuestionHistoryExpanded        map[string]bool `json:"QuestionHistoryExpanded,omitempty"`
+	// Pinned follows the transcript end; SeenActivity counts the conversation
+	// messages (user/agent rows) already shown when the user scrolled away.
+	Pinned       bool `json:",omitempty"`
+	SeenActivity int  `json:",omitempty"`
 }
 
 type savedView struct {
@@ -250,8 +254,16 @@ func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *
 		m.state.Active = m.nextOpenThread("")
 	}
 	for _, t := range snapshot.Threads {
-		if m.state.Threads[t.ID] == nil {
-			m.state.Threads[t.ID] = &threadView{Settings: t.Selected, Answers: map[string][]string{}}
+		v := m.state.Threads[t.ID]
+		if v == nil {
+			m.state.Threads[t.ID] = &threadView{Settings: t.Selected, Answers: map[string][]string{}, Pinned: true}
+			continue
+		}
+		// A view saved before follow-the-end existed restores its offset
+		// unpinned with no seen count; its current messages count as read so
+		// the jump control does not announce the whole thread as new.
+		if !v.Pinned && v.SeenActivity == 0 {
+			v.SeenActivity = messageCount(t)
 		}
 	}
 	m.migrateQuestionDrafts()
@@ -294,7 +306,7 @@ func (m *Model) viewState() *threadView {
 	}
 	v := m.state.Threads[m.state.Active]
 	if v == nil {
-		v = &threadView{Settings: m.thread().Selected, Answers: map[string][]string{}}
+		v = &threadView{Settings: m.thread().Selected, Answers: map[string][]string{}, Pinned: true}
 		m.state.Threads[m.state.Active] = v
 	}
 	if v.Answers == nil {
@@ -965,9 +977,8 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	if len(m.menu) == 0 && contextMenuKey(k) {
 		return m.openContextMenuForFocus()
 	}
-	if s == "ctrl+v" {
-		m.status = "Use your terminal’s paste shortcut"
-		return nil
+	if stroke := k.Keystroke(); stroke == "ctrl+v" || stroke == "ctrl+shift+v" || stroke == "super+v" || stroke == "shift+insert" {
+		return m.pasteClipboard()
 	}
 	if s == "ctrl+q" {
 		return tea.Quit
@@ -1412,6 +1423,13 @@ func (m *Model) clampScroll(f frame) {
 	v := m.viewState()
 	changed := false
 	if f.transcript.H > 0 {
+		if v.Pinned || v.Scroll >= f.transcriptMax {
+			// Following new output moves the offset every frame; only the
+			// pin flip is a saved-view change worth a persisted revision.
+			changed = !v.Pinned || changed
+			v.Pinned, v.Scroll = true, f.transcriptMax
+			v.SeenActivity = messageCount(m.thread())
+		}
 		changed = scrollBy(&v.Scroll, 0, f.transcriptMax) || changed
 	}
 	if f.detail.H > 0 {

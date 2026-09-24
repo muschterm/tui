@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """OS-PTY clipboard context-menu checks with isolated command wrappers."""
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -100,6 +101,10 @@ def main():
             'PATH': str(wrapper_dir) + os.pathsep + os.environ.get('PATH', ''),
             'TUI_TEST_CLIPBOARD_DATA': str(data),
             'TUI_TEST_CLIPBOARD_LOG': str(log),
+            # This harness models a local client, independently of the host
+            # session used to launch the test runner.
+            'SSH_TTY': None, 'SSH_CONNECTION': None, 'SSH_CLIENT': None,
+            'HERDR_ENV': None,
         }
         if sys.platform == 'linux':
             # atotto/clipboard selects only these scratch wl-* wrappers at init.
@@ -180,6 +185,48 @@ def main():
             after = operations(log)
             check(len(after) == 3 and 'paste' in Path(after[-1]).name,
                   'replacement Paste invokes only the isolated paste wrapper')
+
+            # Plain Ctrl+V and enhanced forwarded shortcuts must take the same
+            # guarded path as context-menu Paste, without inserting a literal v.
+            for sequence, label in (
+                (b'\x16', 'Ctrl+V'),
+                (b'\x1b[118;6u', 'Ctrl+Shift+V'),
+                (b'\x1b[118;9u', 'Super+V'),
+            ):
+                marker = 'KEYBOARD-' + label
+                data.write_text(marker)
+                before = len(operations(log))
+                terminal.send(sequence, .8)
+                check(len(operations(log)) == before + 1,
+                      label + ' invokes the clipboard reader exactly once')
+                check(marker in '\n'.join(terminal.screen()),
+                      label + ' inserts clipboard text into the prompt')
+
+            # Reproduce a persistent herdr pane with no inherited SSH markers.
+            # We inspect the OSC 52 output; there is no real desktop clipboard.
+            terminal.close()
+            child_env['HERDR_ENV'] = '1'
+            terminal = Terminal(binary, home, 'pty-herdr-clipboard', artifacts,
+                                environment=child_env)
+            before = operations(log)
+            tx, ty, _ = locate(terminal, transcript)
+            drag_select(terminal, tx, ty, tx + len(transcript) - 1, ty)
+            right_click(terminal, tx + 2, ty)
+            require_menu(terminal, 'Selected text', ['Copy'])
+            offset = len(terminal.output)
+            terminal.send(b'\r', .8)
+            expected = b'\x1b]52;c;' + base64.b64encode(transcript.encode())
+            check(expected in terminal.output[offset:],
+                  'herdr pane Copy emits exact OSC 52 text without SSH markers')
+            check(operations(log) == before,
+                  'herdr pane Copy never calls the Mac host clipboard writer')
+            terminal.click_label('Ask to do anything')
+            terminal.send(b'\x16', .4)
+            check(operations(log) == before,
+                  'herdr pane forwarded Paste never reads the Mac host clipboard')
+            terminal.send(b'\x1b[200~VIEWER-PASTE\x1b[201~', .5)
+            check('VIEWER-PASTE' in '\n'.join(terminal.screen()),
+                  'herdr pane accepts clipboard text delivered by the viewing terminal')
 
             report['result'] = 'PASS'
         except Exception as error:

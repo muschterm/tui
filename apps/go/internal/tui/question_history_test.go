@@ -128,7 +128,9 @@ func TestQuestionHistoryFallbackReportsUnknownPositionAndDeduplicates(t *testing
 	thread.Activity = nil
 	lines := m.questionHistoryFallbackLines(thread, 80)
 	text := questionHistoryRenderedText(lines)
-	if !strings.Contains(text, "earlier position") || strings.Count(text, "unavailable") < 2 || !strings.Contains(text, "Which layout?") {
+	// The card hugs the 80% cap, so the status header may wrap between words.
+	flat := strings.Join(strings.Fields(strings.ReplaceAll(text, "│", " ")), " ")
+	if !strings.Contains(flat, "earlier position unavailable") || strings.Count(text, "unavailable") < 2 || !strings.Contains(text, "Which layout?") {
 		t.Fatalf("legacy answer fallback lacks position or question:\n%s", text)
 	}
 	thread.Activity = []protocol.Activity{
@@ -475,7 +477,9 @@ func TestQuestionHistoryOutlineIsUniform(t *testing.T) {
 			t.Fatalf("%s: transcript does not start with the card", delivery)
 		}
 		height := slices.IndexFunc(lines, func(l contentLine) bool { return !l.outset })
-		box := shell.Rect{X: f.transcript.X - 1, Y: f.transcript.Y, W: f.transcript.W + 2, H: height}
+		// The card ends at the prompt outline's extent and hugs its content.
+		right := f.transcript.X + f.transcript.W + 1
+		box := shell.Rect{X: right - lines[0].boxW, Y: f.transcript.Y, W: lines[0].boxW, H: height}
 		p := m.colors()
 		assertUniformOutline(t, m, f, box, m.containerStyle(false, p.text, p.panel).border)
 		status := strings.Index(ansi.Strip(f.rows[box.Y+1]), "Answered")
@@ -484,6 +488,67 @@ func TestQuestionHistoryOutlineIsUniform(t *testing.T) {
 		}
 		if status < 0 {
 			t.Fatalf("%s: status header missing: %q", delivery, ansi.Strip(f.rows[box.Y+1]))
+		}
+	}
+}
+
+// The answered card is the user's contribution, drawn like the user message
+// box: right-aligned at the prompt outline's extent, hugging its content up to
+// the same 80% cap, with the canvas left of a narrow card.
+func TestQuestionHistoryCardHugsContentAtUserBoxCap(t *testing.T) {
+	m := testModel()
+	short := protocol.Request{
+		ID: "history-short", Kind: "question", State: "resolved", Delivery: "fixture-confirmed", SubmissionID: "answer-short",
+		Questions:       []protocol.Question{{ID: "layout", Text: "Layout?", Kind: "single", Options: []string{"A", "B"}}},
+		QuestionAnswers: []protocol.Answer{{Choices: []string{"A"}}},
+	}
+	long := protocol.Request{
+		ID: "history-long", Kind: "question", State: "resolved", Delivery: "fixture-confirmed", SubmissionID: "answer-long",
+		Questions:       []protocol.Question{{ID: "text", Text: strings.Repeat("x", 300), Kind: "text"}},
+		QuestionAnswers: []protocol.Answer{{Text: strings.Repeat("y", 300)}},
+	}
+	thread := &m.snapshot.Threads[0]
+	thread.Requests = []protocol.Request{short, long}
+	thread.Activity = []protocol.Activity{
+		{ID: "question-answer:short", Role: "question-answer", RequestID: short.ID},
+		{ID: "question-answer:long", Role: "question-answer", RequestID: long.ID},
+	}
+	thread.Queue = nil
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
+	m.viewState().Scroll, m.viewState().Pinned = 0, false
+	f := m.render()
+	r := f.transcript
+	extent := r.W + 2
+	maxBox := max(min(extent, 24), extent*4/5)
+	lines := m.transcriptLines(*thread, r.W)
+	var widths []int
+	for i, line := range lines {
+		if line.outset && (i == 0 || !lines[i-1].outset) {
+			widths = append(widths, line.boxW)
+		}
+		if line.outset && ansi.StringWidth(line.text) != line.boxW {
+			t.Fatalf("row %d text width %d, want its card width %d", i, ansi.StringWidth(line.text), line.boxW)
+		}
+	}
+	if len(widths) != 2 || widths[0] >= maxBox || widths[1] != maxBox {
+		t.Fatalf("card widths %v, want a hugging card below and a capped card at %d", widths, maxBox)
+	}
+	right := r.X + r.W + 1
+	p := m.colors()
+	for i := 0; i < len(lines) && i < r.H; i++ {
+		if !lines[i].outset {
+			continue
+		}
+		row := f.rows[r.Y+i]
+		left := right - lines[i].boxW
+		if got := ansi.Strip(cutCells(row, right-1, right)); !strings.ContainsAny(got, "│╮╯") {
+			t.Fatalf("row %d right edge %q is not at the extent", i, got)
+		}
+		if got := ansi.Strip(cutCells(row, left, left+1)); !strings.ContainsAny(got, "│╭╰") {
+			t.Fatalf("row %d left edge %q is not at x=%d", i, got, left)
+		}
+		if left > r.X && !backgroundAt(f, left-1, r.Y+i, p.canvas) {
+			t.Fatalf("row %d paints beyond its card's left edge", i)
 		}
 	}
 }

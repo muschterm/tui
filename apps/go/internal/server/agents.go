@@ -705,13 +705,11 @@ func (r *acpRun) finishTurn(w dispatchWork, response acp.PromptResponse, err err
 			} else if err != nil && request.Delivery == "acp-unconfirmed" {
 				request.Delivery = "acp-uncertain"
 				request.Revision++
-			} else if err == nil && !cancelled && request.Delivery == "acp-unconfirmed" && request.Kind == "question" && request.Mode == "blocking" && request.Action == "" && delivered[request.ID] == w.prompt.ID {
-				// A blocking question holds its turn until answered. The bridge
-				// saw the provider take our answer, and that same turn then
-				// finished normally: that settles delivery. Without the receipt,
-				// or for continued-work questions, completion alone proves nothing.
-				// The receipt covers accepted answers only; the bridges emit none
-				// for a decline or cancel, which therefore stays unconfirmed.
+			} else if err == nil && !cancelled && t.AgentID == "claude" && r.info.Version == acpbridge.ClaudeIdentity && request.Delivery == "acp-unconfirmed" && request.Kind == "question" && request.Mode == "blocking" && request.Action == "" && delivered[request.ID] == w.prompt.ID {
+				// Claude's receipt follows its successful tool result. With a
+				// normal end of that blocking turn, the answer is confirmed.
+				// Codex's receipt only follows a pipe write; App Server can still
+				// discard that response, so its turn end cannot settle delivery.
 				request.State, request.Delivery = "resolved", "acp-turn-confirmed"
 				request.Revision++
 			}

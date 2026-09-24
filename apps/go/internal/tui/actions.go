@@ -107,6 +107,15 @@ func (m *Model) activate(a action) tea.Cmd {
 	t := m.thread()
 	var cmd tea.Cmd
 	switch a.Kind {
+	case "transcript-end":
+		f := m.measure()
+		m.scrollTo("transcript", f.transcriptMax, f)
+		v.Pinned = true
+		if m.focus == "transcript-end" {
+			m.focus = "transcript"
+		}
+		m.markDirty()
+		return nil
 	case "scrollbar":
 		f := m.measure()
 		if target, ok := f.scrollbars[a.ID]; ok {
@@ -613,7 +622,14 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "request-select":
 		var items []menuItem
 		for _, r := range m.requests() {
-			items = append(items, menuItem{agentDisplayName(r.Origin) + " · " + r.Title, action{Kind: "request-index", ID: r.ID}})
+			label := r.Title
+			if strings.TrimSpace(label) == "" {
+				label, _ = m.requestMode(r)
+			}
+			if origin := m.requestOriginLabel(r); origin != "" {
+				label = origin + " · " + label
+			}
+			items = append(items, menuItem{label, action{Kind: "request-index", ID: r.ID}})
 		}
 		m.showMenu("Pending requests", items)
 	case "request-index":

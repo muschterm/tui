@@ -47,6 +47,14 @@ func (m *Model) scrollTo(target string, offset int, f frame) {
 			*current = next
 			m.markDirty()
 		}
+		if target == "transcript" {
+			// Reaching the end follows new output; any other offset holds the
+			// reading position and counts activity received from here on.
+			if v.Pinned && next != limit {
+				v.SeenActivity = messageCount(m.thread())
+			}
+			v.Pinned = next == limit
+		}
 	}
 }
 

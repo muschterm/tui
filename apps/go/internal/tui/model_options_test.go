@@ -61,6 +61,33 @@ func TestStandardSpeedRemainsSelectableInComposer(t *testing.T) {
 	}
 }
 
+// Codex reports "default" for its ordinary tier. The composer must show that
+// mapped option exactly once, not a raw "default" field beside "Standard".
+func TestDefaultSpeedShowsOneMappedControl(t *testing.T) {
+	m := acpModel()
+	a := &m.snapshot.Agents[1]
+	a.Fields.Speed = "speed"
+	a.Options = append(a.Options, protocol.ConfigOption{ID: "speed", Name: "Speed", Current: "default", Values: []protocol.ConfigValue{{Value: "default", Name: "Standard", Models: []string{"sonnet"}}, {Value: "fast", Name: "Fast", Models: []string{"sonnet"}}}})
+	m.beginThreadDraft("alpha")
+	m.chooseAgent("claude")
+	selection := m.composerSelection()
+	selection.Speed = "default"
+	var speeds []string
+	for _, c := range m.composerSettingDisplays(m.thread(), selection) {
+		if c.field == "speed" {
+			speeds = append(speeds, c.label)
+		}
+	}
+	if len(speeds) != 1 || speeds[0] != "Standard" {
+		t.Fatalf("speed controls %q, want one Standard", speeds)
+	}
+	for _, c := range composerSettings("codex", protocol.Settings{Model: "gpt-5.6-sol", Speed: "default"}) {
+		if c.field == "speed" {
+			t.Fatalf("unmapped default speed rendered a field: %+v", c)
+		}
+	}
+}
+
 func TestUnavailableFastReasonRemainsReachable(t *testing.T) {
 	m := acpModel()
 	a := &m.snapshot.Agents[1]

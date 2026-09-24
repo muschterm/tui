@@ -319,7 +319,8 @@ func TestQuestionHeaderSitsInsideIntactOutline(t *testing.T) {
 			t.Fatalf("header hit %+v in card %+v", h.Rect, r)
 		}
 		header := ansi.Strip(cutCells(f.rows[r.Y+1], r.X+2, r.X+r.W-2))
-		if !strings.HasPrefix(header, m.icon("question")+" "+agentDisplayName("Fixture agent")+" · Answer anytime") {
+		// The thread's own agent is not repeated in the header.
+		if !strings.HasPrefix(header, m.icon("question")+" Answer anytime") {
 			t.Fatalf("header text %q", header)
 		}
 		if mark := ansi.Strip(cutCells(f.rows[r.Y+1], r.X+1, r.X+2)); mark != m.icon("focus") {

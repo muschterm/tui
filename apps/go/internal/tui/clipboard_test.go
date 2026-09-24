@@ -12,8 +12,26 @@ import (
 
 func clearSSHEnvironment(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT"} {
+	for _, name := range []string{"SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "HERDR_ENV"} {
 		t.Setenv(name, "")
+	}
+}
+
+func TestHerdrWithoutSSHMarkersCopiesThroughTerminal(t *testing.T) {
+	clearSSHEnvironment(t)
+	t.Setenv("HERDR_ENV", "1")
+	m := testModel()
+	m.clipboardWrite = func(string) error {
+		t.Fatal("herdr copy must not write the application host's clipboard")
+		return nil
+	}
+	cmd := m.copyText("viewer's clipboard")
+	if cmd == nil || m.status != clipboardOSC52Status {
+		t.Fatalf("herdr copy = command:%t status:%q", cmd != nil, m.status)
+	}
+	msg := cmd()
+	if !strings.Contains(fmt.Sprintf("%T", msg), "setClipboardMsg") || fmt.Sprint(msg) != "viewer's clipboard" {
+		t.Fatalf("herdr copy message = %T %v", msg, msg)
 	}
 }
 

@@ -133,27 +133,45 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 	// sides: the delivery status is carried by the header text, never by
 	// tinting one edge. Border cells sit on the canvas like componentBox's.
 	outline := m.containerStyle(false, p.text, p.panel).border
-	// The outline spans the transcript column plus one cell on each side: the
-	// prompt outline's extent, shared with the user message box.
-	boxWidth := width + 2
-	contentWidth := max(1, boxWidth-4)
+	// The card is the user's contribution, so it is drawn like the user message
+	// box: right-aligned, ending at the prompt outline's extent, hugging its
+	// content up to the same 80% cap of that extent.
+	extent := width + 2
+	maxBox := max(min(extent, 24), extent*4/5)
+	contentWidth := max(1, maxBox-4)
 
 	rows := m.questionHistoryRows(request, positionUnknown)
 	compact := questionHistoryVisualRows(rows, contentWidth) > questionHistoryCompactRows
+	expanded := m.viewState().QuestionHistoryExpanded[request.ID]
 	displayed := rows
-	if compact && !m.viewState().QuestionHistoryExpanded[request.ID] {
+	if compact && !expanded {
 		displayed = m.questionHistoryPreviewRows(request, contentWidth, positionUnknown)
 	}
+	toggle := ""
+	if compact {
+		toggle = "Expand · full questions and options"
+		if expanded {
+			toggle = "Collapse"
+		}
+	}
+	widest := ansi.StringWidth(toggle)
+	for _, row := range displayed {
+		for _, wrapped := range questionHistoryWrap(row.text, contentWidth) {
+			widest = max(widest, ansi.StringWidth(wrapped))
+		}
+	}
+	boxWidth := min(maxBox, widest+4)
+	contentWidth = max(1, boxWidth-4)
 
 	lines := make([]contentLine, 0, len(displayed)+3)
 	appendBorder := func(left, middle, right string, fg, bg string) {
-		lines = append(lines, contentLine{text: left + strings.Repeat(middle, boxWidth-2) + right, fg: fg, bg: bg, outset: true})
+		lines = append(lines, contentLine{text: left + strings.Repeat(middle, boxWidth-2) + right, fg: fg, bg: bg, outset: true, boxW: boxWidth})
 	}
 	appendRow := func(text, fg string) {
 		for _, wrapped := range questionHistoryWrap(text, contentWidth) {
 			lines = append(lines, contentLine{
 				text: b.Left + " " + fit(wrapped, contentWidth) + " " + b.Right,
-				fg:   fg, bg: p.panel, outset: true, border: outline,
+				fg:   fg, bg: p.panel, outset: true, boxW: boxWidth, border: outline,
 			})
 		}
 	}
@@ -162,13 +180,9 @@ func (m *Model) questionHistoryCard(request protocol.Request, width int, positio
 		appendRow(row.text, row.fg)
 	}
 	if compact {
-		label := "Expand · full questions and options"
-		if m.viewState().QuestionHistoryExpanded[request.ID] {
-			label = "Collapse"
-		}
 		lines = append(lines, contentLine{
-			text: b.Left + " " + fit(label, contentWidth) + " " + b.Right,
-			fg:   p.blue, bg: p.panel, outset: true, border: outline,
+			text: b.Left + " " + fit(toggle, contentWidth) + " " + b.Right,
+			fg:   p.blue, bg: p.panel, outset: true, boxW: boxWidth, border: outline,
 			action: action{Kind: "question-history-toggle", ID: request.ID},
 		})
 	}
@@ -184,9 +198,6 @@ func (m *Model) questionHistoryRows(request protocol.Request, positionUnknown bo
 	}
 	statusColor := questionHistoryStatusColor(request, confirmed, p)
 	rows := []questionHistoryRow{{text: status, fg: statusColor}}
-	if origin := m.questionHistoryOrigin(request.Origin); origin != "" {
-		rows = append(rows, questionHistoryRow{text: origin, fg: p.muted})
-	}
 	answers := questionHistoryAnswers(request)
 	for i, question := range request.Questions {
 		if i > 0 {
@@ -253,9 +264,6 @@ func (m *Model) questionHistoryPreviewRows(request protocol.Request, width int, 
 	}
 	statusColor := questionHistoryStatusColor(request, confirmed, p)
 	rows := []questionHistoryRow{{text: status, fg: statusColor}}
-	if origin := m.questionHistoryOrigin(request.Origin); origin != "" {
-		rows = append(rows, questionHistoryRow{text: origin, fg: p.muted})
-	}
 	answers := questionHistoryAnswers(request)
 	hiddenOptions := 0
 	for i, question := range request.Questions {
@@ -354,19 +362,6 @@ func questionHistoryStatusColor(request protocol.Request, confirmed bool, p pale
 	}
 }
 
-func (m *Model) questionHistoryOrigin(origin string) string {
-	origin = strings.TrimSpace(safe(origin))
-	if origin == "" || strings.EqualFold(origin, "agent") {
-		return ""
-	}
-	for _, candidate := range m.snapshot.Agents {
-		if candidate.ID == origin && candidate.Name != "" {
-			return safe(candidate.Name)
-		}
-	}
-	return origin
-}
-
 func questionHistoryPrompt(question protocol.Question) string {
 	prompt := question.Text
 	if question.Label != "" && question.Label != question.Text {
@@ -449,10 +444,6 @@ func questionHistoryText(request protocol.Request) string {
 	status, _ := questionHistoryStatus(request)
 	var builder strings.Builder
 	builder.WriteString(status)
-	if origin := strings.TrimSpace(safe(request.Origin)); origin != "" && !strings.EqualFold(origin, "agent") {
-		builder.WriteString(" · ")
-		builder.WriteString(origin)
-	}
 	answers := questionHistoryAnswers(request)
 	for i, question := range request.Questions {
 		builder.WriteString("\n\n")

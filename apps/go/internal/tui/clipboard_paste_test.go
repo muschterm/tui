@@ -140,6 +140,26 @@ func TestPasteOverSSHNeverReadsRemoteClipboard(t *testing.T) {
 	}
 }
 
+func TestHerdrWithoutSSHMarkersNeverPastesHostClipboard(t *testing.T) {
+	m := readyPasteModel(t)
+	t.Setenv("HERDR_ENV", "1")
+	m.prompt.SetValue("draft")
+	m.clipboardRead = func() (string, error) {
+		t.Fatal("herdr paste must not read the application host's clipboard")
+		return "", nil
+	}
+	cmd := m.pasteClipboard()
+	if cmd == nil || !strings.Contains(m.notice.text, "outer terminal") || m.prompt.Value() != "draft" {
+		t.Fatalf("herdr paste = notice:%q draft:%q", m.notice.text, m.prompt.Value())
+	}
+	// The viewing terminal delivers its clipboard as text, without an OS read
+	// on the host, through the same safe input replacement path.
+	m.Update(tea.PasteMsg{Content: "from viewer"})
+	if !strings.Contains(m.prompt.Value(), "from viewer") || m.busy != nil {
+		t.Fatalf("terminal paste failed or sent prompt: %q", m.prompt.Value())
+	}
+}
+
 func TestPasteDoesNotReadWhenComposerIsUnavailable(t *testing.T) {
 	cases := []struct {
 		name string
@@ -223,5 +243,34 @@ func TestExplicitClipboardActionClearsOlderSelectionNotice(t *testing.T) {
 	m.pasteClipboard()
 	if m.notice.text != "" {
 		t.Fatalf("paste left old notice visible: %q", m.notice.text)
+	}
+}
+
+func TestForwardedPasteShortcutsUseGuardedClipboardRead(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{
+		{Code: 'v', Mod: tea.ModCtrl},
+		{Code: 'v', Text: "V", Mod: tea.ModCtrl | tea.ModShift},
+		{Code: 'v', Text: "v", Mod: tea.ModSuper},
+		{Code: tea.KeyInsert, Mod: tea.ModShift},
+	} {
+		t.Run(key.Keystroke(), func(t *testing.T) {
+			m := readyPasteModel(t)
+			m.prompt.SetValue("replace")
+			m.prompt.SelectAll()
+			m.clipboardRead = func() (string, error) { return "pasted", nil }
+			cmd := m.key(key)
+			if cmd == nil {
+				t.Fatal("paste shortcut did not read clipboard")
+			}
+			msg, ok := cmd().(clipboardReadMsg)
+			if !ok {
+				t.Fatal("paste shortcut bypassed guarded clipboard read")
+			}
+			m.acceptClipboardRead(msg)
+			m.acceptClipboardRead(msg)
+			if m.prompt.Value() != "pasted" || m.viewState().Draft != "pasted" || m.busy != nil {
+				t.Fatalf("paste changed or submitted wrong content: %q", m.prompt.Value())
+			}
+		})
 	}
 }

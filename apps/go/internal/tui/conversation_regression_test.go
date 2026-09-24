@@ -74,7 +74,9 @@ func TestConversationRegressionPlacesLegacyQuestionAndRendersMarkdown(t *testing
 					visible = append(visible, ansi.Strip(line.text))
 				}
 				transcript := strings.Join(visible, "\n")
-				flat := strings.ReplaceAll(transcript, "\n", "")
+				// Narrow agent columns may break a phrase across rows; whitespace
+				// normalisation keeps the words comparable without joining them.
+				flat := strings.Join(strings.Fields(transcript), " ")
 				for _, want := range []string{
 					"Choose a layout for the report.", "The earlier layout question is now resolved.",
 					"Which layout should guide the report?", "Answered", "Format the release notes now.",

@@ -146,6 +146,9 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		id := "prompt-" + c.ID
 		t.Queue = append(t.Queue, protocol.Prompt{ID: id, Text: c.Text, Revision: 1, Settings: set, Attachments: c.Attachments})
 		t.QueueRevision++
+		if t.Title == defaultThreadTitle {
+			t.Title = titleFromPrompt(c.Text)
+		}
 		if agent.IsACP(t.AgentID) {
 			// A pre-dispatch failure may retry unsent queue work on Send.
 			// Post-dispatch failures retain the warning and explicit Resume gate.

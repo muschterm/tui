@@ -10,8 +10,9 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
-// A user message is a tinted box with the prompt outline's horizontal extent,
-// one tinted padding row above and below, and text in the transcript column.
+// A user message is a right-aligned tinted bubble ending at the prompt
+// outline's right extent, one tinted padding row above and below, with its
+// text left-aligned one cell inside the bubble's left edge.
 func TestUserMessageRendersAsTintedBox(t *testing.T) {
 	for _, size := range [][2]int{{160, 50}, {60, 32}, {48, 28}} {
 		for _, light := range []bool{false, true} {
@@ -21,9 +22,10 @@ func TestUserMessageRendersAsTintedBox(t *testing.T) {
 				m.state.Light = light
 				m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 				m.configureInputs()
-				m.viewState().Scroll = 0
+				m.viewState().Scroll, m.viewState().Pinned = 0, false
 				f := m.render()
-				r, c, input := f.transcript, f.geom.Center, m.colors().input
+				r, input := f.transcript, m.colors().input
+				boxRight := r.X + r.W + 1
 				lines := m.transcriptLines(m.thread(), r.W)
 				first, last := -1, -1
 				for i, line := range lines {
@@ -37,33 +39,38 @@ func TestUserMessageRendersAsTintedBox(t *testing.T) {
 				if first < 0 || last-first < 2 || lines[first].text != "" || lines[last].text != "" {
 					t.Fatalf("user box lacks padding rows: first=%d last=%d", first, last)
 				}
-				if last >= r.H {
-					t.Fatalf("user box does not fit the %d-row viewport", r.H)
+				boxW := lines[first].boxW
+				x0 := boxRight - boxW
+				if x0 <= r.X {
+					t.Fatalf("bubble starts at %d, not right of the text column %d", x0, r.X)
 				}
-				for i := first; i <= last; i++ {
+				for i := first; i <= last && i < r.H; i++ {
+					if lines[i].boxW != boxW {
+						t.Fatalf("row %d box width %d, want %d", i, lines[i].boxW, boxW)
+					}
+					// The jump-to-bottom overlay owns the last row while scrolled up.
+					if i == r.H-1 && f.transcriptMax > 0 {
+						continue
+					}
 					row := f.rows[r.Y+i]
-					for x := c.X + 1; x <= c.X+c.W-2; x++ {
+					for x := x0; x < boxRight; x++ {
 						if !cellHasBackground(row, x, input) {
-							t.Fatalf("row %d cell %d is not tinted: %q", i, x, ansi.Cut(row, x, x+1))
+							t.Fatalf("row %d cell %d is not tinted", i, x)
 						}
 					}
-					for _, x := range []int{c.X, c.X + c.W - 1} {
+					for _, x := range []int{x0 - 1, boxRight} {
 						if cellHasBackground(row, x, input) {
-							t.Fatalf("row %d tint leaked to pane edge cell %d", i, x)
+							t.Fatalf("row %d tint leaked to cell %d", i, x)
 						}
 					}
 					if i == first || i == last {
-						if got := ansi.Strip(ansi.Cut(row, c.X+1, c.X+c.W-1)); strings.Trim(got, " │█") != "" {
+						if got := ansi.Strip(ansi.Cut(row, x0, boxRight)); strings.TrimSpace(got) != "" {
 							t.Fatalf("padding row %d is not blank: %q", i, got)
 						}
 					}
 				}
-				after := f.rows[r.Y+last+1]
-				if cellHasBackground(after, r.X, input) {
-					t.Fatal("tint continued past the bottom padding row")
-				}
 				text := f.rows[r.Y+first+1]
-				if got := ansi.Strip(ansi.Cut(text, r.X-1, r.X+5)); got != " Build" {
+				if got := ansi.Strip(ansi.Cut(text, x0, x0+6)); got != " Build" {
 					t.Fatalf("text is not one cell inside the tint: %q", got)
 				}
 
@@ -76,13 +83,82 @@ func TestUserMessageRendersAsTintedBox(t *testing.T) {
 					t.Fatalf("repainting grew the styled row from %d to %d bytes", before, got)
 				}
 
-				want := "Build a calm"
+				want := "Build a"
 				y := r.Y + first + 1
-				selectTranscript(m, r.X, y, r.X+len(want)-1, y)
+				selectTranscript(m, x0+1, y, x0+len(want), y)
 				if m.selectedText != want {
 					t.Fatalf("selection copied %q, want %q", m.selectedText, want)
 				}
 			})
+		}
+	}
+}
+
+// Short user messages hug their content; long ones cap at 80% of the box
+// extent and wrap inside it. Agent replies stay at the left without a tint.
+func TestUserMessageBubbleWidthAndAgentAlignment(t *testing.T) {
+	m := testModel()
+	thread := &m.snapshot.Threads[0]
+	long := strings.Repeat("x", 400) // unbroken, so wrapping fills the cap exactly
+	thread.Activity = []protocol.Activity{
+		{ID: "u1", Role: "user", Text: "Hi"},
+		{ID: "a1", Role: "agent", Text: "Agent reply"},
+		{ID: "u2", Role: "user", Text: long},
+		{ID: "a2", Role: "agent", Text: strings.Repeat("y", 400)},
+	}
+	thread.Requests = nil
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
+	m.configureInputs()
+	m.viewState().Scroll, m.viewState().Pinned = 0, false
+	f := m.render()
+	r, input := f.transcript, m.colors().input
+	extent := r.W + 2
+	maxBox := max(min(extent, 24), extent*4/5)
+	lines := m.transcriptLines(*thread, r.W)
+	var boxWidths []int
+	agentRow := -1
+	for i, line := range lines {
+		if line.boxed && line.text == "" && (i == 0 || !lines[i-1].boxed) {
+			boxWidths = append(boxWidths, line.boxW)
+		}
+		if strings.Contains(ansi.Strip(line.text), "Agent reply") {
+			agentRow = i
+		}
+		if line.boxed && ansi.StringWidth(line.text) > line.boxW-2 {
+			t.Fatalf("row %d text exceeds its box: %q", i, line.text)
+		}
+		// Agent text stops at the mirrored cap: as wide as the bubble's
+		// interior, never the full column.
+		if !line.boxed && strings.Contains(ansi.Strip(line.text), "yyyy") {
+			width := ansi.StringWidth(ansi.Strip(line.text))
+			full := i > 0 && !strings.Contains(ansi.Strip(lines[i-1].text), "yyyy") // first row of the reply
+			if width > maxBox-2 || full && width != maxBox-2 {
+				t.Fatalf("row %d agent text width %d, want the %d-cell mirrored cap", i, width, maxBox-2)
+			}
+		}
+	}
+	if len(boxWidths) != 2 || boxWidths[0] != len("Hi")+2 || boxWidths[1] != maxBox {
+		t.Fatalf("box widths %v, want [4 %d]", boxWidths, maxBox)
+	}
+	wrapped := 0
+	for _, line := range lines {
+		if line.boxed && line.boxW == maxBox && line.text != "" {
+			wrapped++
+		}
+	}
+	if wrapped < 2 {
+		t.Fatalf("long message did not wrap inside its box: %d rows", wrapped)
+	}
+	if agentRow < 0 || agentRow >= r.H {
+		t.Fatalf("agent row %d not visible", agentRow)
+	}
+	row := f.rows[r.Y+agentRow]
+	if got := ansi.Strip(ansi.Cut(row, r.X, r.X+11)); got != "Agent reply" {
+		t.Fatalf("agent reply not at the left column: %q", got)
+	}
+	for x := r.X - 1; x <= r.X+r.W; x++ {
+		if cellHasBackground(row, x, input) {
+			t.Fatalf("agent row tinted at %d", x)
 		}
 	}
 }
@@ -122,7 +198,7 @@ func TestTranscriptScrollbarLeavesBoxEdges(t *testing.T) {
 		}
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m.configureInputs()
-		m.viewState().Scroll = 0
+		m.viewState().Scroll, m.viewState().Pinned = 0, false
 		f := m.render()
 		bar, ok := f.scrollbars["transcript"]
 		if !ok || !bar.Bar.Visible() {
@@ -176,7 +252,7 @@ func TestTranscriptScrollbarBesideDividerIsThumbOnly(t *testing.T) {
 	}
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	m.openSurface("activity", "")
-	m.viewState().Scroll = 0
+	m.viewState().Scroll, m.viewState().Pinned = 0, false
 	f := m.render()
 	bar, ok := f.scrollbars["transcript"]
 	d := f.geom.RightDivider

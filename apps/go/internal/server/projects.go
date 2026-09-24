@@ -209,7 +209,7 @@ func applyProjectResolved(s *protocol.Snapshot, c protocol.Command, resolved *re
 		}
 		title := strings.TrimSpace(c.Text)
 		if title == "" {
-			title = "New thread"
+			title = defaultThreadTitle
 		}
 		if len(title) > 256 {
 			return "", failure("invalid", "thread title exceeds 256 bytes")

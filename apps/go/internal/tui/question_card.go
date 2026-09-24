@@ -354,9 +354,11 @@ func (m *Model) renderRequestHeader(f *frame, l requestLayout, req protocol.Requ
 	if blocking {
 		iconInk, modeInk = p.gold, p.gold
 	}
-	segments := []struct{ text, fg string }{
-		{icon + " ", iconInk}, {safe(agentDisplayName(req.Origin)), p.text}, {" · ", p.muted}, {mode, modeInk},
+	segments := []struct{ text, fg string }{{icon + " ", iconInk}}
+	if origin := m.requestOriginLabel(req); origin != "" {
+		segments = append(segments, struct{ text, fg string }{origin, p.text}, struct{ text, fg string }{" · ", p.muted})
 	}
+	segments = append(segments, struct{ text, fg string }{mode, modeInk})
 	s := m.controlState(false, "request-detail")
 	avail, x := max(1, l.w-right), l.x
 	for _, seg := range segments {
@@ -757,4 +759,20 @@ func (m *Model) questionCardKey(s string) (bool, tea.Cmd) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// requestOriginLabel names a request's origin only when it is not the
+// thread's own agent: a child run or another named source. The thread has one
+// chosen agent, so repeating "Claude" or "Codex" on every card says nothing
+// new; the raw origin stays in the request detail and Activity.
+func (m *Model) requestOriginLabel(req protocol.Request) string {
+	origin := strings.TrimSpace(safe(req.Origin))
+	if origin == "" || strings.EqualFold(origin, "agent") {
+		return ""
+	}
+	label := agentDisplayName(origin)
+	if t := m.thread(); strings.EqualFold(origin, t.Agent) || strings.EqualFold(origin, t.AgentID) || strings.EqualFold(label, agentDisplayName(t.Agent)) {
+		return ""
+	}
+	return label
 }

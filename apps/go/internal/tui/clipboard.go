@@ -34,10 +34,15 @@ type clipboardReadMsg struct {
 	err        error
 }
 
-// remoteClipboardSession identifies an interactive SSH client. On SSH, OSC 52
-// is the path back to the user's terminal clipboard; a host-local clipboard
-// process would write on the remote machine instead.
-func remoteClipboardSession() bool {
+// terminalClipboardSession avoids host-local clipboard tools when the viewing
+// client can be on another machine. Herdr panes inherit the persistent server's
+// environment, so SSH variables need not describe the currently attached client.
+// Herdr v0.9.1 captures pane OSC 52 writes for its client clipboard route.
+// This selects a route, not a claim that the terminal accepts clipboard writes.
+func terminalClipboardSession() bool {
+	if strings.TrimSpace(os.Getenv("HERDR_ENV")) == "1" {
+		return true
+	}
 	for _, name := range []string{"SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT"} {
 		if strings.TrimSpace(os.Getenv(name)) != "" {
 			return true
@@ -69,14 +74,14 @@ func (m *Model) copyText(text string) tea.Cmd {
 		return nil
 	}
 	m.clipboardGeneration++
-	cmd, status := clipboardCommand(text, remoteClipboardSession(), m.clipboardGeneration, m.clipboardWrite)
+	cmd, status := clipboardCommand(text, terminalClipboardSession(), m.clipboardGeneration, m.clipboardWrite)
 	m.status = status
 	return cmd
 }
 
 // pasteClipboard reads only the local clipboard after an explicit Paste
-// action. A running SSH client must use its terminal's paste shortcut because
-// clipboard.ReadAll would inspect the remote host.
+// action. SSH and herdr clients must use the outer terminal's paste shortcut
+// because clipboard.ReadAll would inspect the application host, not the viewer.
 func (m *Model) pasteClipboard() tea.Cmd {
 	m.notice.text = ""
 	m.notice.generation++
@@ -86,8 +91,11 @@ func (m *Model) pasteClipboard() tea.Cmd {
 		m.status = ""
 		return m.showNotice("Paste unavailable · " + reason)
 	}
-	if remoteClipboardSession() {
+	if terminalClipboardSession() {
 		m.status = ""
+		if strings.TrimSpace(os.Getenv("HERDR_ENV")) == "1" {
+			return m.showNotice("Use your outer terminal's Paste (usually Ctrl+Shift+V) · herdr's host clipboard may be on another machine")
+		}
 		return m.showNotice("Clipboard read unavailable over SSH · use your terminal's paste shortcut")
 	}
 	read := m.clipboardRead

@@ -43,10 +43,12 @@ were confirmed.
   forward turn completion before it.
 - The server trusts the update only from the built-in bridge identities and the
   current connection generation, session and turn. It holds the update in
-  memory. `finishTurn` resolves a **blocking** question
+  memory. `finishTurn` resolves a **blocking Claude** question
   (`resolved`/`acp-turn-confirmed`) only when the update arrived and the same
   turn ended without error or cancellation. A turn error still yields
-  `acp-uncertain`. Continued-work questions stay `acp-unconfirmed`.
+  `acp-uncertain`. Codex questions in both modes stay `acp-unconfirmed`;
+  its receipt is a pipe-write observation, not provider acceptance. See the
+  [Codex confirmation review](codex-question-confirmation-2026-09-23.md).
 - Restart marks accepted-but-unsent answers uncertain. It marks handed-off
   answers uncertain only when their turn was running or waiting. Completed,
   failed and cancelled turns keep their recorded status.
@@ -64,9 +66,9 @@ confirmation unavailable** instead of Answered.
 ## Validation
 
 - New server tests cover the following cases:
-  - Receipt then `end_turn` gives Answered.
+  - A Claude tool-result receipt then `end_turn` gives Answered.
   - Receipt then a turn error gives uncertain.
-  - Without a receipt, or in continued-work mode, the answer stays unconfirmed.
+  - Without a receipt, or for Codex in either mode, the answer stays unconfirmed.
   - A receipt from an unpinned adapter is ignored.
   - A restart after a completed or cancelled turn changes nothing.
   - A restart during a running or waiting turn gives uncertain.

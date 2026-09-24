@@ -17,7 +17,7 @@ SSH or tmux compatibility.
 | `pty_steering.py` | Queued-message steering against the fixture turn |
 | `pty_path_completion.py` | Project folder typeahead and inline `@` file mentions |
 | `pty_colors.py` | Color negotiation with synthetic terminal replies |
-| `pty_clipboard.py` | Right-click Copy/Paste, cursor insertion and selected-range replacement through isolated clipboard utility stand-ins; never accesses the real OS clipboard |
+| `pty_clipboard.py` | Right-click Copy/Paste, forwarded paste shortcuts, cursor insertion and selected-range replacement through isolated clipboard utility stand-ins; never accesses the real OS clipboard |
 | `pty_acp.py` | Opt-in real ACP prompt, menus and cancel/resume; requires live login and consumes account quota |
 | `live_agent_recovery.py` | Opt-in live HTTP Claude native question / Codex prompt, exact answer retry, Stop/Resume and restart; selects an installed official runtime explicitly |
 | `render-capture.py` | Rasterizes deterministic Go View captures to PNG for `docs/research/*-captures` (needs Pillow) |

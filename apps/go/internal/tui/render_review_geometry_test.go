@@ -188,10 +188,22 @@ func TestQuestionHistoryToggleHitboxStaysInsideItsCard(t *testing.T) {
 	if initial.Key == "" || initial.Action.Kind != "question-history-toggle" {
 		t.Fatal("compact question history has no explicit toggle target")
 	}
-	// The card spans the prompt outline's extent, one cell beyond the
-	// transcript column on each side; the toggle is its interior label, after
-	// the blank padding cell that holds the focus mark and before the border.
-	if initial.Rect.X != f.transcript.X+1 || initial.Rect.W != f.transcript.W-2 || !within(initial.Rect, f.geom.Center) {
+	// The card is right-aligned at the prompt outline's extent, one cell beyond
+	// the transcript column, and hugs the user box's 80% cap; the toggle is its
+	// interior label, after the blank padding cell that holds the focus mark
+	// and before the border.
+	extent := f.transcript.W + 2
+	cardW := 0
+	for _, line := range m.transcriptLines(*thread, f.transcript.W) {
+		if line.action.Kind == "question-history-toggle" {
+			cardW = line.boxW
+		}
+	}
+	if cap := max(min(extent, 24), extent*4/5); cardW < 5 || cardW > cap {
+		t.Fatalf("card width %d, want at most the %d-cell cap", cardW, cap)
+	}
+	cardX := f.transcript.X + f.transcript.W + 1 - cardW
+	if initial.Rect.X != cardX+2 || initial.Rect.W != cardW-4 || !within(initial.Rect, f.geom.Center) {
 		t.Fatalf("toggle hitbox escaped its card: %#v transcript=%#v", initial.Rect, f.transcript)
 	}
 	initialRow := ansi.Strip(cutCells(f.rows[initial.Rect.Y], initial.Rect.X, initial.Rect.X+initial.Rect.W))

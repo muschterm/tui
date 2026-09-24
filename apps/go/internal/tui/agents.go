@@ -78,12 +78,12 @@ func (m *Model) defaultAgent() (protocol.Agent, bool) {
 // newDraftView builds a per-project creation draft bound to the default agent.
 func (m *Model) newDraftView() *threadView {
 	if saved := m.snapshot.AppSettings.NewThreadDefaults; saved != nil && saved.AgentID != "" {
-		return &threadView{Agent: saved.AgentID, Settings: saved.Settings}
+		return &threadView{Agent: saved.AgentID, Settings: saved.Settings, Pinned: true}
 	}
 	if a, ok := m.defaultAgent(); ok {
-		return &threadView{Agent: a.ID, Settings: agentConfigFor(a).defaults()}
+		return &threadView{Agent: a.ID, Settings: agentConfigFor(a).defaults(), Pinned: true}
 	}
-	return &threadView{Agent: fixtureAgentName, Settings: agentConfigFor(protocol.Agent{Kind: "fixture"}).defaults()}
+	return &threadView{Agent: fixtureAgentName, Settings: agentConfigFor(protocol.Agent{Kind: "fixture"}).defaults(), Pinned: true}
 }
 
 // agentProjectID is the checkout a probe should use: the draft's destination

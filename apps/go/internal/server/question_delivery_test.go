@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/muschterm/tui/apps/go/internal/acpbridge"
 	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
@@ -31,11 +32,27 @@ func answeredCodexQuestion(t *testing.T, fleet func(*fakeFleet)) (protocol.Threa
 	return waitTurn(t, e, id, "prompt-start"), c
 }
 
-func TestBlockingAnswerReceiptThenEndTurnIsAnswered(t *testing.T) {
+func TestCodexBlockingWriteReceiptThenEndTurnIsUnconfirmed(t *testing.T) {
 	thread, c := answeredCodexQuestion(t, func(f *fakeFleet) { f.questionBlocking, f.questionReceipt = true, true })
 	r := thread.Requests[0]
-	if thread.State != "idle" || r.Mode != "blocking" || r.State != "resolved" || r.Delivery != "acp-turn-confirmed" || r.SubmissionID != c.ID || !reflect.DeepEqual(r.QuestionAnswers, c.QuestionAnswers) {
-		t.Fatalf("delivered blocking answer not settled: thread=%s request=%+v", thread.State, r)
+	if thread.State != "idle" || r.Mode != "blocking" || r.State != "closed" || r.Delivery != "acp-unconfirmed" || r.SubmissionID != c.ID || !reflect.DeepEqual(r.QuestionAnswers, c.QuestionAnswers) {
+		t.Fatalf("Codex pipe write incorrectly confirmed an answer: thread=%s request=%+v", thread.State, r)
+	}
+}
+
+func TestClaudeToolResultReceiptThenEndTurnIsAnswered(t *testing.T) {
+	e, fleet, _ := acpEngine(t)
+	fleet.nativeQuestions, fleet.questionReceipt = true, true
+	fleet.nativeVersion = acpbridge.ClaudeIdentity
+	id, request := pendingNativeQuestion(t, e)
+	answer := nativeAnswer(id, request)
+	if _, err := e.command(answer); err != nil {
+		t.Fatal(err)
+	}
+	thread := waitTurn(t, e, id, "prompt-start")
+	got := thread.Requests[0]
+	if thread.State != "idle" || got.State != "resolved" || got.Delivery != "acp-turn-confirmed" || got.SubmissionID != answer.ID {
+		t.Fatalf("Claude tool-result receipt did not confirm the answer: thread=%s request=%+v", thread.State, got)
 	}
 }
 

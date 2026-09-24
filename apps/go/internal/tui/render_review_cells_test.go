@@ -61,6 +61,8 @@ func TestReviewOverlaysKeepRowsCellAccurateOverWideText(t *testing.T) {
 		m.prompt.SetValue("")
 		m.configureInputs()
 
+		// Select from the transcript's first rows, not the end it opens at.
+		m.viewState().Pinned, m.viewState().Scroll = false, 0
 		f := m.measure()
 		for dx := 0; dx < 2 && width%4 == 0; dx++ {
 			m.Update(tea.MouseClickMsg{X: f.transcript.X + dx, Y: f.transcript.Y, Button: tea.MouseLeft})
@@ -141,7 +143,7 @@ func copiesSelection(m *Model) bool {
 func TestReviewSelectionInvalidatedWhenBasisChanges(t *testing.T) {
 	changes := map[string]func(m *Model){
 		"resize": func(m *Model) { m.Update(tea.WindowSizeMsg{Width: 80, Height: 30}) },
-		"scroll": func(m *Model) { m.viewState().Scroll++ },
+		"scroll": func(m *Model) { f := m.measure(); m.scrollTo("transcript", f.transcriptMax-1, f) },
 		"pane":   func(m *Model) { m.activate(action{Kind: "left"}) },
 		"thread": func(m *Model) {
 			for _, t := range m.snapshot.Threads {

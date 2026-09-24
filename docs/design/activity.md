@@ -6,7 +6,7 @@ Status: required presentation scope added after round 3 and strengthened by the 
 
 ## Recognizable activity roles
 
-User messages, agent replies, tool operations, and child work need distinct visual identities. Ordinary conversation messages use alignment, tint and spacing without repeated You/Agent headers, following the latest implementation review. A user message is a tinted box spanning the prompt outline's width, with one tinted padding row above and below and its text one cell inside the tint in the transcript's text column (2026-09-23; supersedes the earlier end-aligned inset). Preserve meaningful tool/MCP names and inspected-child identity. The [visual reference](visual-design.md) supplies the broader color and composition direction; its older author headers are superseded. Avoid repeated nested cards and invented avatars. Verified official agent artwork remains optional identity decoration outside repeated message headings.
+User messages, agent replies, tool operations, and child work need distinct visual identities. Ordinary conversation messages use alignment, tint and spacing without repeated You/Agent headers, following the latest implementation review. A user message is a right-aligned tinted box ending at the prompt outline's right extent, hugging its content up to 80% of that width, with one padding cell each side and one tinted padding row above and below; agent replies and reported thinking stay left-aligned without a box and wrap at the mirrored 80% cap, so neither side runs the full column; tool rows stay left-aligned (2026-09-23, following the [T3 Code reference](../research/t3-code-design.md); supersedes the full-width box from earlier that day). Consecutive transcript blocks are separated by one blank row (2026-09-23). Preserve meaningful tool/MCP names and inspected-child identity. The [visual reference](visual-design.md) supplies the broader color and composition direction; its older author headers are superseded. Avoid repeated nested cards and invented avatars. Verified official agent artwork remains optional identity decoration outside repeated message headings.
 
 Keep readable agent prose separate from inset operational rows. Compact related tool calls beneath their owning activity, preserving chronology and providing clear expansion/inspection controls. Distinguish the call type, target, current state, and supplied result information. Grouping must not imply a failed or waiting call completed because its siblings did.
 
@@ -60,6 +60,12 @@ Paste and must not apply to a changed thread, draft, cursor or selection while
 the read is pending. Keep the behavior available on macOS and Linux, including
 Omarchy; terminal-consumed shortcuts and unsupported clipboard access need an
 honest fallback rather than assumed success.
+
+Forwarded paste shortcuts use the same guarded local reader as the prompt
+menu. Over SSH or inside herdr, copy uses the terminal clipboard route and
+Paste comes from the viewing terminal. Herdr panes may retain no SSH markers
+even when their client is remote; do not read or write the application host's
+clipboard based solely on their absence.
 
 User-requested refinement, 2026-09-19: support pasting images and copied files into the composer as removable context, with thumbnails where possible. A thumbnail or file chip opens a centered floating viewer. Its expand/restore control switches between the default centered size and the available application area, keeping close and restore reachable. This expands the viewer; it does not guarantee one image pixel per screen pixel. Keep image aspect ratio. Use the same viewer for supported attachment previews from history.
 
@@ -159,7 +165,7 @@ The compact view can show a summary or bounded output tail. The inspector must e
 
 ## Approval cards
 
-Permission approvals share the fixed request area above the prompt, using a distinct approval card rather than a question form. Show the requesting agent or child, requested action, affected files or working directory where supplied, and the actual choices supported by that agent. For example, Allow once and Deny are illustrative choices, not universal options. Preserve supplied scope and duration; do not invent a session-wide grant or silently broaden a one-time approval.
+Permission approvals share the fixed request area above the prompt, using a distinct approval card rather than a question form. Show the requested action, affected files or working directory where supplied, and the actual choices supported by that agent. Name the requesting origin only when it is not the thread's own agent, such as a child run; the thread has one chosen agent, so cards do not repeat "Claude" or "Codex" (2026-09-23). The raw origin stays in the request detail and Activity. For example, Allow once and Deny are illustrative choices, not universal options. Preserve supplied scope and duration; do not invent a session-wide grant or silently broaden a one-time approval.
 
 Opening full details selects the singleton Activity surface. Inspecting details does not resolve the request. The prompt, its draft, settings and usage stay available. Questions and approvals remain separately identified when sharing request navigation; changing the selected request preserves question drafts and never activates an approval choice.
 
@@ -197,7 +203,7 @@ Route events by their actual thread/session, parent/child, turn, and item identi
 
 History replay and reconnect must not create duplicate cards or pretend replayed state is live. Preserve uncertainty when a child's final state cannot be established. Opening a stored child transcript should not resume the agent merely to read its history.
 
-Keep input, pane resizing, and selection responsive during large streams. The UI should follow live output only while the user chooses to follow it; scrolling back or inspecting another item must not cause repeated jumps. Application-home SQLite with auxiliary files is selected; exact retention limits and artifact boundaries remain open, but any truncation must be explicit and its relationship to “full available detail” documented.
+Keep input, pane resizing, and selection responsive during large streams. The UI should follow live output only while the user chooses to follow it; scrolling back or inspecting another item must not cause repeated jumps. The conversation follows the end while the user is at the end; otherwise it shows a jump-to-bottom control with the count of user/agent messages received since scrolling away. Application-home SQLite with auxiliary files is selected; exact retention limits and artifact boundaries remain open, but any truncation must be explicit and its relationship to “full available detail” documented.
 
 ## Presentation coverage to verify
 

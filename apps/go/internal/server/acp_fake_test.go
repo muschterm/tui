@@ -123,7 +123,13 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		if f.nativeVersion != "" {
 			version = f.nativeVersion
 		}
+		if f.nativeVersion == acpbridge.ClaudeIdentity {
+			name, version = "tui-go-claude", acpbridge.Version
+		}
 		meta := map[string]any{}
+		if f.nativeVersion == acpbridge.ClaudeIdentity {
+			meta["questionDialect"] = acpbridge.QuestionDialect
+		}
 		if f.codexQuestions {
 			name, version = "tui-go-codex", acpbridge.Version
 			meta["questionDialect"] = acpbridge.CodexQuestionDialect
@@ -264,6 +270,10 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 		if f.codexQuestions {
 			wire = codexNativeQuestionWire(session)
 			wire["source"].(map[string]any)["isBlocking"] = f.questionBlocking
+		} else if f.nativeVersion == acpbridge.ClaudeIdentity {
+			wire["_meta"] = map[string]any{"questionDialect": acpbridge.QuestionDialect, "requestId": "native-request", "source": map[string]any{
+				"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": "question-call",
+			}}
 		}
 		response, err := acp.SendRequest[map[string]any](f.conn, questionCtx, "elicitation/create", wire)
 		if err != nil {

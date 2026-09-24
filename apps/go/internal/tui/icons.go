@@ -31,7 +31,8 @@ var icons = map[string]struct{ glyph, plain string }{
 	// Unicode filled triangles remain legible without a private-use font glyph.
 	"previous": {"◀", "<"}, "next": {"▶", ">"},
 	// fa-circle_arrow_up, fa-stop_circle and fa-paperclip.
-	"send": {"\uf0aa", "^"}, "stop": {"\uf28d", "o"}, "attach": {"\uf0c6", "+"},
+	"jump-end": {"\uf063", "v"}, // fa-arrow_down
+	"send":     {"\uf0aa", "^"}, "stop": {"\uf28d", "o"}, "attach": {"\uf0c6", "+"},
 	// Choice markers: fa-circle_o (U+F10C), fa-dot_circle_o (U+F192, the
 	// filled-dot circle), fa-square_o (U+F096) and fa-check_square (U+F14A),
 	// Nerd Fonts v3.4.0, each one cell wide by ansi.StringWidth. Every selected
