@@ -139,7 +139,7 @@ func TestMigrationBackupPreservesOriginalSchemaAndContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	backups, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "recovery-before-v1-*.sqlite"))
+	backups, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "recovery-before-v2-*.sqlite"))
 	if len(backups) != 1 {
 		t.Fatalf("backup count %d", len(backups))
 	}
@@ -163,7 +163,7 @@ func TestMigrationBackupPreservesOriginalSchemaAndContents(t *testing.T) {
 		t.Fatal("backup was taken after migration")
 	}
 	s.db.QueryRow("PRAGMA user_version").Scan(&version)
-	if version != 1 {
+	if version != 2 {
 		t.Fatal("schema version not updated")
 	}
 }

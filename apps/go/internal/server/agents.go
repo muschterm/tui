@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -500,12 +501,25 @@ func (r *acpRun) dispatch(w dispatchWork) {
 		r.fail(w, "Agent connection failed", err)
 		return
 	}
+	blocks, notices, err := agent.PromptBlocks(w.prompt, w.checkout, info, func(id string) ([]byte, error) {
+		_, data, err := r.e.store.ReadArtifact(id, artifactLimit)
+		return data, err
+	})
+	if err == nil {
+		// Send acceptance already bounded the prompt; this is a backstop.
+		if encoded, marshalErr := json.Marshal(blocks); marshalErr != nil || len(encoded) > acpPromptBudget {
+			err = errors.Join(marshalErr, fmt.Errorf("prompt with attachments exceeds %d MiB", acpPromptBudget>>20))
+		}
+	}
+	if err != nil {
+		r.fail(w, "Attachment could not be sent", err)
+		return
+	}
 	effective, options, err := r.applySettings(session, w)
 	if err != nil {
 		r.fail(w, "Agent rejected the captured settings", err)
 		return
 	}
-	blocks, notices := agent.PromptBlocks(w.prompt, w.checkout, info)
 	if !r.startTurn(w, effective, options, notices) {
 		return
 	}

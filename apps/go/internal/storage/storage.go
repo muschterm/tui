@@ -10,14 +10,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 	_ "modernc.org/sqlite"
 )
 
+// schemaVersion 2 adds artifact metadata; every upgrade first writes a
+// synced pre-migration backup next to the database.
+const schemaVersion = 2
+
 // Store persists the authoritative snapshot, command receipts and client
-// views in one SQLite database.
-type Store struct{ db *sql.DB }
+// views in one SQLite database. Artifact bytes live under artifactDir once
+// UseArtifacts has been called; artifactMu serializes their publication with
+// sweeps so a sweep never sees a published file before its row.
+type Store struct {
+	db          *sql.DB
+	artifactDir string
+	artifactMu  sync.Mutex
+}
 
 // Open opens or creates the SQLite database at path.
 func Open(path string) (*Store, error) {
@@ -32,18 +44,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 1 {
+	if version > schemaVersion {
 		db.Close()
-		return nil, &protocol.Error{Code: "schema_version", Message: "database schema is newer than supported version 1"}
+		return nil, &protocol.Error{Code: "schema_version", Message: fmt.Sprintf("database schema is newer than supported version %d", schemaVersion)}
 	}
-	if version < 1 {
+	if version < schemaVersion {
 		var tables int
 		if err = db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil {
 			db.Close()
 			return nil, err
 		}
 		if tables > 0 {
-			backup, createErr := os.CreateTemp(filepath.Dir(path), "recovery-before-v1-*.sqlite")
+			backup, createErr := os.CreateTemp(filepath.Dir(path), fmt.Sprintf("recovery-before-v%d-*.sqlite", schemaVersion))
 			if createErr != nil {
 				db.Close()
 				return nil, createErr
@@ -91,7 +103,10 @@ func Open(path string) (*Store, error) {
 			}
 		}
 		if err == nil {
-			_, err = tx.Exec("PRAGMA user_version=1")
+			_, err = tx.Exec(artifactSchema)
+		}
+		if err == nil {
+			_, err = tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion))
 		}
 		if err != nil {
 			tx.Rollback()
@@ -108,7 +123,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{db}, nil
+	return &Store{db: db}, nil
 }
 
 // Close releases the database.
@@ -169,6 +184,21 @@ func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Re
 	if _, err = tx.Exec("INSERT INTO state(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", b); err != nil {
 		return err
 	}
+	var removed []string
+	if c != nil && (c.Kind == "thread.delete" || c.Kind == "project.remove") {
+		if removed, err = deleteUnownedArtifacts(tx, liveThreads(snap)); err != nil {
+			return err
+		}
+	}
+	if c != nil && r != nil {
+		threadID := c.ThreadID
+		if c.Kind == "thread.start" {
+			threadID = r.TargetID
+		}
+		if err = bindArtifacts(tx, *c, threadID, time.Now()); err != nil {
+			return err
+		}
+	}
 	if c != nil {
 		cb, _ := json.Marshal(c)
 		storedReceipt := r
@@ -189,7 +219,13 @@ func (s *Store) Save(snap protocol.Snapshot, c *protocol.Command, r *protocol.Re
 			return err
 		}
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	// Bytes go only after their rows are committed away; a crash in between
+	// leaves files without rows, which the startup sweep removes.
+	s.removeArtifactFiles(removed)
+	return nil
 }
 
 // LoadView returns a client view; an unknown id yields an empty document at

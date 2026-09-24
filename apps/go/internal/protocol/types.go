@@ -201,7 +201,45 @@ type Request struct {
 // checkout-relative file path and Content must be empty. The server replaces it
 // with a captured file attachment only in accepted state. Other kinds already
 // carry snapshots (including fixture attachments) and are retained unchanged.
-type Attachment struct{ Kind, Name, Source, Content string }
+//
+// An attachment with ArtifactID references bytes uploaded to the server's
+// artifact store. At acceptance the server replaces Kind ("image" or "file"),
+// Name, MediaType, Size, SHA256 and image dimensions with its stored record,
+// and fills Content only for UTF-8 text up to 64 KiB; artifact bytes are never
+// embedded in snapshots otherwise. PreviewSHA256 is the digest of a draft
+// preview the client showed for a workspace-file; the server sets
+// ChangedSincePreview when the captured content differs from it. Every added
+// field is optional so older snapshots and command identities are unchanged.
+type Attachment struct {
+	Kind, Name, Source, Content string
+	ArtifactID                  string `json:",omitempty"`
+	MediaType                   string `json:",omitempty"`
+	Size                        int64  `json:",omitempty"`
+	SHA256                      string `json:",omitempty"`
+	Width                       int    `json:",omitempty"`
+	Height                      int    `json:",omitempty"`
+	PreviewSHA256               string `json:",omitempty"`
+	ChangedSincePreview         bool   `json:",omitempty"`
+}
+
+// ArtifactInfo is server-owned metadata for an uploaded artifact. State is
+// "staged" until a Send accepts it, then "accepted". MediaType is sniffed by
+// the server; Width and Height are set for decoded images. Unavailable marks a
+// record whose bytes are missing; its content is never presented as empty.
+type ArtifactInfo struct {
+	ID, Name, MediaType, SHA256, State string
+	Size                               int64
+	Width                              int  `json:",omitempty"`
+	Height                             int  `json:",omitempty"`
+	Unavailable                        bool `json:",omitempty"`
+}
+
+// FilePreview is a read-only draft preview of a workspace file under the
+// same rules Send capture applies.
+type FilePreview struct {
+	Source, Name, Content, SHA256 string
+	Size                          int64
+}
 
 // Prompt is a captured submission with its settings and attachments.
 type Prompt struct {

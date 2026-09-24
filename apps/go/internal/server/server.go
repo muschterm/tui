@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +60,8 @@ type engine struct {
 	flushScheduled bool
 	lastFlush      time.Time
 	flushErr       error
+	// uploads and previews bound concurrent artifact uploads and file previews.
+	uploads, previews chan struct{}
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -92,7 +95,8 @@ func (e *engine) publish() {
 }
 
 func newEngine(snap protocol.Snapshot, st *storage.Store) *engine {
-	return &engine{snap: snap, store: st, subscribers: map[chan protocol.Snapshot]bool{}, runs: map[string]*acpRun{}, probes: map[string]bool{}}
+	return &engine{snap: snap, store: st, subscribers: map[chan protocol.Snapshot]bool{}, runs: map[string]*acpRun{}, probes: map[string]bool{},
+		uploads: make(chan struct{}, uploadSlots), previews: make(chan struct{}, previewSlots)}
 }
 
 func (e *engine) command(c protocol.Command) (protocol.Receipt, error) {
@@ -138,14 +142,14 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 		}
 	}
 	captured := c
-	if usesWorkspaceFiles(c) {
+	if usesWorkspaceFiles(c) || usesArtifacts(c) {
 		captureState := clone(e.snap)
 		e.mu.Unlock()
 		// Reading user files cannot stall unrelated commands, snapshots or ticks.
 		// A competing retry may commit while this request reads; reconcile its
 		// receipt before using these captures or reporting a read failure.
 		var captureErr error
-		captured, captureErr = captureCommand(ctx, captureState, c)
+		captured, captureErr = captureCommand(ctx, captureState, c, e.store)
 		e.mu.Lock()
 		if r, err := e.store.Lookup(c); err != nil {
 			e.mu.Unlock()
@@ -162,11 +166,17 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 			e.mu.Unlock()
 			return protocol.Receipt{}, captureErr
 		}
-		before, errBefore := captureRoot(captureState, c)
-		after, errAfter := captureRoot(e.snap, c)
-		if errBefore != nil || errAfter != nil || before != after {
+		if usesWorkspaceFiles(c) {
+			before, errBefore := captureRoot(captureState, c)
+			after, errAfter := captureRoot(e.snap, c)
+			if errBefore != nil || errAfter != nil || before != after {
+				e.mu.Unlock()
+				return protocol.Receipt{}, failure("stale_workspace", "workspace changed while capturing context; review and send again")
+			}
+		}
+		if err := validateArtifactDelivery(&e.snap, captured); err != nil {
 			e.mu.Unlock()
-			return protocol.Receipt{}, failure("stale_workspace", "workspace changed while capturing context; review and send again")
+			return protocol.Receipt{}, err
 		}
 	}
 	defer e.mu.Unlock()
@@ -251,7 +261,7 @@ func (e *engine) tick() error {
 					t.Activity[j].State = "completed"
 				}
 			}
-			result := protocol.Activity{ID: "result-" + promptID, TurnID: promptID, Role: "agent", Title: "Fixture agent", Text: "Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed.", State: "completed"}
+			result := protocol.Activity{ID: "result-" + promptID, TurnID: promptID, Role: "agent", Title: "Fixture agent", Text: "Synthetic review complete. Captured settings and attachments were preserved; no agent or tool was executed." + fixtureAttachmentEcho(t, promptID), State: "completed"}
 			found := false
 			for j := range t.Activity {
 				if t.Activity[j].ID == result.ID {
@@ -279,6 +289,31 @@ func (e *engine) tick() error {
 	e.snap = next
 	e.publish()
 	return nil
+}
+
+// fixtureAttachmentEcho lists the uploaded attachments a synthetic turn
+// "received". Nothing inspects their bytes; it only echoes accepted metadata.
+func fixtureAttachmentEcho(t *protocol.Thread, promptID string) string {
+	var lines []string
+	for _, a := range t.Activity {
+		if a.Role != "user" || a.Prompt == nil || (a.TurnID != promptID && a.ID != promptID) {
+			continue
+		}
+		for _, attachment := range a.Prompt.Attachments {
+			if attachment.ArtifactID == "" {
+				continue
+			}
+			line := fmt.Sprintf("%s (%s, %d bytes", attachment.Name, attachment.MediaType, attachment.Size)
+			if attachment.Width > 0 {
+				line += fmt.Sprintf(", %d×%d", attachment.Width, attachment.Height)
+			}
+			lines = append(lines, line+")")
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\nSynthetic attachment echo (not inspected): " + strings.Join(lines, "; ")
 }
 
 // Fixture turns use durable per-turn progress so Resume continues saved work.
@@ -357,6 +392,8 @@ func promptSummary(p protocol.Prompt) string {
 	type attachment struct {
 		Kind, Name, Source string
 		Size               int
+		ArtifactID         string `json:",omitempty"`
+		MediaType          string `json:",omitempty"`
 	}
 	summary := struct {
 		ID, Text    string
@@ -365,7 +402,7 @@ func promptSummary(p protocol.Prompt) string {
 		Attachments []attachment
 	}{ID: p.ID, Text: p.Text, Revision: p.Revision, Settings: p.Settings}
 	for _, a := range p.Attachments {
-		summary.Attachments = append(summary.Attachments, attachment{a.Kind, a.Name, a.Source, len(a.Content)})
+		summary.Attachments = append(summary.Attachments, attachment{a.Kind, a.Name, a.Source, len(a.Content), a.ArtifactID, a.MediaType})
 	}
 	b, _ := json.Marshal(summary)
 	return string(b)
@@ -464,6 +501,9 @@ func Serve(ctx context.Context, home string) error {
 		return err
 	}
 	defer st.Close()
+	if err = st.UseArtifacts(filepath.Join(home, "artifacts")); err != nil {
+		return err
+	}
 	snap, exists, err := st.Load()
 	if err != nil {
 		return err
@@ -513,6 +553,9 @@ func Serve(ctx context.Context, home string) error {
 	}
 	e := newEngine(snap, st)
 	e.log = slog.Default()
+	// Interrupted publications, orphaned files and expired staging are
+	// reconciled before any client can reference an artifact.
+	e.sweepArtifacts()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -544,6 +587,10 @@ func Serve(ctx context.Context, home string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/workspace", e.workspace)
 	mux.HandleFunc("GET /v1/browse", e.browse)
+	mux.HandleFunc("GET /v1/preview", e.previewFile)
+	mux.HandleFunc("POST /v1/artifacts", e.uploadArtifact)
+	mux.HandleFunc("GET /v1/artifacts/{id}", e.getArtifact)
+	mux.HandleFunc("DELETE /v1/artifacts/{id}", e.deleteArtifact)
 	respond := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(v)
@@ -670,6 +717,8 @@ func Serve(ctx context.Context, home string) error {
 	go func() { errs <- httpServer.Serve(listener) }()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	sweeper := time.NewTicker(artifactSweepInterval)
+	defer sweeper.Stop()
 	var runErr error
 loop:
 	for {
@@ -681,6 +730,8 @@ loop:
 				runErr = err
 			}
 			break loop
+		case <-sweeper.C:
+			e.sweepArtifacts()
 		case <-ticker.C:
 			e.mu.Lock()
 			flushErr := e.flushErr
