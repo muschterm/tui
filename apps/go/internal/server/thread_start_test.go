@@ -52,6 +52,11 @@ func TestInitialSendRestartRetryAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fixture's running thread holds the shared checkout's writer lease;
+	// stop it so the first send starts immediately.
+	if _, err = client.Command(ctx, protocol.Command{Version: 1, ID: "free-checkout", Kind: "thread.interrupt", ThreadID: "thread-shell"}); err != nil {
+		t.Fatal(err)
+	}
 	c := initialSend(snap)
 	receipt, err := client.Command(ctx, c)
 	if err != nil {

@@ -223,7 +223,8 @@ func TestThreadStartValidatesAgentAndSettings(t *testing.T) {
 				t.Fatal(name, err)
 			}
 			created := threadOf(e.current(), receipt.TargetID)
-			if created.AgentID != "" || created.Agent != "Fixture agent" || created.State != "running" {
+			if created.AgentID != "" || created.Agent != "Fixture agent" || created.State != "running" && created.WriterWait == nil {
+				// The fixture project's running thread may hold the checkout lease.
 				t.Fatalf("fixture thread changed: %+v", created)
 			}
 		}

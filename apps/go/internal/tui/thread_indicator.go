@@ -10,6 +10,11 @@ const (
 	threadAttention
 	threadFailed
 	threadFinished
+	// threadCheckoutWaiting is a thread with queued work blocked behind
+	// another thread's checkout writer lease (protocol.Thread.WriterWait). It
+	// is not attention: nothing needs the user's decision, only the checkout
+	// to free up.
+	threadCheckoutWaiting
 )
 
 // Failures and then attention win over execution, keeping problems discoverable.
@@ -53,6 +58,11 @@ func threadIndicator(t protocol.Thread) threadIndicatorState {
 	if working {
 		return threadWorking
 	}
+	// A checkout wait explains the same queued prompts that would otherwise
+	// read as unclaimed "pending"; it is not something the user must act on.
+	if t.WriterWait != nil {
+		return threadCheckoutWaiting
+	}
 	if pending {
 		return threadAttention
 	}
@@ -76,6 +86,10 @@ func (m *Model) threadIndicatorColor(state threadIndicatorState) string {
 		return p.red
 	case threadFinished:
 		return p.green
+	case threadCheckoutWaiting:
+		// Neutral: the status vocabulary reserves blue, gold, red and green;
+		// hover/focus help names the checkout wait.
+		return p.muted
 	default:
 		return p.muted
 	}

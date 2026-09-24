@@ -98,6 +98,10 @@ type Thread struct {
 	Queue                                      []Prompt
 	QueueRevision                              int64
 	Tick                                       int
+	// WriterWait is set only while this thread has eligible queued work that
+	// another thread's checkout writer lease blocks. It is derived by the
+	// server and recomputed on load; a persisted value never blocks dispatch.
+	WriterWait *WriterWait `json:"writer_wait,omitempty"`
 }
 
 // Activity is one transcript entry: a user prompt, agent reply, tool call or
@@ -309,4 +313,11 @@ type ShutdownOutcome struct {
 	InstanceID string
 	Success    bool
 	Error      string
+}
+
+// WriterWait reports a thread waiting for its checkout's writer lease.
+// Position 1 is next in line.
+type WriterWait struct {
+	HolderThreadID string `json:"holder_thread_id"`
+	Position       int    `json:"position"`
 }

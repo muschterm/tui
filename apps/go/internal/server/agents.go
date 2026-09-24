@@ -111,6 +111,8 @@ func (e *engine) commitMutate(fn func(*protocol.Snapshot)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	fn(&e.snap)
+	// Turn boundaries can end a writer lease; wake the next waiter.
+	e.rebalanceWritersLocked()
 	e.snap.Revision++
 	e.flushLocked()
 }
@@ -134,7 +136,25 @@ func (e *engine) applyCommand(next *protocol.Snapshot, c protocol.Command, resol
 	if c.Kind == "agent.probe" {
 		return e.applyProbe(next, c)
 	}
+	if c.Kind == "thread.resume" {
+		// A fixture Resume continues its interrupted turn in place, so it needs
+		// the checkout writer lease now; it cannot wait in line.
+		if t := threadByID(next, c.ThreadID); t != nil && !agent.IsACP(t.AgentID) && t.NeedsResume && !t.Closed && t.State != "idle" {
+			// Refuse both an active holder and an earlier waiting candidate, so
+			// Resume never jumps the line.
+			if e.writerBlocked(next, t) {
+				return "", failure("checkout_busy", "another thread is running on this checkout; resume after it finishes")
+			}
+		}
+	}
 	target, err := applyResolved(next, c, resolved)
+	if err == nil && (c.Kind == "prompt.send" || c.Kind == "prompt.reopen-send" || c.Kind == "thread.start" || c.Kind == "thread.resume") {
+		id := c.ThreadID
+		if c.Kind == "thread.start" {
+			id = target
+		}
+		e.startQueuedFixture(next, threadByID(next, id))
+	}
 	if err == nil && c.Kind == "request.answer" {
 		if t := threadByID(next, c.ThreadID); t != nil && agent.IsACP(t.AgentID) {
 			if r := e.runs[t.ID]; r == nil || (!r.liveApproval(t, c.TargetID) && !r.liveQuestion(t, c.TargetID)) {
@@ -179,6 +199,8 @@ func (e *engine) afterCommit(c protocol.Command, target string) {
 	default:
 		e.ensureRunLocked(c.ThreadID)
 	}
+	// Any committed command can end a lease or make a waiter eligible.
+	e.rebalanceWritersAndFlushLocked()
 }
 
 // resolveApproval hands a committed answer to the blocked ACP permission call.
@@ -468,6 +490,12 @@ func (r *acpRun) loop() {
 			return
 		}
 		r.dispatch(work)
+		// The dispatch is over: the lease now follows the thread's state
+		// alone, and the next claim competes fairly with waiters.
+		r.e.mu.Lock()
+		delete(r.e.claiming, r.threadID)
+		r.e.rebalanceWritersAndFlushLocked()
+		r.e.mu.Unlock()
 	}
 }
 
@@ -481,6 +509,8 @@ func (r *acpRun) claim() (dispatchWork, bool) {
 	t := threadByID(&e.snap, r.threadID)
 	if t == nil || !agent.IsACP(t.AgentID) || t.Closed || t.NeedsResume || t.State != "idle" || len(t.Queue) == 0 || e.stopping || e.flushErr != nil {
 		r.busy = false
+		// Every claim that ends without a turn lets the next waiter proceed.
+		e.rebalanceWritersAndFlushLocked()
 		return dispatchWork{}, false
 	}
 	a := agent.Find(&e.snap, t.AgentID)
@@ -488,9 +518,23 @@ func (r *acpRun) claim() (dispatchWork, bool) {
 		r.busy = false
 		name := t.Agent
 		t.State, t.Error = "failed", name+" is not ready; probe the agent before sending."
+		e.rebalanceWritersLocked()
 		e.snap.Revision++
 		e.flushLocked()
 		return dispatchWork{}, false
+	}
+	if !e.acquireWriter(&e.snap, t) {
+		// Another thread holds this checkout, or an earlier waiter is next.
+		// The queue and idle state stay unchanged; a release wakes this runner.
+		r.busy = false
+		e.rebalanceWritersAndFlushLocked()
+		return dispatchWork{}, false
+	}
+	if t.Checkout != "" {
+		if e.claiming == nil {
+			e.claiming = map[string]string{}
+		}
+		e.claiming[t.ID] = t.Checkout
 	}
 	return dispatchWork{prompt: t.Queue[0], record: *a, checkout: t.Checkout, sessionID: t.SessionID}, true
 }

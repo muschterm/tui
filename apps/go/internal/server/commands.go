@@ -155,9 +155,9 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 			if t.State == "failed" && !t.NeedsResume {
 				t.State, t.Error, t.StopReason = "idle", "", ""
 			}
-		} else if t.State == "idle" && !t.NeedsResume {
-			startFixturePrompt(t)
 		}
+		// An idle fixture thread starts its queue head in the engine, which
+		// first acquires the checkout writer lease (startQueuedFixture).
 		return id, nil
 	case "queue.steer":
 		if c.Revision != t.QueueRevision {
@@ -323,7 +323,10 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		if t.Closed {
 			return "", failure("thread_closed", "reopen the thread before resuming work")
 		}
-		if t.State == "idle" && !t.NeedsResume {
+		if t.State == "idle" {
+			// An idle thread has no turn to continue: Resume only clears the
+			// gate and its queue competes for the checkout writer lease.
+			t.NeedsResume, t.Error = false, ""
 			return t.ID, nil
 		}
 		if agent.IsACP(t.AgentID) {

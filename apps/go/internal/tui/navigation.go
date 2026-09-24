@@ -72,6 +72,9 @@ func (m *Model) renderThreadRow(f *frame, r shell.Rect, t protocol.Thread) {
 	if state == threadFailed {
 		help = "Error reported"
 	}
+	if state == threadCheckoutWaiting {
+		help = "Waiting for checkout"
+	}
 	if !m.connected {
 		help = "Disconnected · last known " + t.State
 	}

@@ -183,8 +183,12 @@ func recoverThreads(s *protocol.Snapshot) {
 		t.RestartEligible = false
 		if agent.IsACP(t.AgentID) {
 			recoverACPThread(t)
+			gateQueuedIdle(t)
 			continue
 		}
+		// Continuation eligibility (restartEligible) never covers an idle
+		// thread, so its queued work is always gated.
+		gateQueuedIdle(t)
 		if t.State != "idle" {
 			t.NeedsResume = true
 			t.State = "interrupted"
@@ -292,5 +296,14 @@ func recoverACPThread(t *protocol.Thread) {
 		if t.Activity[j].State == "running" {
 			t.Activity[j].State = "interrupted"
 		}
+	}
+}
+
+// gateQueuedIdle requires explicit Resume for queued work that never started
+// before a restart (for example a writer-lease waiter). Restart continuation
+// applies only to eligible in-flight turns, never to idle threads.
+func gateQueuedIdle(t *protocol.Thread) {
+	if t.State == "idle" && len(t.Queue) > 0 && !t.Closed {
+		t.NeedsResume = true
 	}
 }

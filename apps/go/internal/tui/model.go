@@ -868,6 +868,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.projectRenameConflicted = true
 				m.projectError = "Project changed. Review the name, then Save again."
 			}
+			if rejected && err.Code == "checkout_busy" && msg.command.Kind == "thread.resume" {
+				m.status = "Checkout busy: another thread is writing; Resume when it finishes"
+			}
 			if rejected {
 				m.busy = nil
 				m.state.Pending = nil
@@ -883,7 +886,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = ""
 				return m, m.showNoticeAs(noticeError, "Steer: "+message)
 			}
-			if msg.command.Kind == "settings.update" || msg.command.Kind == "project.update" || msg.command.Kind == "project.remove" || msg.command.Kind == "thread.create" || msg.command.Kind == "thread.start" || msg.command.Kind == "prompt.reopen-send" {
+			if msg.command.Kind == "settings.update" || msg.command.Kind == "project.update" || msg.command.Kind == "project.remove" || msg.command.Kind == "thread.create" || msg.command.Kind == "thread.start" || msg.command.Kind == "prompt.reopen-send" || msg.command.Kind == "thread.resume" {
 				return m, m.showNoticeAs(noticeError, m.status)
 			}
 			return m, nil

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -495,6 +496,8 @@ func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
 			marker, markerFG = panelStatusMark(m, "disconnected")
 		}
 		lines = append(lines, contentLine{text: status, fg: p.text, bg: p.canvas, marker: marker, markerFG: markerFG})
+	} else if t.WriterWait != nil {
+		lines = append(lines, m.writerWaitLine(t, p))
 	}
 	note := stopReasonNote(t)
 	if note == "" {
@@ -504,6 +507,47 @@ func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
 		lines = append(lines, contentLine{text: line, fg: p.gold, bg: p.canvas})
 	}
 	return lines
+}
+
+// writerWaitLine reports a thread with queued work blocked behind another
+// thread's checkout writer lease. It is shown only while no turn is active
+// (see activeTurn), so Stop is never offered for it: there is nothing here to
+// interrupt, only queued prompts waiting their turn. When the holder is known
+// its title becomes the line's action, reusing the same thread-select command
+// path as a navigation card so activating the line selects that thread.
+func (m *Model) writerWaitLine(t protocol.Thread, p palette) contentLine {
+	status := "Waiting for checkout"
+	holderID := t.WriterWait.HolderThreadID
+	holder, known := m.threadByID(holderID)
+	if holderID != "" && known {
+		status += " · " + safe(holder.Title)
+	}
+	if t.WriterWait.Position > 1 {
+		status += " · " + ordinal(t.WriterWait.Position) + " in line"
+	}
+	lead := "·"
+	line := contentLine{text: lead + " " + status, fg: p.text, bg: p.canvas, lead: lead, leadFG: p.muted}
+	if holderID != "" && known {
+		line.action = action{Kind: "thread", ID: holderID}
+	}
+	return line
+}
+
+// ordinal renders a short English ordinal ("2nd", "3rd", "11th"...) for
+// writerWaitLine's position-in-line copy.
+func ordinal(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return strconv.Itoa(n) + suffix
 }
 
 // stopReasonNote names a finished turn that ended for any reason other than a

@@ -62,6 +62,12 @@ type engine struct {
 	flushErr       error
 	// uploads and previews bound concurrent artifact uploads and file previews.
 	uploads, previews chan struct{}
+	// waitSince/waitSeq and claiming implement checkout writer coordination;
+	// see writer.go. claiming maps an ACP thread to the checkout whose lease
+	// its runner holds between claim and the end of that dispatch.
+	waitSince map[string]uint64
+	waitSeq   uint64
+	claiming  map[string]string
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -95,6 +101,7 @@ func (e *engine) publish() {
 }
 
 func newEngine(snap protocol.Snapshot, st *storage.Store) *engine {
+	clearWriterWaits(&snap)
 	return &engine{snap: snap, store: st, subscribers: map[chan protocol.Snapshot]bool{}, runs: map[string]*acpRun{}, probes: map[string]bool{},
 		uploads: make(chan struct{}, uploadSlots), previews: make(chan struct{}, previewSlots)}
 }
@@ -218,8 +225,10 @@ func (e *engine) tick() error {
 		changed = true
 		if t.Tick >= fixtureTurnTicks {
 			if fixtureTurnCompleted(t) {
-				if len(t.Queue) == 0 {
-					t.State = "idle"
+				// The finished turn releases the lease; the next queued prompt
+				// reacquires it only when no earlier waiter is eligible.
+				t.State = "idle"
+				if len(t.Queue) == 0 || !e.acquireWriter(&next, t) {
 					continue
 				}
 				startFixturePrompt(t)
@@ -280,6 +289,9 @@ func (e *engine) tick() error {
 		trimFixtureActivity(t)
 	}
 	if !changed {
+		// Candidates are derived, so a free checkout is re-examined every tick
+		// (for example queued threads restored at startup).
+		e.rebalanceWritersAndFlushLocked()
 		return nil
 	}
 	next.Revision++
@@ -288,6 +300,7 @@ func (e *engine) tick() error {
 	}
 	e.snap = next
 	e.publish()
+	e.rebalanceWritersAndFlushLocked()
 	return nil
 }
 
@@ -515,6 +528,7 @@ func Serve(ctx context.Context, home string) error {
 		snap = fixture.Initial()
 	} else {
 		recoverThreads(&snap)
+		demoteConcurrentWriters(&snap)
 		compactPromptDetails(&snap)
 		for i := range snap.Terminals {
 			snap.Terminals[i].State = "ended"

@@ -682,8 +682,11 @@ Claude requested approval for a file write while Codex wrote within its checkout
 without a request in its nominally cautious mode. Permission names do not prove
 sandboxing or matching approval boundaries. No `fs` or `terminal` client
 capabilities are advertised; adapters may still access files and processes
-directly. Per-checkout writer scheduling remains unimplemented; this slice
-does not establish safe concurrent write-capable turns in the same checkout.
+directly. Per-checkout writer scheduling now serializes this server's own
+turns (see "Checkout writer scheduling" below); it still does nothing to
+prevent an external editor, shell, or unrelated process from writing the same
+checkout concurrently, so this slice does not establish safe concurrent
+write-capable turns in the same checkout in general.
 
 `usage_update` supplies context occupancy/capacity, source and freshness to the
 gauge and Usage inspector. Missing telemetry, subscription windows and cost are
@@ -913,3 +916,50 @@ Raw/Preview/expand/restore/close, queue and Activity View and the collapsed
 strip, with no defects; foot has no kitty graphics, so images showed the
 fallback. Not implemented: image/file intake on macOS and X11, a server
 capability advertising artifact support, and graphics inside multiplexers.
+
+### Checkout writer scheduling — 2026-09-24
+
+`internal/server/writer.go` derives, per canonical checkout
+path, at most one running/waiting thread and a FIFO wait order over the
+threads with queued work blocked behind it; see its header comment and the
+[workspace contract binding](workspaces.md#writer-coordination) for the exact
+rules. The lease covers the claim-to-dispatch window, and a deleted thread's
+claim keeps it until that dispatch returns, so a deleted holder's adapter
+cannot overlap the next writer. Recovery gates idle threads with queued,
+never-started prompts behind explicit Resume. A fixture Resume that would
+continue an interrupted turn in place is rejected with `checkout_busy` while
+the checkout is held or an earlier thread waits. `protocol.Thread` gained
+`WriterWait *WriterWait` (`HolderThreadID`, `Position`, `1` = next), set only
+on a thread with eligible queued work and cleared on load — a persisted value
+never blocks dispatch.
+
+The TUI (`internal/tui`) makes the wait visible without claiming it is an
+active turn: `activeTurn` stays `false` for a writer-waiting thread (its State
+is `idle`), so Stop is not offered and queued prompts remain editable/
+removable as before. The conversation status line
+(`transcriptLines`/`writerWaitLine` in `render.go`) reads "Waiting for
+checkout", appended with "· \<holder title\>" when the holder is known in the
+current snapshot and "· 2nd in line" (etc.) when `Position > 1`; the line
+reuses the existing thread-select action, so activating it selects the holder
+thread the same way a navigation card does. The navigation card indicator
+(`thread_indicator.go`) gained `threadCheckoutWaiting`, a neutral circle (the
+status colors stay reserved; hover/focus help names the wait), placed below the existing
+failed/attention precedence so a checkout wait never hides a real problem.
+`thread.resume` rejected with `checkout_busy` now shows a notice through the
+existing command-error path ("Checkout busy: another thread is writing;
+Resume when it finishes") instead of failing silently.
+
+Validated on 2026-09-24 with `make check` (gofmt, vet, staticcheck,
+`go test -race ./...`, build) and `go test -race -count=3 ./internal/server/...
+./internal/protocol/...`. Server tests in `internal/server/writer_test.go` cover
+serialization, different checkouts, FIFO yielding, release on Stop/delete/
+failure, waiting holders, reopen-send, restart gating, agent re-probe and
+unavailable-agent waiters, and concurrent sends; TUI tests are in
+`internal/tui/writer_wait_test.go`. Two independent adversarial reviews found
+and then confirmed fixes for missed wakeups and a deleted-holder overlap.
+`TestNativeApprovalAdmissionRejectsWithoutMutation` fails intermittently on the
+previous commit as well (a test race with asynchronous turn completion); it is
+not caused by this change. Only fake ACP agents were used; no live provider or
+interactive terminal review covered this scheduler. This does not make concurrent
+writes from outside the application (an external editor, shell, or unrelated
+process touching the same checkout) safe; see the caution above.
