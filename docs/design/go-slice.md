@@ -963,3 +963,67 @@ not caused by this change. Only fake ACP agents were used; no live provider or
 interactive terminal review covered this scheduler. This does not make concurrent
 writes from outside the application (an external editor, shell, or unrelated
 process touching the same checkout) safe; see the caution above.
+
+### Read-only Git surface — 2026-09-24
+
+The right-host Git surface (`internal/tui/git_surface.go`,
+`git_viewer.go`) replaces the former "Git integration unavailable"
+placeholder with read-only observations from `GET /v1/git/{status,diff,log,show}`
+(`internal/client/git.go`). It offers no staging, commit, branch or other
+mutating control, not even a disabled one.
+
+- **Header and checkout.** The GIT heading carries a glyph-only Refresh icon
+  (Nerd Font `cod-refresh`, plain `R`; help "Refresh Git status · read-only";
+  reachable by Tab/Enter). The Checkout/Branch/HEAD pairs keep their existing
+  vocabulary; once the surface's status read returns, its workspace supplies
+  them. `Upstream` shows the tracking ref with `↑n ↓n` from local refs (or
+  "up to date"), or a muted "none" on a branch without one. A merge, rebase,
+  cherry-pick, revert or bisect adds a bold "! Merge in progress" row with the
+  muted line "Read-only here · continue or abort it with Git".
+- **Changes.** CONFLICTS, STAGED, CHANGES and UNTRACKED headings carry
+  counts and are omitted when empty; a Git checkout with no entries shows
+  "Working tree clean". Each entry is one full-row activatable square-fill row
+  (hover and keyboard focus per the component rules; the focus mark takes the
+  blank cell before the row): a status letter in semantic ink (A green, M/T
+  gold, D red, R/C accent, conflicted U red, untracked ? muted) and the path,
+  truncated from the start so the file name stays visible; renames read
+  `old → new`. A capped status adds "Showing first N changes".
+- **Recent commits.** 50 commits from HEAD: muted short hash, subject, ref
+  labels (`refs/heads/`, `refs/tags/`, `refs/remotes/` stripped; HEAD bold
+  accent, overflow as `+n`) and a compact relative age right-aligned when the
+  row has room. No graph lanes.
+- **States.** "Reading Git status…" before the first result; "Refreshing…"
+  while a later read runs; a failed read keeps the last result with a stale
+  "! Showing the last result" row and the error, or shows "✕ Git status ·
+  failed" with the error when nothing was loaded. Non-Git, fixture ("Demo
+  checkout · no repository") and unavailable workspaces are single status
+  blocks without sections or commits.
+- **Reads.** Every read is a `tea.Cmd` tagged with its target key (the
+  checkout inspection's thread/project key) and a generation; results for
+  another displayed target or an older generation are dropped. Results are
+  kept per target, so switching back paints the retained result and then
+  refreshes. Reads start when the surface becomes visible (active right-host
+  tab or compact Surfaces column), when the displayed thread/project changes
+  while it is visible, on Refresh, and when the active thread's turn ends
+  (running/waiting to anything else) while it is visible. There is no timer or
+  polling. `Model.gitReads` injects a fake in tests.
+- **Viewer.** Activating an entry or commit opens the existing centered
+  read-only viewer with Git content instead of a new dialog: the title is
+  `path · Staged|Unstaged|Untracked|Conflicted` or `short-hash subject`; pairs
+  are Path/Group/Size or Author/Date/Commit/Refs/Size; a commit body (without
+  its repeated subject) precedes the server's stat and patch. Lines are
+  sanitized with `safe()` and colored by position in the patch: `diff --git`
+  bold muted, other file headers muted, hunk headers accent, additions green
+  and removals red (inside a hunk a removed `--x` line is still a removal).
+  There is no line-number gutter or Markdown mode. Binary diffs read "Binary
+  file; no text diff"; a truncated patch ends with a muted "Diff truncated at
+  512 KiB" row that is not part of the source text. Selection Copy, expand and
+  Esc work as for attachments, and focus returns to the originating row. On
+  the surface, Up/Down move focus between rows and keep the focused row in
+  view.
+
+Tests: `internal/tui/git_surface_test.go`. `TestGitSurfaceCaptures` writes
+render captures (`TUI_GO_CAPTURE_DIR`), optionally from real reads supplied as
+JSON in `TUI_GO_GIT_JSON`; the 2026-09-24 review used reads of this
+repository at 144×40 and 44×40/44×30 in dark and light. Not yet verified in a
+real terminal (foot) or with `make pty`.

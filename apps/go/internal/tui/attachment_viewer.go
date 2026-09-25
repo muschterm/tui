@@ -54,6 +54,8 @@ type attachmentViewer struct {
 	imgPreparing bool
 	imgErr       string
 	imgSeq       uint64
+	// git marks a read-only Git diff or commit (git_viewer.go).
+	git *gitViewerContent
 }
 
 // sourceLines sanitizes the content once and splits it into source lines,
@@ -102,6 +104,9 @@ type viewerLine struct {
 	// soft-wrap of the same source line (hardWrap produced more than one
 	// row for it, and this is not the last one).
 	wrap bool
+	// ink and bold style a Git diff row; empty ink is the text color.
+	ink  string
+	bold bool
 }
 
 // viewerIcons are the viewer's own glyphs: Nerd Fonts v3.4.0 cod-eye and
@@ -251,7 +256,7 @@ func (m *Model) viewerAction(a action) tea.Cmd {
 	case "viewer-close":
 		return m.closeAttachmentViewer()
 	case "viewer-mode":
-		if !attachmentMarkdown(vw.att) || imageAttachment(vw.att) {
+		if !m.viewerMarkdown() {
 			return m.showNoticeAs(noticeUnavailable, "Preview is available for Markdown only")
 		}
 		vw.preview = !vw.preview
@@ -285,7 +290,17 @@ type viewerLayout struct {
 	body                   shell.Rect // full body, including the line-number gutter
 }
 
+// viewerMarkdown reports whether the open content offers raw/preview modes:
+// Markdown attachments only, never images or Git diffs.
+func (m *Model) viewerMarkdown() bool {
+	vw := m.viewer
+	return vw.git == nil && attachmentMarkdown(vw.att) && !imageAttachment(vw.att)
+}
+
 func (m *Model) viewerPairs() [][2]string {
+	if m.viewer.git != nil {
+		return m.gitViewerPairs()
+	}
 	a := m.viewer.att
 	pairs := [][2]string{{"Kind", safe(singleLine(a.Kind))}}
 	if src := safe(singleLine(a.Source)); src != "" && src != safe(singleLine(a.Name)) {
@@ -326,7 +341,7 @@ func (m *Model) viewerLayout() viewerLayout {
 	l := viewerLayout{r: r, x: r.X + 2, w: max(0, r.W-4)}
 	l.closeX = r.X + r.W - 4
 	l.expandX = l.closeX - 3
-	if attachmentMarkdown(m.viewer.att) && !imageAttachment(m.viewer.att) {
+	if m.viewerMarkdown() {
 		l.modeW = 5
 		if m.plainIcons {
 			l.modeW = 9
@@ -355,6 +370,9 @@ func (m *Model) viewerState() string {
 func (m *Model) viewerStateLines(width int) []string {
 	vw := m.viewer
 	a := vw.att
+	if vw.git != nil {
+		return m.gitViewerState()
+	}
 	switch {
 	case vw.loading:
 		return []string{"Loading preview…"}
@@ -386,16 +404,22 @@ func (m *Model) viewerLines(width int) []viewerLine {
 	} else {
 		source := vw.sourceLines()
 		room := max(1, width-m.viewerGutter())
+		styles := m.gitViewerStyles(source)
 		for i, line := range source {
 			parts := hardWrap(line, room)
 			for j, part := range parts {
 				n := ""
-				if j == 0 {
+				if j == 0 && vw.git == nil {
 					n = strconv.Itoa(i + 1)
 				}
-				out = append(out, viewerLine{number: n, text: part, wrap: j < len(parts)-1})
+				vl := viewerLine{number: n, text: part, wrap: j < len(parts)-1}
+				if styles != nil {
+					vl.ink, vl.bold = styles[i].ink, styles[i].bold
+				}
+				out = append(out, vl)
 			}
 		}
+		out = append(out, m.gitViewerNotice(room)...)
 	}
 	vw.cacheKey, vw.cacheLines = key, out
 	return out
@@ -403,7 +427,7 @@ func (m *Model) viewerLines(width int) []viewerLine {
 
 // viewerGutter is the raw mode's line-number column width, including its gap.
 func (m *Model) viewerGutter() int {
-	if m.viewer.preview || m.viewerState() != "" {
+	if m.viewer.preview || m.viewer.git != nil || m.viewerState() != "" {
 		return 0
 	}
 	return len(strconv.Itoa(len(m.viewer.sourceLines()))) + 2
@@ -438,7 +462,11 @@ func (m *Model) renderViewer(f *frame) {
 	maxOffset := max(0, len(lines)-body.H)
 	offset := min(max(0, vw.scroll), maxOffset)
 	if body.H > 0 && body.W > 0 {
-		f.hits = append(f.hits, hit{Rect: body, Label: "Attachment · wheel / arrows to scroll · read-only", Key: "viewer-body"})
+		label := "Attachment · wheel / arrows to scroll · read-only"
+		if vw.git != nil {
+			label = "Diff · wheel / arrows to scroll · read-only"
+		}
+		f.hits = append(f.hits, hit{Rect: body, Label: label, Key: "viewer-body"})
 		f.viewerBody = shell.Rect{X: body.X + gutter, Y: body.Y, W: max(0, body.W-gutter), H: body.H}
 		f.viewerMax = maxOffset
 	}
@@ -488,7 +516,7 @@ func (m *Model) renderViewer(f *frame) {
 		pair := l.pairs[i]
 		value := pair[1]
 		room := max(1, l.w-ansi.StringWidth(pair[0])-2)
-		if pair[0] == "Source" {
+		if pair[0] == "Source" || pair[0] == "Path" {
 			value = truncatePathLeft(value, room)
 		}
 		panelPairRowStyled(f, l.x, y+2+i, l.w, pair[0], value, p.muted, p.text, p.input)
@@ -527,7 +555,11 @@ func (m *Model) renderViewer(f *frame) {
 			// own SGR reaches the frame.
 			f.put(shell.Rect{X: tx, Y: yy, W: tw, H: 1}, onBackground(fit(line.text, tw), p.text, p.input))
 		} else {
-			f.text(tx, yy, tw, line.text, p.text, p.input)
+			ink := line.ink
+			if ink == "" {
+				ink = p.text
+			}
+			f.componentText(tx, yy, tw, line.text, componentVisual{foreground: ink, background: p.input, bold: line.bold})
 		}
 	}
 	if body.H > 0 {

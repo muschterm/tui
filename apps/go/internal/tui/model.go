@@ -256,6 +256,14 @@ type Model struct {
 	sendCapture     *sendCapture
 	captureSeq      uint64
 	viewerSeq       uint64
+	// Read-only Git surface (git_surface.go): per-target observations, the
+	// read generation, the target last shown and the last observed turn.
+	gitReads      gitAPI
+	gitViews      map[string]*gitView
+	gitSeq        uint64
+	gitShown      string
+	gitTurnKey    string
+	gitTurnActive bool
 	// Kitty graphics (graphics_model.go): per-connection capability, owned
 	// image ids and the composer's thumbnail loads.
 	graphics            graphicsProbe
@@ -740,6 +748,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptSendCapture(msg)
 	case viewerLoadMsg:
 		cmd = m.acceptViewerLoad(msg)
+	case gitStatusMsg:
+		m.acceptGitStatus(msg)
+	case gitLogMsg:
+		m.acceptGitLog(msg)
+	case gitViewerMsg:
+		m.acceptGitViewer(msg)
 	case viewerImageMsg:
 		cmd = m.acceptViewerImage(msg)
 	case thumbnailMsg:
@@ -1058,7 +1072,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if len(m.menu) > 0 {
 		m.menuOffset = m.menuStart(m.menuVisibleItems())
 	}
-	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery())
+	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery(), m.nextGitRefresh())
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
@@ -1310,6 +1324,12 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 				return m.activate(h.Action)
 			}
 		}
+	}
+	if gitFocusKey(m.focus) && (s == "up" || s == "down") {
+		if s == "up" {
+			return m.moveGitFocus(-1)
+		}
+		return m.moveGitFocus(1)
 	}
 	if s == "up" || s == "down" || s == "pgup" || s == "pgdown" || s == "home" || s == "end" {
 		delta := 1

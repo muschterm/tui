@@ -27,6 +27,7 @@ const (
 	surfaceTextBlock                            // wrapped text in ink
 	surfaceRawBlock                             // sanitized raw output, wrapped
 	surfaceActionBlock                          // full-row activatable entry: glyph and label, muted value at the right
+	surfaceGitBlock                             // full-row activatable Git status entry or commit (git_surface.go)
 )
 
 type surfaceBlock struct {
@@ -38,8 +39,10 @@ type surfaceBlock struct {
 	// "value · note" when that fits, else right-aligned below the value.
 	note string
 	// action and key make an action block's row activatable.
+	// A heading with an action paints glyph as an icon control at its right.
 	action action
 	key    string
+	git    *gitRow
 }
 
 type surfaceRowKind int
@@ -51,6 +54,7 @@ const (
 	surfaceStatusRow
 	surfaceTextRow
 	surfaceActionRow
+	surfaceGitRow
 )
 
 // surfaceRow is one painted row of a surface body: text holds the heading,
@@ -65,6 +69,7 @@ type surfaceRow struct {
 	note        string // muted suffix after a pair row's value
 	action      action // an action row's command
 	key         string // an action row's hit and focus key
+	git         *gitRow
 }
 
 // detailBlocks renders retained detail as muted text lines. Activity detail
@@ -216,10 +221,7 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: "• " + item, ink: p.text})
 		}
 	case "git":
-		b = append(b, heading("Git", ""), gap)
-		b = append(b, m.gitCheckoutBlocks()...)
-		b = append(b, gap, surfaceBlock{kind: surfaceRuleBlock}, gap, heading("Changes", ""), gap,
-			statusBlock(m, "Git integration", "unavailable", true))
+		b = append(b, m.gitSurfaceBlocks()...)
 	}
 	return b
 }
@@ -227,9 +229,15 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 // gitCheckoutBlocks renders the read-only checkout context as explicit
 // pairs: the checkout path, then Branch, HEAD or Revision only for the
 // structured states the server reported. Values are plain text, never a
-// success mark; loading, non-Git and unavailable values stay muted.
+// success mark; loading, non-Git and unavailable values stay muted. The Git
+// surface's own status read, once loaded, supplies the checkout it
+// describes, so the pairs never disagree with the listed changes.
 func (m *Model) gitCheckoutBlocks() []surfaceBlock {
 	info := m.displayedCheckout()
+	loading := m.checkoutLoading
+	if g := m.currentGitView(); g != nil && g.status != nil && g.status.Workspace.Path != "" {
+		info, loading = g.status.Workspace, false
+	}
 	muted := m.colors().muted
 	pair := func(label, value string) surfaceBlock {
 		return surfaceBlock{kind: surfacePairBlock, label: label, value: value}
@@ -239,7 +247,7 @@ func (m *Model) gitCheckoutBlocks() []surfaceBlock {
 	}
 	out := []surfaceBlock{{kind: surfaceLongBlock, label: "Checkout", value: info.Path}}
 	switch {
-	case m.checkoutLoading:
+	case loading:
 		return append(out, quiet("Branch", "loading…"))
 	case info.State == "branch":
 		return append(out, pair("Branch", info.Branch))
@@ -430,6 +438,8 @@ func (m *Model) surfaceText(s shell.Surface) string {
 			lines = append(lines, b.label, b.value)
 		case surfaceActionBlock:
 			lines = append(lines, strings.TrimSpace(b.glyph+" "+b.label)+" · "+b.value)
+		case surfaceGitBlock:
+			lines = append(lines, gitRowText(b.git))
 		default:
 			lines = append(lines, b.value)
 		}
@@ -463,7 +473,9 @@ func (m *Model) surfaceRows(blocks []surfaceBlock, width int) []surfaceRow {
 	for _, b := range blocks {
 		switch b.kind {
 		case surfaceHeadingBlock:
-			rows = append(rows, surfaceRow{kind: surfaceHeadingRow, text: safe(b.label), value: safe(b.value)})
+			rows = append(rows, surfaceRow{kind: surfaceHeadingRow, text: safe(b.label), value: safe(b.value), glyph: b.glyph, action: b.action, key: b.key})
+		case surfaceGitBlock:
+			rows = append(rows, surfaceRow{kind: surfaceGitRow, git: b.git})
 		case surfaceRuleBlock:
 			rows = append(rows, surfaceRow{kind: surfaceRuleRow})
 		case surfaceGapBlock:
@@ -561,9 +573,21 @@ func (m *Model) paintSurfaceRow(f *frame, x, y, width int, row surfaceRow) {
 	case surfaceHeadingRow:
 		vw := ansi.StringWidth(row.value)
 		panelSectionHeadingOn(f, m, x, y, width, row.text, bg)
-		if vw > 0 && vw+2 < width {
-			f.text(x+width-vw, y, vw, row.value, p.muted, bg)
+		right := width
+		if row.key != "" && width >= 8 {
+			// A glyph-only icon control in a reserved three-cell slot: the
+			// focus mark takes its leading padding cell.
+			right -= 4
+			f.iconButton(m, x+width-3, y, 3, " "+row.glyph, row.key, row.action, p.muted, bg)
+			if row.key == "git-refresh" {
+				f.hits[len(f.hits)-1].Label = "Refresh Git status · read-only"
+			}
 		}
+		if vw > 0 && vw+2 < right {
+			f.text(x+right-vw, y, vw, row.value, p.muted, bg)
+		}
+	case surfaceGitRow:
+		m.paintGitRow(f, x, y, width, row.git)
 	case surfaceRuleRow:
 		panelRuleOn(f, m, x, y, width, bg)
 	case surfacePairRow:

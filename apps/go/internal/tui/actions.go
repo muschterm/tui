@@ -138,6 +138,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	if a.Kind == "attachment-view" {
 		return m.openAttachmentViewer(a)
 	}
+	if strings.HasPrefix(a.Kind, "git-") {
+		return m.gitAction(a)
+	}
 	if handled, cmd := m.activateSidebarSettings(a); handled {
 		m.configureInputs()
 		return cmd

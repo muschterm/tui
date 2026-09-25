@@ -18,6 +18,7 @@ var icons = map[string]struct{ glyph, plain string }{
 	// (Nerd Fonts ≥ 3.2.1): the diagonal double arrows of T3's Maximize2/Minimize2.
 	"maximize": {"\ued4f", "[]"}, "restore": {"\ued4d", "><"},
 	"files": {"\ueaf0", "F"}, "git": {"\uea68", "G"},
+	"refresh":  {"\ueb37", "R"}, // cod-refresh
 	"terminal": {"\uea85", ">_"}, "agents": {"\uea7e", "A"},
 	"plan": {"\ueb67", "P"}, "activity": {"\ueb31", "~"},
 	"close": {"\uea76", "x"}, "add": {"\uea60", "+"},

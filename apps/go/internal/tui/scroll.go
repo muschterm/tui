@@ -73,6 +73,9 @@ func (m *Model) scrollFocus() string {
 	case "closed-navigation", "sidebar-settings":
 		return m.focus
 	}
+	if gitFocusKey(m.focus) || m.focus == "git-refresh" {
+		return "detail"
+	}
 	if strings.HasPrefix(m.focus, "sidebar-setting:") {
 		return "sidebar-settings"
 	}

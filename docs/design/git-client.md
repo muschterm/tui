@@ -2,6 +2,22 @@
 
 Status: expanded scope accepted in Q6; corrected Q10 requires the selected agent to stop for review after resolving files, Q13 queues writers per checkout, and Q26 adds recorded turn comparisons. Exact operation inventory and detailed recovery policies remain under design. [Git operation research](../research/git-operations.md) supplies the underlying command semantics.
 
+## Go prototype status — 2026-09-24
+
+The Go reference has a read-only Git surface ([details](go-slice.md#read-only-git-surface--2026-09-24)):
+server reads of status (grouped conflicted/staged/unstaged/untracked entries,
+upstream ahead/behind from local refs, in-progress operation), bounded
+per-entry diffs, the 50 most recent commits and bounded commit patches,
+presented in the right host and the read-only viewer with refresh on
+visibility, target change, turn end and explicit Refresh. It performs no Git
+mutation and no network access.
+
+Remaining: commit graph lanes and graph actions, branch and staged-versus-HEAD
+comparison views beyond per-entry diffs, file/hunk/line staging, commits,
+branch switching, soft reset, pull/fetch/push, rebase and conflict resolution
+(manual and agent-assisted), context menus, turn comparisons, live-buffer
+coordination, and real-terminal/PTY validation of the surface.
+
 ## Accepted scope
 
 Provide status, attractive diffs, file/hunk/line staging, commits, history, branch switching, a commit graph, and right-click context menus. Include soft reset to a chosen commit, fast-forward-only pull by default, and rebase. Conflicts can be resolved manually or with a selected connected agent; when multiple agents are available, the user can choose one.
