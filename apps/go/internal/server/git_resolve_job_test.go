@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -26,8 +28,16 @@ func jobSetup(t *testing.T) (*engine, string, func(...string) string) {
 
 func jobSetupFleet(t *testing.T) (*engine, *fakeFleet, string, func(...string) string) {
 	t.Helper()
+	return jobSetupKind(t, "merge")
+}
+
+// jobSetupKind stops a merge of other into main, or a rebase of main onto
+// other, at the conflict in c.txt.
+func jobSetupKind(t *testing.T, kind string) (*engine, *fakeFleet, string, func(...string) string) {
+	t.Helper()
 	gitFixture(t) // isolated Git configuration
 	e, fleet, checkout := acpEngine(t)
+	e.baselineDir = t.TempDir()
 	root, err := filepath.EvalSymlinks(checkout)
 	if err != nil {
 		t.Fatal(err)
@@ -55,9 +65,13 @@ func jobSetupFleet(t *testing.T) (*engine, *fakeFleet, string, func(...string) s
 	git("checkout", "-q", "main")
 	writeFile(t, root, "c.txt", "main\n")
 	git("commit", "-q", "-am", "main")
-	p := previewOf(t, root, "merge", "refs/heads/other")
+	p := previewOf(t, root, kind, "refs/heads/other")
 	st := mustStatus(t, root)
-	mustGit(t, e, client.GitMergeCommand("merge", acpTarget, st, p), protocol.GitStateSucceeded)
+	if kind == "rebase" {
+		mustGit(t, e, client.GitRebaseCommand("rebase", acpTarget, st, p, false), protocol.GitStateSucceeded)
+	} else {
+		mustGit(t, e, client.GitMergeCommand("merge", acpTarget, st, p), protocol.GitStateSucceeded)
+	}
 	return e, fleet, root, git
 }
 
@@ -603,5 +617,241 @@ func TestGitResolveJobReviewOfManyPathsIsBounded(t *testing.T) {
 	start = time.Now()
 	if st := operationOf(t, e, root); st.Review == nil || time.Since(start) > 3*time.Second {
 		t.Fatalf("cached review read took %v", time.Since(start))
+	}
+}
+
+// Gate follow-up round (2026-09-25).
+
+// An Incomplete set's fingerprint covers the whole index listing, also
+// past the read limit.
+func TestGitResolveJobIncompleteFingerprintCoversTheWholeIndex(t *testing.T) {
+	gitFixture(t)
+	dir := t.TempDir()
+	git := func(stdin string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("", "init", "-q")
+	a, b := git("a\n", "hash-object", "-w", "--stdin"), git("b\n", "hash-object", "-w", "--stdin")
+	var sb strings.Builder
+	for i := range 90000 { // well past gitStatusMaxBytes of listing
+		fmt.Fprintf(&sb, "100644 %s\tdir/some/longish/path/file%06d.txt\n", a, i)
+	}
+	fmt.Fprintf(&sb, "100644 %s\tzzz_tail.txt\n", a)
+	git(sb.String(), "update-index", "--index-info")
+	ctx := context.Background()
+	g, err := newGitReader(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := protocol.GitOperationRecord{State: protocol.GitOperationStoppedConflicts, JobBaseline: &protocol.GitJobBaseline{StopKey: "k"}}
+	ac1 := agentChanges(ctx, g, rec, t.TempDir(), "k")
+	git(fmt.Sprintf("100644 %s\tzzz_tail.txt\n", b), "update-index", "--index-info")
+	ac2 := agentChanges(ctx, g, rec, t.TempDir(), "k")
+	if !ac1.Incomplete || ac1.Reason == "" || ac1.Fingerprint == "" || ac1.Fingerprint == ac2.Fingerprint {
+		t.Fatalf("incomplete fingerprints: %+v / %+v", ac1, ac2)
+	}
+	w := &gitWriter{recordLookup: func() *protocol.GitOperationRecord { return &rec }}
+	stopped := protocol.GitOperationState{}
+	rec.JobBaseline.StopKey = stopKey(stopped)
+	ac2 = agentChanges(ctx, g, rec, "", stopKey(stopped))
+	if err := refuseAgentChanges(ctx, g, w, stopped, ac1.Fingerprint); err == nil {
+		t.Fatal("a stale acknowledgement passed after an index change past the read limit")
+	}
+	if err := refuseAgentChanges(ctx, g, w, stopped, ac2.Fingerprint); err != nil {
+		t.Fatalf("the current acknowledgement: %v", err)
+	}
+}
+
+// A baseline of another stop fails closed; a new job at the new stop
+// takes a new baseline.
+func TestGitResolveJobBaselineOfAnotherStopFailsClosed(t *testing.T) {
+	e, root, _ := jobSetup(t)
+	startJob(t, e, root, "job", "FAKE-WRITE c.txt resolved\\n")
+	reviewOf(t, e, root)
+	if st := operationOf(t, e, root); st.AgentChanges == nil || st.AgentChanges.Incomplete {
+		t.Fatalf("at the job's stop: %+v", st.AgentChanges)
+	}
+	e.mu.Lock()
+	e.snap.GitOperations[0].JobBaseline.StopKey = "another-stop"
+	e.mu.Unlock()
+	st := operationOf(t, e, root)
+	if st.AgentChanges == nil || !st.AgentChanges.Incomplete || !strings.Contains(st.AgentChanges.Reason, "stop") || st.AgentChanges.Fingerprint == "" {
+		t.Fatalf("agent changes at another stop: %+v", st.AgentChanges)
+	}
+	// A new job at this stop replaces the baseline and its decisions.
+	if _, err := e.command(client.GitResolveJobEndCommand("end", acpTarget, recordOf(e).OperationID)); err != nil {
+		t.Fatal(err)
+	}
+	startJob(t, e, root, "job2", "")
+	_, review := reviewOf(t, e, root)
+	rec := recordOf(e)
+	if rec.JobBaseline.StopKey == "another-stop" || len(rec.JobDecisions) != 0 {
+		t.Fatalf("baseline after a job at the new stop: %+v %v", rec.JobBaseline, rec.JobDecisions)
+	}
+	mustGit(t, e, client.GitReviewAcceptCommand("acc", acpTarget, itemOf(t, review, "c.txt"), false), protocol.GitStateSucceeded)
+	mustGit(t, e, client.GitOperationContinueCommand("cont", acpTarget, operationOf(t, e, root), false), protocol.GitStateSucceeded)
+}
+
+func TestGitResolveJobGateClearsOnlyWhenTheStopProvablyMoved(t *testing.T) {
+	st := protocol.GitOperationState{Kind: "rebase", Step: 2}
+	key := stopKey(protocol.GitOperationState{Kind: "rebase", Step: 1})
+	for _, c := range []struct {
+		op   protocol.GitOperationResult
+		want bool
+	}{
+		{protocol.GitOperationResult{Outcome: protocol.GitOutcomeCompleted}, true},
+		{protocol.GitOperationResult{Outcome: protocol.GitOutcomeAborted}, true},
+		{protocol.GitOperationResult{Outcome: protocol.GitOutcomeStoppedConflicts, State: &st}, true},
+		{protocol.GitOperationResult{Outcome: protocol.GitOutcomeStopped}, false}, // not observed
+		{protocol.GitOperationResult{Outcome: protocol.GitOutcomeUnknown, State: &st}, false},
+		{protocol.GitOperationResult{Outcome: protocol.GitOutcomeUnchanged}, false},
+	} {
+		if got := operationLeftStop(&c.op, key); got != c.want {
+			t.Errorf("%s: %v, want %v", c.op.Outcome, got, c.want)
+		}
+	}
+	same := protocol.GitOperationState{Kind: "rebase", Step: 1}
+	if operationLeftStop(&protocol.GitOperationResult{Outcome: protocol.GitOutcomeStoppedConflicts, State: &same}, key) {
+		t.Error("the same stop was taken for a move")
+	}
+}
+
+// The baseline listing lives in the application home: Git garbage
+// collection cannot remove it, a missing listing fails closed, and
+// unreferenced listings are swept.
+func TestGitResolveJobBaselineListingIsKeptInTheHome(t *testing.T) {
+	e, root, git := jobSetup(t)
+	startJob(t, e, root, "job", "FAKE-WRITE c.txt resolved\\n")
+	_, review := reviewOf(t, e, root)
+	rec := recordOf(e)
+	if rec.JobBaseline == nil || rec.JobBaseline.Incomplete || rec.JobBaseline.Listing == "" {
+		t.Fatalf("baseline: %+v", rec.JobBaseline)
+	}
+	git("gc", "-q", "--prune=now")
+	mustGit(t, e, client.GitReviewAcceptCommand("acc", acpTarget, itemOf(t, review, "c.txt"), false), protocol.GitStateSucceeded)
+	if st := operationOf(t, e, root); st.AgentChanges == nil || st.AgentChanges.Incomplete {
+		t.Fatalf("after gc: %+v", st.AgentChanges)
+	}
+	old := time.Now().Add(-2 * jobBaselineSweepAge)
+	orphan := filepath.Join(e.baselineDir, strings.Repeat("0", 64))
+	writeFile(t, e.baselineDir, filepath.Base(orphan), "x")
+	listing := filepath.Join(e.baselineDir, rec.JobBaseline.Listing)
+	for _, p := range []string{orphan, listing} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.sweepJobBaselines()
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan listing kept: %v", err)
+	}
+	if _, err := os.Stat(listing); err != nil {
+		t.Fatalf("referenced listing swept: %v", err)
+	}
+	if err := os.Remove(listing); err != nil {
+		t.Fatal(err)
+	}
+	st := operationOf(t, e, root)
+	if st.AgentChanges == nil || !st.AgentChanges.Incomplete || !strings.Contains(st.AgentChanges.Reason, "missing") {
+		t.Fatalf("missing listing: %+v", st.AgentChanges)
+	}
+	continueWithAckOf(t, e, root)
+}
+
+// continueWithAckOf is continueWithAck for an Incomplete set.
+func continueWithAckOf(t *testing.T, e *engine, root string) {
+	t.Helper()
+	st := operationOf(t, e, root)
+	_, err := e.command(client.GitOperationContinueCommand("cont-unack", acpTarget, st, false))
+	wantGitCode(t, err, "review_pending")
+	cont := client.GitOperationContinueCommand("cont", acpTarget, operationOf(t, e, root), false)
+	client.AcknowledgeAgentChanges(&cont, st.AgentChanges)
+	mustGit(t, e, cont, protocol.GitStateSucceeded)
+}
+
+// Staging a path through the application while the gate is active is the
+// user's decision.
+func TestGitResolveJobApplicationStagingIsADecision(t *testing.T) {
+	e, root, git := jobSetup(t)
+	startJob(t, e, root, "job", "FAKE-WRITE c.txt resolved\\n\nFAKE-WRITE a.txt agent outside\\n")
+	_, review := reviewOf(t, e, root)
+	mustGit(t, e, client.GitReviewAcceptCommand("acc", acpTarget, itemOf(t, review, "c.txt"), false), protocol.GitStateSucceeded)
+	mustGit(t, e, client.GitStageCommand("stage", acpTarget, entryOf(t, root, "a.txt", protocol.GitGroupUnstaged)), protocol.GitStateSucceeded)
+	if rec := recordOf(e); rec.JobDecisions["a.txt"] == "" {
+		t.Fatalf("no decision for the staged path: %v", rec.JobDecisions)
+	}
+	mustGit(t, e, client.GitOperationContinueCommand("cont", acpTarget, operationOf(t, e, root), false), protocol.GitStateSucceeded)
+	if got := git("show", "HEAD:a.txt"); got != "agent outside" {
+		t.Fatalf("HEAD:a.txt = %q", got)
+	}
+}
+
+// A decision whose index could not be read afterwards is not recorded.
+func TestGitResolveJobUnreadDecisionIsNotRecorded(t *testing.T) {
+	s := protocol.Snapshot{GitOperations: []protocol.GitOperationRecord{{OperationID: "op", Checkout: "/r", State: protocol.GitOperationAgentReview, JobBaseline: &protocol.GitJobBaseline{}}}}
+	c := protocol.Command{Kind: protocol.GitKindConflictChoose, Git: &protocol.GitWrite{Conflict: &protocol.GitConflictWrite{Path: "c.txt"}}}
+	res := &protocol.GitResult{State: protocol.GitStateSucceeded}
+	recordJobDecision(&s, "/r", c, res, "", false)
+	if _, ok := s.GitOperations[0].JobDecisions["c.txt"]; ok {
+		t.Fatal("an unread decision was recorded")
+	}
+	recordJobDecision(&s, "/r", c, res, "", true)
+	if d, ok := s.GitOperations[0].JobDecisions["c.txt"]; !ok || d != "" {
+		t.Fatal("a read removal was not recorded")
+	}
+}
+
+// The tick's job sync does not end a record while an application write
+// holds the operation.
+func TestGitResolveJobTickSkipsAHeldOperation(t *testing.T) {
+	e, root, git := jobSetup(t)
+	startJob(t, e, root, "job", "")
+	reviewOf(t, e, root)
+	e.mu.Lock()
+	e.gitLocked().holders["held"] = gitHold{top: root}
+	e.mu.Unlock()
+	git("merge", "--abort")
+	if err := e.tick(); err != nil {
+		t.Fatal(err)
+	}
+	if rec := recordOf(e); !gitOperationActive(rec.State) {
+		t.Fatalf("record ended while held: %+v", rec)
+	}
+	e.mu.Lock()
+	delete(e.gitLocked().holders, "held")
+	e.mu.Unlock()
+	if err := e.tick(); err != nil {
+		t.Fatal(err)
+	}
+	if rec := recordOf(e); rec.State != protocol.GitOperationEndedExternal {
+		t.Fatalf("record after release: %+v", rec)
+	}
+}
+
+// Skip resets the index, so it is not gated: the agent's staged content is
+// discarded, never committed.
+func TestGitResolveJobSkipIsNotGated(t *testing.T) {
+	e, _, root, git := jobSetupKind(t, "rebase")
+	startJob(t, e, root, "job", "FAKE-WRITE a.txt agent outside\\n\nFAKE-GIT add a.txt")
+	reviewOf(t, e, root)
+	st := operationOf(t, e, root)
+	if st.AgentChanges == nil || !hasChange(*st.AgentChanges, "a.txt") {
+		t.Fatalf("agent changes: %+v", st.AgentChanges)
+	}
+	skip, ok := client.GitOperationSkipCommand("skip", acpTarget, st, true)
+	if !ok {
+		t.Fatal("skip not offered")
+	}
+	mustGit(t, e, skip, protocol.GitStateSucceeded)
+	if got := git("show", "HEAD:a.txt"); got != "a" {
+		t.Fatalf("HEAD:a.txt = %q", got)
 	}
 }

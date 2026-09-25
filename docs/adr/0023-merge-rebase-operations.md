@@ -331,32 +331,50 @@ later.
   keep that baseline. A staged item shows its index content and is
   accepted with `keep_staged`, pinned to the reviewed index entry.
 - **Content gate (S4 gate round, coordinator decision).** The first job of
-  a stop records the whole index (`ls-files --stage`, stored as a blob) as
-  `GitOperationRecord.JobBaseline`; every user `conflict_choose`,
-  `conflict_resolve` (including `keep_staged`) or `conflict_restore` on a
-  path records the index entries it left in `JobDecisions`. Continue and
-  skip recompute: every index entry that differs from the baseline and is
-  not exactly a recorded decision is listed in
-  `GitOperationState.AgentChanges` with its staged diff against the
-  baseline, and the command is refused (`review_pending`) unless it
-  carries that set's fingerprint as `AcknowledgeAgentChanges`. A baseline
-  or index that could not be read in full makes the set Incomplete, which
-  also needs the acknowledgement. The gate is checked at prepare time
-  against the actual index, so a stale or cached review cannot let unseen
-  content through; it persists after `git.resolve_job_end` and after the
-  job thread's deletion, and is cleared only when the operation moves on
-  (a continue, skip or abort that changed it, or the operation ending).
+  a stop records the whole index (`ls-files --stage`) as
+  `GitOperationRecord.JobBaseline`: the listing is kept in the application
+  home (`git-baselines/`, named by its SHA-256 and verified on read, so Git
+  garbage collection cannot remove it), with the stop key it was taken at.
+  Every user `conflict_choose`, `conflict_resolve` (including
+  `keep_staged`) or `conflict_restore`, and every application `git.stage`
+  or `git.unstage` while the gate is active, records the index entries it
+  left for that path in `JobDecisions`; when those entries cannot be read
+  afterwards, no decision is recorded. Continue recomputes: every index
+  entry that differs from the baseline and is not exactly a recorded
+  decision is listed in `GitOperationState.AgentChanges` with its staged
+  diff against the baseline, and the command is refused (`review_pending`)
+  unless it carries that set's fingerprint as `AcknowledgeAgentChanges`.
+  The set is Incomplete, with a Reason, when the baseline was not recorded
+  in full, its listing is missing or damaged, the operation is at another
+  stop than the baseline's, or the index is too large to compare; its
+  fingerprint then hashes the whole current index listing, streamed
+  without a size limit, so an acknowledgement never covers a later index.
+  If the listing cannot be read at all, continue is refused and nothing
+  can be acknowledged. The gate is checked at prepare time against the
+  actual index, so a stale or cached review cannot let unseen content
+  through; it persists after `git.resolve_job_end` and after the job
+  thread's deletion. It is cleared only when a result proves the
+  operation left the baseline's stop (completed, aborted, or observed at a
+  different stop; an unknown outcome proves nothing) or the operation is
+  observed to have ended. A job started at a different stop than the
+  baseline's replaces the baseline and its decisions. Skip is not gated:
+  `git rebase --skip` resets the index and tracked files to the stop's
+  HEAD before applying the next commit, so nothing staged is committed by
+  it (its existing discard acknowledgement still lists what it drops).
   Only the index is gated because only the index enters the commit;
   worktree-only changes stay visible in the review and status. Changes
-  staged through ordinary `git.stage`/`git.unstage` or in a terminal are
-  not decisions and need the acknowledgement too (`git.commit` is refused
-  during an operation).
+  staged in a terminal are not decisions and need the acknowledgement too
+  (`git.commit` is refused during an operation). Unreferenced listings are
+  swept an hour after their last use (at startup and after continue, skip,
+  abort and job start).
 - **Review lifecycle.** A review is never cached while the job's turn is
   running, dispatching or stopping after a cancel (it reports `running`);
   the cached review is dropped and recomputed when a turn really ends,
   including a cancelled or failed one. The cache key covers HEAD, the stop,
   the whole index listing, the job paths' worktree tokens and the outside
-  status fingerprint. The review is computed within a 10 second budget,
+  status fingerprint. The job sync of the fixture tick, of turn ends and of
+  reads reports a checkout held by an application Git write as still in
+  its recorded operation. The review is computed within a 10 second budget,
   with Myers diffs limited to 500 edits and 256 KiB per review; anything
   not compared is
   Unknown and makes the review Incomplete. The job thread refuses ordinary
@@ -453,19 +471,24 @@ Accepted residual risks from the five review rounds (2026-09-25):
   fingerprint); ignored files and changes that status does not show are
   not detected. Diffs compare up to 50000 lines per side with at most 500
   edits and 64 KiB per diff, 256 KiB per review. The cached review can be
-  stale until refreshed; the content gate does not depend on it. The gate
+  stale until refreshed; the content gate does not depend on it. A
+  listing removed from the application home while referenced makes the
+  gate Incomplete until the operation leaves the stop. The gate
   covers the index only: agent edits left unstaged in the working tree are
   not committed by continue but remain there, visible through the review
   and ordinary status after the job ends. The gate cannot tell who staged
   a change, so user staging outside the conflict commands needs the same
   acknowledgement; an index too large to record (the status output bound)
-  makes every continue and skip need an acknowledgement of an Incomplete
+  makes every continue need an acknowledgement of an Incomplete
   set whose items are not listed. Agent commits or operation commands run
   while the turn is active are attributed to the job (`ended_by_job`) only
   when they end the operation during that turn; anything the agent's
   processes do after the turn is reported as external. An operation the
   agent ended is detected from its state files; the last review is kept
   only if one was computed before.
+- **Clients.** The TUI does not yet use `GitOperationState.Toplevel` for
+  path resolution or show the S4 review, `AgentChanges` and its
+  acknowledgement; that client work is pending.
 - **Merge message.** `-m` reproduces Git's usual message without
   " into <branch>"; `merge.log` still appends.
 

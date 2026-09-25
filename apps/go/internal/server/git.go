@@ -158,6 +158,41 @@ func (g *gitReader) read(ctx context.Context, limit int, args ...string) (out []
 func (g *gitReader) readInput(ctx context.Context, limit int, stdin io.Reader, args ...string) (out []byte, truncated bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	cmd := g.command(ctx, args)
+	w := &cappedOutput{limit: limit, full: cancel}
+	stderr := &cappedOutput{limit: gitStderrMaxBytes, drain: true}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, w, stderr
+	err = cmd.Run()
+	if w.truncated() {
+		return w.bytes(), true, nil
+	}
+	if ctx.Err() != nil {
+		return nil, false, failure("unavailable", "Git read cancelled or timed out")
+	}
+	if err != nil {
+		if msg := string(stderr.bytes()); strings.Contains(msg, "lazy fetching disabled") || strings.Contains(msg, "promisor remote") {
+			return nil, false, failure("unavailable", "object not available locally (partial clone)")
+		}
+	}
+	return w.bytes(), false, err
+}
+
+// stream is read without a size limit: stdout goes to out as it arrives
+// (for example into a hash), for output too large to hold.
+func (g *gitReader) stream(ctx context.Context, out io.Writer, args ...string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := g.command(ctx, args)
+	cmd.Stdout, cmd.Stderr = out, &cappedOutput{limit: gitStderrMaxBytes, drain: true}
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		return failure("unavailable", "Git read cancelled or timed out")
+	}
+	return err
+}
+
+// command is a read-only Git invocation in the reader's repository.
+func (g *gitReader) command(ctx context.Context, args []string) *exec.Cmd {
 	base := []string{
 		"--no-pager", "--no-optional-locks", "--literal-pathspecs", "-C", g.dir,
 		"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "color.ui=false",
@@ -172,23 +207,8 @@ func (g *gitReader) readInput(ctx context.Context, limit int, stdin io.Reader, a
 	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1", "GIT_PAGER=cat", "PAGER=cat")
 	cmd.Env = append(cmd.Env, g.env...)
 	configureGitProcess(cmd)
-	w := &cappedOutput{limit: limit, full: cancel}
-	stderr := &cappedOutput{limit: gitStderrMaxBytes, drain: true}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, w, stderr
 	cmd.WaitDelay = 100 * time.Millisecond
-	err = cmd.Run()
-	if w.truncated() {
-		return w.bytes(), true, nil
-	}
-	if ctx.Err() != nil {
-		return nil, false, failure("unavailable", "Git read cancelled or timed out")
-	}
-	if err != nil {
-		if msg := string(stderr.bytes()); strings.Contains(msg, "lazy fetching disabled") || strings.Contains(msg, "promisor remote") {
-			return nil, false, failure("unavailable", "object not available locally (partial clone)")
-		}
-	}
-	return w.bytes(), false, err
+	return cmd
 }
 
 // cappedOutput keeps the first limit bytes and cancels git once more arrives.

@@ -6,7 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -237,7 +240,9 @@ func prepareJobStart(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		rec.JobThreadID, rec.State, rec.UpdatedAt, rec.LastCommandID = id, protocol.GitOperationAgentRunning, now, c.ID
 		// The first job of a stop sets the baseline; later jobs keep it, so
 		// earlier unexplained changes stay gated.
-		if rec.JobBaseline == nil && baseline != nil {
+		// A baseline of another stop (the operation moved on outside the
+		// application) is replaced when a job starts at the new stop.
+		if baseline != nil && (rec.JobBaseline == nil || rec.JobBaseline.StopKey != baseline.StopKey) {
 			baseline.StartedAt = now
 			rec.JobBaseline, rec.JobDecisions = baseline, nil
 		}
@@ -289,13 +294,13 @@ func prepareJobStart(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 			return gitResult(protocol.GitStateFailed, "storage", "the pre-job copy could not be recorded; nothing was started", nil)
 		}
 		job.BaseCopy = base.CopyID
-		// The content gate's baseline: the whole index, as a blob.
+		// The content gate's baseline: the whole index, kept in the
+		// application home.
 		index, truncated, err := g.read(ctx, gitStatusMaxBytes, "ls-files", "--stage", "-z")
-		baseline = &protocol.GitJobBaseline{Incomplete: truncated || err != nil}
+		baseline = &protocol.GitJobBaseline{StopKey: stopKey(again), Incomplete: truncated || err != nil}
 		if !baseline.Incomplete {
-			out, _, err := w.run(ctx, bytes.NewReader(index), false, "hash-object", "-w", "--no-filters", "--stdin")
-			if oid := strings.TrimSpace(string(out)); err == nil && gitFullHash.MatchString(oid) {
-				baseline.IndexBlob = oid
+			if id, err := putJobBaseline(w.baselineDir, index); err == nil {
+				baseline.Listing = id
 			} else {
 				baseline.Incomplete = true
 			}
@@ -1048,15 +1053,17 @@ func splitLines(data []byte) []string {
 }
 
 // recordJobDecision records the user's accept (git.conflict_resolve) or
-// reject (git.conflict_restore) of a job path under review.
-func recordJobDecision(s *protocol.Snapshot, top string, c protocol.Command, res *protocol.GitResult, entries string) {
+// reject (git.conflict_restore) of a job path under review, and for the
+// content gate what any conflict command (also git.conflict_choose) left
+// in the index when that could be read.
+func recordJobDecision(s *protocol.Snapshot, top string, c protocol.Command, res *protocol.GitResult, entries string, read bool) {
 	rec := gitOperationFor(s, top)
 	if res.State != protocol.GitStateSucceeded || rec == nil || c.Git == nil || c.Git.Conflict == nil {
 		return
 	}
 	// The content gate: what a user's resolve or restore left in the index
 	// is explained, whether or not a job is still attached.
-	if rec.JobBaseline != nil && (c.Kind == protocol.GitKindConflictResolve || c.Kind == protocol.GitKindConflictRestore) {
+	if rec.JobBaseline != nil && read {
 		if rec.JobDecisions == nil {
 			rec.JobDecisions = map[string]string{}
 		}
@@ -1120,25 +1127,36 @@ func entryOid(entries string) string {
 	return ""
 }
 
-// agentChanges compares the index with the record's job baseline: every
-// path whose entries differ and that no user decision explains is listed,
-// with its staged content against the baseline.
-func agentChanges(ctx context.Context, g *gitReader, rec protocol.GitOperationRecord) *protocol.GitAgentChanges {
+// agentChanges compares the index with the record's job baseline at the
+// stop stop: every path whose entries differ and that no user decision
+// explains is listed, with its staged content against the baseline. When
+// the comparison cannot be made (Reason), the set is Incomplete and its
+// Fingerprint covers the whole current listing, streamed without a limit.
+func agentChanges(ctx context.Context, g *gitReader, rec protocol.GitOperationRecord, dir, stop string) *protocol.GitAgentChanges {
 	ac := &protocol.GitAgentChanges{Items: []protocol.GitResolveItem{}}
-	cur, truncated, err := g.read(ctx, gitStatusMaxBytes, "ls-files", "--stage", "-z")
-	h := sha256.New()
-	h.Write([]byte("agent-changes-v1\x00"))
-	var base []byte
-	if err == nil && !truncated && !rec.JobBaseline.Incomplete {
-		var btrunc bool
-		base, btrunc, err = g.read(ctx, gitStatusMaxBytes, "cat-file", "blob", rec.JobBaseline.IndexBlob)
-		truncated = truncated || btrunc
+	var cur, base []byte
+	switch {
+	case rec.JobBaseline.Incomplete:
+		ac.Reason = "the index could not be recorded in full when the resolution agent started"
+	case rec.JobBaseline.StopKey != stop:
+		ac.Reason = "the operation is no longer at the stop where the resolution agent started"
+	default:
+		var truncated bool
+		var err error
+		if cur, truncated, err = g.read(ctx, gitStatusMaxBytes, "ls-files", "--stage", "-z"); err != nil || truncated {
+			ac.Reason = "the index is too large or could not be read"
+		} else if base, err = getJobBaseline(dir, rec.JobBaseline.Listing); err != nil {
+			ac.Reason = "the index recorded when the resolution agent started is missing or damaged"
+		}
 	}
-	if err != nil || truncated || rec.JobBaseline.Incomplete {
+	h := sha256.New()
+	h.Write([]byte("agent-changes-v2\x00" + stop + "\x00"))
+	if ac.Reason != "" {
 		ac.Incomplete = true
 		h.Write([]byte("incomplete\x00"))
-		h.Write(cur)
-		ac.Fingerprint = hex.EncodeToString(h.Sum(nil))[:32]
+		if err := g.stream(ctx, h, "ls-files", "--stage", "-z"); err == nil {
+			ac.Fingerprint = hex.EncodeToString(h.Sum(nil))[:32]
+		} // else no fingerprint: nothing can be acknowledged
 		return ac
 	}
 	before, now := stageMap(base), stageMap(cur)
@@ -1161,7 +1179,7 @@ func agentChanges(ctx context.Context, g *gitReader, rec protocol.GitOperationRe
 		}
 		fmt.Fprintf(h, "%s\x00%s\x00", p, now[p])
 		if len(ac.Items) >= gitOperationConflictsMax {
-			ac.Incomplete = true
+			ac.Incomplete, ac.Reason = true, "more changed paths than can be listed"
 			continue
 		}
 		item := protocol.GitResolveItem{Path: p, IndexOid: entryOid(now[p]), Staged: entryOid(now[p]) != "", Deleted: now[p] == "", Changed: true}
@@ -1190,24 +1208,186 @@ func agentChanges(ctx context.Context, g *gitReader, rec protocol.GitOperationRe
 	return ac
 }
 
-// refuseAgentChanges is the content gate of continue and skip.
-func refuseAgentChanges(ctx context.Context, g *gitReader, rec *protocol.GitOperationRecord, ack string) error {
+// refuseAgentChanges is the content gate of continue. Skip is not gated:
+// it resets the index and worktree of the stopped commit, so nothing staged
+// is committed by it.
+func refuseAgentChanges(ctx context.Context, g *gitReader, w *gitWriter, st protocol.GitOperationState, ack string) error {
+	rec := w.record()
 	if rec == nil || rec.JobBaseline == nil || !gitOperationActive(rec.State) {
 		return nil
 	}
-	ac := agentChanges(ctx, g, *rec)
-	if (len(ac.Items) > 0 || ac.Incomplete) && ack != ac.Fingerprint {
-		paths := make([]string, 0, len(ac.Items))
-		for _, it := range ac.Items {
-			paths = append(paths, it.Path)
-		}
-		what := "these staged changes are not explained by your own decisions: " + listPaths(paths)
-		if ac.Incomplete {
-			what = "the index could not be compared in full with the state before the resolution agent ran"
-		}
-		return failure("review_pending", what+"; review them (GitOperationState.AgentChanges) and acknowledge them, or accept or reject each path")
+	ac := agentChanges(ctx, g, *rec, w.baselineDir, stopKey(st))
+	if !(len(ac.Items) > 0 || ac.Incomplete) {
+		return nil
 	}
-	return nil
+	if ac.Fingerprint == "" {
+		return failure("review_pending", "the index could not be read to compare it with the state before the resolution agent ran; nothing was changed, try again")
+	}
+	if ack == ac.Fingerprint {
+		return nil
+	}
+	paths := make([]string, 0, len(ac.Items))
+	for _, it := range ac.Items {
+		paths = append(paths, it.Path)
+	}
+	what := "these staged changes are not explained by your own decisions: " + listPaths(paths)
+	if ac.Incomplete {
+		what = ac.Reason + "; the staged changes cannot be compared in full with the state before the resolution agent ran"
+	}
+	return failure("review_pending", what+"; review them (GitOperationState.AgentChanges) and acknowledge them, or accept or reject each path")
+}
+
+// operationLeftStop reports that a result proves the operation left the
+// stop key: it completed or was aborted, or it is observed at another
+// stop. Unknown outcomes prove nothing.
+func operationLeftStop(op *protocol.GitOperationResult, key string) bool {
+	switch op.Outcome {
+	case protocol.GitOutcomeCompleted, protocol.GitOutcomeAborted:
+		return true
+	case protocol.GitOutcomeStopped, protocol.GitOutcomeStoppedConflicts:
+		return op.State != nil && op.State.Kind != "" && stopKey(*op.State) != key
+	}
+	return false
+}
+
+// withIndexDecision records what an application stage or unstage of path
+// left in the index as a user decision while the content gate is active.
+// A failed read after the command records nothing (the path then stays
+// unexplained).
+func withIndexDecision(p *gitPlan, err error, g *gitReader, w *gitWriter, path string) (*gitPlan, error) {
+	if err != nil || p == nil {
+		return p, err
+	}
+	if rec := w.record(); rec == nil || rec.JobBaseline == nil || !gitOperationActive(rec.State) {
+		return p, nil
+	}
+	run, journal := p.run, p.journal
+	var entries string
+	var read bool
+	p.run = func(ctx context.Context) protocol.GitResult {
+		res := run(ctx)
+		if res.State == protocol.GitStateSucceeded {
+			vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitRequestBudget)
+			defer cancel()
+			if out, truncated, err := g.read(vctx, 64<<10, "ls-files", "--stage", "-z", "--", path); err == nil && !truncated {
+				entries, read = stageMap(out)[path], true
+			}
+		}
+		return res
+	}
+	p.journal = func(s *protocol.Snapshot, res *protocol.GitResult, now string) error {
+		if journal != nil {
+			if err := journal(s, res, now); err != nil {
+				return err
+			}
+		}
+		if res != nil && read && res.State == protocol.GitStateSucceeded {
+			if rec := gitOperationFor(s, w.top); rec != nil && rec.JobBaseline != nil && gitOperationActive(rec.State) {
+				if rec.JobDecisions == nil {
+					rec.JobDecisions = map[string]string{}
+				}
+				rec.JobDecisions[path] = entries
+			}
+		}
+		return nil
+	}
+	return p, nil
+}
+
+// ---- Baseline listings ----
+//
+// A job baseline's index listing is kept in the application home, named by
+// its SHA-256, so Git garbage collection cannot remove it and a damaged
+// file is detected. Listings no record references are swept.
+
+const jobBaselineSweepAge = time.Hour
+
+func putJobBaseline(dir string, data []byte) (string, error) {
+	if dir == "" {
+		return "", failure("unavailable", "no baseline storage")
+	}
+	sum := sha256.Sum256(data)
+	id := hex.EncodeToString(sum[:])
+	name := filepath.Join(dir, id)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	if _, err := getJobBaseline(dir, id); err == nil {
+		now := time.Now()
+		_ = os.Chtimes(name, now, now) // a sweep keeps what was just used
+		return id, nil
+	}
+	f, err := os.CreateTemp(dir, "tmp-")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, name)
+	}
+	if err != nil {
+		return "", err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return id, nil
+}
+
+func getJobBaseline(dir, id string) ([]byte, error) {
+	if dir == "" || len(id) != 64 || !gitFullHash.MatchString(id) {
+		return nil, failure("unavailable", "no baseline listing")
+	}
+	f, err := os.Open(filepath.Join(dir, id))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, gitStatusMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != id {
+		return nil, failure("unavailable", "the baseline listing is damaged")
+	}
+	return data, nil
+}
+
+// sweepJobBaselines removes listings no operation record references, once
+// they are old enough that no job start can still be recording them.
+func (e *engine) sweepJobBaselines() {
+	e.mu.Lock()
+	dir := e.baselineDir
+	keep := map[string]bool{}
+	for _, rec := range e.snap.GitOperations {
+		if rec.JobBaseline != nil {
+			keep[rec.JobBaseline.Listing] = true
+		}
+	}
+	e.mu.Unlock()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, de := range entries {
+		if keep[de.Name()] {
+			continue
+		}
+		if info, err := de.Info(); err == nil && time.Since(info.ModTime()) > jobBaselineSweepAge {
+			_ = os.Remove(filepath.Join(dir, de.Name()))
+		}
+	}
 }
 
 // record is recordLookup, nil without an engine.

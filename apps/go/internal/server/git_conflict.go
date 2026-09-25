@@ -847,8 +847,11 @@ func prepareConflict(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return nil, err
 	}
 	p := &gitPlan{paths: []string{req.Path}}
-	var decided string // the path's index entries after the command
-	p.journal = conflictJournal(w.top, c, func() string { return decided })
+	// decided is the path's index entries after the command; read reports
+	// that they were read (a failed read records no decision).
+	var decided string
+	var read bool
+	p.journal = conflictJournal(w.top, c, func() (string, bool) { return decided, read })
 	p.run = func(ctx context.Context) (res protocol.GitResult) {
 		op := &protocol.GitOperationResult{Kind: st.Kind, HeadBefore: st.HeadOid, Outcome: protocol.GitOutcomeUnchanged}
 		defer func() { res.Operation = op }()
@@ -931,7 +934,7 @@ func prepareConflict(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		}
 		if res.State == protocol.GitStateSucceeded {
 			if out, truncated, err := g.read(vctx, 64<<10, "ls-files", "--stage", "-z", "--", req.Path); err == nil && !truncated {
-				decided = stageMap(out)[req.Path]
+				decided, read = stageMap(out)[req.Path], true
 			}
 		}
 		return res
@@ -1147,7 +1150,7 @@ func writeWorktreeAtomic(w *gitWriter, p, tok string, present bool, mode string,
 
 // conflictJournal records copies made without an engine runtime and moves
 // the operation's record to ready once no unmerged path remains.
-func conflictJournal(top string, c protocol.Command, decided func() string) func(*protocol.Snapshot, *protocol.GitResult, string) error {
+func conflictJournal(top string, c protocol.Command, decided func() (string, bool)) func(*protocol.Snapshot, *protocol.GitResult, string) error {
 	return func(s *protocol.Snapshot, res *protocol.GitResult, now string) error {
 		if res == nil {
 			return refuseWhileJobRuns(s, top)
@@ -1155,7 +1158,8 @@ func conflictJournal(top string, c protocol.Command, decided func() string) func
 		if res.Operation == nil {
 			return nil
 		}
-		recordJobDecision(s, top, c, res, decided())
+		entries, read := decided()
+		recordJobDecision(s, top, c, res, entries, read)
 		if rec := gitOperationFor(s, top); rec != nil && res.Operation.State != nil && gitOperationActive(rec.State) && recordMatches(*rec, *res.Operation.State) {
 			switch rec.State {
 			case protocol.GitOperationAgentRunning, protocol.GitOperationAgentReview, protocol.GitOperationAgentInterrupted:

@@ -807,7 +807,7 @@ type GitOperationWrite struct {
 	// nothing runs (backup_incomplete). It supersedes
 	// AcknowledgeBackupIncomplete, which alone no longer suffices.
 	AcknowledgeBackupMissing string `json:"acknowledge_backup_missing,omitempty"`
-	// AcknowledgeAgentChanges (S4 gate, continue and skip) is
+	// AcknowledgeAgentChanges (S4 gate, continue) is
 	// GitAgentChanges.Fingerprint of the unexplained index changes the user
 	// reviewed and accepts committing.
 	AcknowledgeAgentChanges string `json:"acknowledge_agent_changes,omitempty"`
@@ -941,18 +941,23 @@ type GitOperationRecord struct {
 	ReviewKey string            `json:"review_key,omitempty"`
 	// JobBaseline and JobDecisions (additive, S4 gate) outlive the job:
 	// the index as it was when the first resolution job of this stop
-	// started, and, per path, the index entries a user decision (resolve,
-	// restore) left. Continue and skip are gated on them until the
-	// operation moves on (GitOperationState.AgentChanges).
+	// started, and, per path, the index entries a user decision (choose,
+	// resolve, restore, or stage/unstage while the gate is active) left.
+	// Continue is gated on them until the operation provably moves on
+	// (GitOperationState.AgentChanges).
 	JobBaseline  *GitJobBaseline   `json:"job_baseline,omitempty"`
 	JobDecisions map[string]string `json:"job_decisions,omitempty"`
 }
 
-// GitJobBaseline is GitOperationRecord.JobBaseline: IndexBlob is an
-// unreferenced blob holding `git ls-files --stage -z` at the job's start;
-// Incomplete when the index was too large to record.
+// GitJobBaseline is GitOperationRecord.JobBaseline: Listing is the SHA-256
+// of `git ls-files --stage -z` at the job's start, kept in the application
+// home (not the repository, so Git garbage collection cannot remove it);
+// StopKey identifies the stop it was taken at. Incomplete when the index
+// was too large or could not be recorded; a missing or altered listing, or
+// a different stop, makes the gate fail closed (GitAgentChanges.Incomplete).
 type GitJobBaseline struct {
-	IndexBlob  string `json:"index_blob,omitempty"`
+	Listing    string `json:"listing,omitempty"`
+	StopKey    string `json:"stop_key,omitempty"`
 	Incomplete bool   `json:"incomplete,omitempty"`
 	StartedAt  string `json:"started_at"`
 }
@@ -961,14 +966,18 @@ type GitJobBaseline struct {
 // differs from the job baseline and that no user decision explains (the
 // decision's recorded entries equal the current ones). Items show each
 // path's current staged content against the baseline (IndexOid,
-// IndexDiff). Continue and skip are refused (review_pending) until the
-// command carries Fingerprint as AcknowledgeAgentChanges; Incomplete means
-// the comparison could not be made in full, which needs the same
-// acknowledgement.
+// IndexDiff). Continue is refused (review_pending) until the command
+// carries Fingerprint as AcknowledgeAgentChanges; Incomplete means the
+// comparison could not be made in full (Reason says why), which needs the
+// same acknowledgement. Fingerprint then covers the whole current index
+// listing, so an acknowledgement never extends to a later index. Skip is
+// not gated: it resets the index and worktree to the stopped commit's
+// parent state, so nothing staged is committed by it.
 type GitAgentChanges struct {
 	Items       []GitResolveItem `json:"items"`
 	Fingerprint string           `json:"fingerprint,omitempty"`
 	Incomplete  bool             `json:"incomplete,omitempty"`
+	Reason      string           `json:"reason,omitempty"`
 }
 
 // Manual conflict resolution (ADR 0023, S3). Three journaled commands act on
@@ -1204,14 +1213,16 @@ type GitConflictCopy struct {
 // review compares with it and reject restores it, so the user's own edits
 // from before the job are never attributed to the agent or lost. A staged
 // item shows its index content (IndexOid, IndexDiff) and is accepted with
-// As keep_staged, pinned to the reviewed index entry. Continue and skip are
-// gated on content (GitAgentChanges): the first job of a stop records the
-// whole index (GitOperationRecord.JobBaseline), each user resolve or
-// restore records the entries it left (JobDecisions), and every index
-// entry that differs from the baseline without a matching decision must be
-// acknowledged by fingerprint (AcknowledgeAgentChanges) or the command is
-// refused (review_pending). The gate outlives End and the job thread's
-// deletion until the operation moves on. git.resolve_job_end removes the
+// As keep_staged, pinned to the reviewed index entry. Continue is gated on
+// content (GitAgentChanges): the first job of a stop records the whole
+// index (GitOperationRecord.JobBaseline), each user choose, resolve,
+// restore, stage or unstage records the entries it left (JobDecisions),
+// and every index entry that differs from the baseline without a matching
+// decision must be acknowledged by fingerprint (AcknowledgeAgentChanges)
+// or the command is refused (review_pending). The gate outlives End and
+// the job thread's deletion until the operation provably moves on (a
+// completed or aborted operation, or a different stop); skip resets the
+// index and is not gated. git.resolve_job_end removes the
 // job thread; follow-up and end are refused while a cancelled turn is
 // still stopping. A review is never cached while a turn is active, and a
 // turn that ends (also after a cancel) is reviewed again. The job thread refuses ordinary commands (job_thread:

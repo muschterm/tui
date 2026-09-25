@@ -72,6 +72,8 @@ type engine struct {
 	terminals terminalState
 	// git tracks running Git writes and their writer leases; see git_write.go.
 	git gitWriteState
+	// baselineDir keeps resolution jobs' index listings (git_resolve_job.go).
+	baselineDir string
 	// docs holds shared documents; see documents.go.
 	docs documentState
 }
@@ -311,10 +313,7 @@ func (e *engine) tick() error {
 		trimFixtureActivity(t)
 	}
 	// A finished fixture resolution job moves its operation to review.
-	if out := syncJobStatesLocked(&next, func(checkout string) string {
-		dir, _ := e.gitDirForLocked(checkout)
-		return gitDirOperation(dir)
-	}); out.changed {
+	if out := syncJobStatesLocked(&next, e.jobOpKindLocked); out.changed {
 		e.afterJobSyncLocked(out)
 		changed = true
 	}
@@ -604,6 +603,8 @@ func Serve(ctx context.Context, home string) error {
 	}
 	e := newEngine(snap, st)
 	e.log = slog.Default()
+	e.baselineDir = filepath.Join(home, "git-baselines")
+	e.sweepJobBaselines()
 	// Interrupted publications, orphaned files and expired staging are
 	// reconciled before any client can reference an artifact.
 	e.sweepArtifacts()

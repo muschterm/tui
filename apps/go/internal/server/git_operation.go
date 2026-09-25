@@ -1004,7 +1004,7 @@ func (e *engine) operationState(ctx context.Context, dir string, refresh bool) (
 	e.mu.Unlock()
 	if rec != nil && st.Kind != "" {
 		if g, err := newGitReader(ctx, top); err == nil {
-			st.AgentChanges = agentChanges(ctx, g, *rec)
+			st.AgentChanges = agentChanges(ctx, g, *rec, e.baselineDir, stopKey(st))
 		}
 	}
 	return st, nil
@@ -1553,8 +1553,10 @@ func operationJournal(c protocol.Command, top string, observed protocol.GitOpera
 			if rec.JobThreadID != "" {
 				endJobLocked(s, rec, now)
 			}
-			// The operation moved on: the gate's baseline belonged to the
-			// stop it left.
+		}
+		// The gate's baseline belonged to the stop; it is dropped only when
+		// the result proves the operation left that stop.
+		if res.Operation != nil && rec.JobBaseline != nil && operationLeftStop(res.Operation, rec.JobBaseline.StopKey) {
 			rec.JobBaseline, rec.JobDecisions = nil, nil
 		}
 		applyOperationResult(rec, res, previous, now)
@@ -1639,7 +1641,7 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		if err := checkPending(st); err != nil {
 			return nil, err
 		}
-		if err := refuseAgentChanges(ctx, g, w.record(), req.AcknowledgeAgentChanges); err != nil {
+		if err := refuseAgentChanges(ctx, g, w, st, req.AcknowledgeAgentChanges); err != nil {
 			return nil, err
 		}
 		if err := checkIdentity(ctx, w); err != nil {
@@ -1664,9 +1666,8 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		if err := checkPending(st); err != nil {
 			return nil, err
 		}
-		if err := refuseAgentChanges(ctx, g, w.record(), req.AcknowledgeAgentChanges); err != nil {
-			return nil, err
-		}
+		// Skip is not gated on agent changes: it resets the index to the
+		// stop's HEAD, so nothing staged is committed by it.
 		if err := checkIdentity(ctx, w); err != nil {
 			return nil, err
 		}

@@ -468,6 +468,7 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	if err != nil {
 		return protocol.Receipt{}, err
 	}
+	w.baselineDir = e.baselineDir
 	w.recordLookup = func() *protocol.GitOperationRecord {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -668,6 +669,10 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 		e.dirty = true
 	}
 	e.rebalanceWritersAndFlushLocked()
+	switch c.Kind {
+	case protocol.GitKindOperationContinue, protocol.GitKindOperationSkip, protocol.GitKindOperationAbort, protocol.GitKindResolveJobStart:
+		go e.sweepJobBaselines() // listings of baselines these dropped
+	}
 	return r, nil
 }
 
@@ -791,6 +796,8 @@ type gitWriter struct {
 	// recordLookup returns a copy of the operation record of this
 	// repository (git_resolve_job.go); set by runGitWrite.
 	recordLookup func() *protocol.GitOperationRecord
+	// baselineDir is engine.baselineDir; set by runGitWrite.
+	baselineDir string
 }
 
 var gitVersion = sync.OnceValues(func() ([2]int, error) {
@@ -1253,9 +1260,11 @@ func recheckWorktree(top, path, token string) *protocol.GitResult {
 func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol.Command) (*gitPlan, error) {
 	switch c.Kind {
 	case protocol.GitKindStage:
-		return prepareStage(ctx, g, w, c.Git.Paths[0])
+		p, err := prepareStage(ctx, g, w, c.Git.Paths[0])
+		return withIndexDecision(p, err, g, w, c.Git.Paths[0].Path)
 	case protocol.GitKindUnstage:
-		return prepareUnstage(ctx, g, w, c.Git.Paths[0])
+		p, err := prepareUnstage(ctx, g, w, c.Git.Paths[0])
+		return withIndexDecision(p, err, g, w, c.Git.Paths[0].Path)
 	case protocol.GitKindDiscard:
 		return prepareDiscard(ctx, g, w, c.Git.Paths[0])
 	case protocol.GitKindCommit:

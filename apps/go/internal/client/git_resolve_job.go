@@ -37,12 +37,12 @@ func GitResolveJobCancelCommand(id string, target GitTarget, operationID string)
 }
 
 // GitResolveJobEndCommand detaches the job and removes its thread. The
-// content gate on continue and skip stays (GitOperationState.AgentChanges).
+// content gate on continue stays (GitOperationState.AgentChanges).
 func GitResolveJobEndCommand(id string, target GitTarget, operationID string) protocol.Command {
 	return resolveJobCommand(id, protocol.GitKindResolveJobEnd, target, protocol.GitResolveJob{OperationID: operationID})
 }
 
-// AcknowledgeAgentChanges marks a continue or skip command as sent after the
+// AcknowledgeAgentChanges marks a continue command as sent after the
 // user reviewed the index changes no decision of theirs explains
 // (changes.Items) and accepts committing them.
 func AcknowledgeAgentChanges(cmd *protocol.Command, changes *protocol.GitAgentChanges) {
