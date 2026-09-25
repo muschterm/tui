@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -149,6 +150,12 @@ func gitFilterOverrides(names []string) []string {
 // read runs one command with output capped at limit bytes; reaching the cap
 // kills git and reports truncated rather than an error.
 func (g *gitReader) read(ctx context.Context, limit int, args ...string) (out []byte, truncated bool, err error) {
+	return g.readInput(ctx, limit, nil, args...)
+}
+
+// readInput is read with stdin (for example object IDs for
+// `cat-file --batch`).
+func (g *gitReader) readInput(ctx context.Context, limit int, stdin io.Reader, args ...string) (out []byte, truncated bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	base := []string{
@@ -167,7 +174,7 @@ func (g *gitReader) read(ctx context.Context, limit int, args ...string) (out []
 	configureGitProcess(cmd)
 	w := &cappedOutput{limit: limit, full: cancel}
 	stderr := &cappedOutput{limit: gitStderrMaxBytes, drain: true}
-	cmd.Stdout, cmd.Stderr = w, stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, w, stderr
 	cmd.WaitDelay = 100 * time.Millisecond
 	err = cmd.Run()
 	if w.truncated() {
@@ -363,7 +370,7 @@ func readGitStatus(ctx context.Context, dir string) (protocol.GitStatus, error) 
 func annotateGitStatus(top string, status *protocol.GitStatus) {
 	for i := range status.Entries {
 		e := &status.Entries[i]
-		if e.Group == protocol.GitGroupUnstaged || e.Group == protocol.GitGroupUntracked {
+		if e.Group == protocol.GitGroupUnstaged || e.Group == protocol.GitGroupUntracked || e.Group == protocol.GitGroupConflicted {
 			e.WorktreeStat = worktreeStat(top, strings.TrimSuffix(e.Path, "/"))
 		}
 		e.Pin = gitEntryPin(*e)
@@ -391,6 +398,10 @@ func gitEntryPin(e protocol.GitStatusEntry) string {
 	for _, f := range []string{"pin-v1", e.Group, e.Path, e.OrigPath, e.Index, e.Worktree, strconv.FormatBool(e.Submodule), e.ModeHead, e.ModeIndex, e.ModeWorktree, e.HeadOid, e.IndexOid, e.WorktreeStat} {
 		h.Write([]byte(f))
 		h.Write([]byte{0})
+	}
+	// Only conflicted entries have stages; other pins are unchanged.
+	for _, st := range e.Stages {
+		h.Write([]byte("stage\x00" + st.Mode + "\x00" + st.Oid + "\x00"))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
@@ -531,7 +542,18 @@ func parseGitStatus(out []byte, truncated bool, maxItems int, status *protocol.G
 			if len(f) != 11 || len(f[1]) != 2 {
 				continue
 			}
-			add(protocol.GitStatusEntry{Path: f[10], Index: f[1][:1], Worktree: f[1][1:], Group: protocol.GitGroupConflicted, Submodule: strings.HasPrefix(f[2], "S")})
+			// u XY sub m1 m2 m3 mW h1 h2 h3 path: stages 1-3 keep their modes
+			// and object IDs (ADR 0023); a zero mode is an absent side.
+			e := protocol.GitStatusEntry{Path: f[10], Index: f[1][:1], Worktree: f[1][1:], Group: protocol.GitGroupConflicted, Submodule: strings.HasPrefix(f[2], "S"), ModeWorktree: f[6]}
+			for i := range 3 {
+				present := strings.Trim(f[3+i], "0") != ""
+				stage := protocol.GitConflictStage{Present: present}
+				if present {
+					stage.Mode, stage.Oid = f[3+i], f[7+i]
+				}
+				e.Stages = append(e.Stages, stage)
+			}
+			add(e)
 		case strings.HasPrefix(rec, "? "):
 			add(protocol.GitStatusEntry{Path: rec[2:], Index: "?", Worktree: "?", Group: protocol.GitGroupUntracked})
 		}
@@ -573,9 +595,21 @@ func (g *gitReader) operation(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	gitDir := strings.TrimSpace(string(out))
+	return gitDirOperation(strings.TrimSpace(string(out)))
+}
+
+// gitDirOperation reads the operation markers of one per-worktree Git
+// directory with stats only, so writer coordination (writer.go) can call it
+// under the engine lock.
+func gitDirOperation(gitDir string) string {
+	if gitDir == "" || !filepath.IsAbs(gitDir) {
+		return ""
+	}
 	exists := func(name string) bool { _, err := os.Stat(filepath.Join(gitDir, name)); return err == nil }
 	switch {
+	case exists("rebase-apply/applying"):
+		// A mailbox apply (git am) shares rebase-apply with the apply backend.
+		return "am"
 	case exists("rebase-merge"), exists("rebase-apply"):
 		return "rebase"
 	case exists("MERGE_HEAD"):

@@ -41,6 +41,14 @@ import (
 // branch creation; ADR 0021) take only the repository's Git slot, not the
 // lease, so they neither wait for nor block agent turns.
 //
+// A merge, rebase, cherry-pick, revert or am in progress in the checkout's
+// repository is a third holder (git_operation.go, ADR 0023), whether it was
+// started here or outside the application: it is derived from a stat of the
+// operation markers in the worktree's Git directory, so it ends as soon as
+// the operation does, and waiters are re-evaluated once a second while any
+// waits on one. Bisect is not a holder. The reserved JobThreadID of a
+// recorded operation is exempt, so its resolution job can work there.
+//
 // Known limits: between threads the lease key is the registered project path,
 // so nested projects in one working tree (/repo and /repo/sub) are not
 // coordinated with each other; a
@@ -72,7 +80,7 @@ func (e *engine) writerHolder(s *protocol.Snapshot, key, except string) string {
 	if id := e.gitWriteHolderLocked(key); id != "" {
 		return gitHolderPrefix + id
 	}
-	return ""
+	return e.operationHolderLocked(s, key, except)
 }
 
 // writerEligible reports whether t has queued work that only the lease blocks.
@@ -129,6 +137,11 @@ func (e *engine) writerBlocked(s *protocol.Snapshot, t *protocol.Thread) bool {
 	if eligible {
 		mine = e.waitKey(t)
 	}
+	// While an operation reserves the checkout, only its resolution job may
+	// write there, so the waiters ahead of it do not delay it.
+	if e.jobExemptLocked(s, key, t.ID) {
+		return false
+	}
 	for _, c := range e.candidates(s, key) {
 		if c.ID == t.ID {
 			break
@@ -169,10 +182,27 @@ func (e *engine) rebalanceWritersLocked() bool {
 		}
 	}
 	for key, list := range byKey {
-		if len(list) == 0 || e.stopping || e.flushErr != nil || e.writerHolder(s, key, "") != "" {
+		if len(list) == 0 || e.stopping || e.flushErr != nil {
 			continue
 		}
 		head := list[0]
+		// An operation's resolution job (JobThreadID) is exempt from that
+		// operation's hold and goes ahead of the waiters it holds back.
+		if holder := e.writerHolder(s, key, ""); holder != "" {
+			if _, op := operationWait(holder); !op {
+				continue
+			}
+			head = nil
+			for _, c := range list {
+				if e.writerHolder(s, key, c.ID) == "" {
+					head = c
+					break
+				}
+			}
+			if head == nil {
+				continue
+			}
+		}
 		if agent.IsACP(head.AgentID) {
 			// The runner's claim acquires; this candidate is first in line.
 			e.ensureRunLocked(head.ID)
@@ -181,6 +211,7 @@ func (e *engine) rebalanceWritersLocked() bool {
 			changed = true
 		}
 	}
+	operationWaits := false
 	for i := range s.Threads {
 		t := &s.Threads[i]
 		var wait *protocol.WriterWait
@@ -189,6 +220,8 @@ func (e *engine) rebalanceWritersLocked() bool {
 				wait = &protocol.WriterWait{HolderThreadID: holder}
 				if id, ok := strings.CutPrefix(holder, gitHolderPrefix); ok {
 					wait = &protocol.WriterWait{HolderGitCommandID: id}
+				} else if w, ok := operationWait(holder); ok {
+					wait, operationWaits = w, true
 				}
 				for _, c := range e.candidates(s, t.Checkout) {
 					wait.Position++
@@ -202,6 +235,9 @@ func (e *engine) rebalanceWritersLocked() bool {
 			t.WriterWait = wait
 			changed = true
 		}
+	}
+	if operationWaits {
+		e.ensureOperationPollLocked()
 	}
 	return changed
 }

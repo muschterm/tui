@@ -66,6 +66,47 @@ reset with Undo, and the carry, leave-commits and published confirmations
 ([Go slice](go-slice.md#git-ref-and-remote-actions-tui--2026-09-24)); fake-API
 tests and render captures only, not yet a live server in a real terminal.
 
+### Merge and rebase — 2026-09-25
+
+The server, protocol and Go client (not yet the TUI) read the operation in
+progress and start, continue, skip and abort merges and rebases
+([ADR 0023](../adr/0023-merge-rebase-operations.md); wire contract in
+`apps/go/internal/protocol/git_write.go` and `git.go`, client helpers in
+`apps/go/internal/client/git_operation.go`). `GET /v1/git/operation` reports
+the kind, branch, target, rebase step i/N, the commit Git is stopped at and
+every unmerged path with its stages from the index, labelled by role (during
+a rebase, ours is the upstream plus the commits rebased so far). Operations
+started in a terminal are shown and managed too. `GET
+/v1/git/integrate/preview` reports fast-forward, replay count, merges in the
+range and published commits before a start.
+
+User decisions (2026-09-25): a merge or rebase needs a clean tracked tree and
+never stashes, even with `merge.autoStash` or `rebase.autoStash`; rebase is
+non-interactive only, never moves other branches (`--no-update-refs`), never
+guesses a fork point and refuses ranges containing merge commits; Skip is
+rebase only and names the dropped commit; agent resolution will run as a
+job-kind thread (reserved `JobThreadID`). Untracked and ignored files in the
+way are refused before anything runs. Rerere may replay a recorded
+resolution into a file but never stages it.
+
+While a merge, rebase, cherry-pick or revert is in progress in a checkout,
+wherever it was started, agent turns there wait
+(`WriterWait.HolderOperation`) until it ends; bisect does not reserve.
+Abort, Continue and Skip pin what was reviewed, need confirmation, save and
+pause open documents first and reconcile them afterwards; Continue may stop
+again at the next conflict. Abort and Skip name every file outside the
+conflicts whose changes they would reset and need that list acknowledged;
+Continue pins the staged set and asks before committing staged conflict
+markers. Interactive rebase stops (edit, exec, break) and entries marked
+assume-unchanged or skip-worktree are left to the terminal, and `merge.ff`
+applies as in the CLI (review 2026-09-25). Abort and Skip first back up
+every file they overwrite into unreferenced Git objects that can be
+restored with `git checkout <backup> -- <path>`, list untracked and
+ignored files in their way, and never recurse into submodules; staged
+conflict markers are read from the staged content itself (second review). Manual resolution (S3), agent resolution (S4)
+and the TUI remain. Verified with real Git in temporary repositories in
+`git_operation_test.go`, not in a terminal.
+
 ## Accepted scope
 
 Provide status, attractive diffs, file/hunk/line staging, commits, history, branch switching, a commit graph, and right-click context menus. Include soft reset to a chosen commit, fast-forward-only pull by default, and rebase. Conflicts can be resolved manually or with a selected connected agent; when multiple agents are available, the user can choose one.

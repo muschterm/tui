@@ -21,6 +21,11 @@ type Snapshot struct {
 	Agents []Agent `json:"agents,omitempty"`
 	// GitOps holds the latest Git write per repository (git_write.go).
 	GitOps []GitOp `json:"git_ops,omitempty"`
+	// GitOperations holds the latest application-started merge or rebase per
+	// repository toplevel (git_write.go, ADR 0023). Additive.
+	GitOperations []GitOperationRecord `json:"git_operations,omitempty"`
+	// GitBackups lists recorded abort and skip backups (ADR 0023). Additive.
+	GitBackups []GitBackupEntry `json:"git_backups,omitempty"`
 	// Documents lists loaded shared documents (document.go). It is a
 	// projection of the documents tables, rebuilt at server start.
 	Documents []DocumentStatus `json:"documents,omitempty"`
@@ -354,9 +359,15 @@ type ShutdownOutcome struct {
 
 // WriterWait reports a thread waiting for its checkout's writer lease.
 // Position 1 is next in line. While a Git write holds the lease,
-// HolderThreadID is empty and HolderGitCommandID names that command.
+// HolderThreadID is empty and HolderGitCommandID names that command. While a
+// merge, rebase, cherry-pick or revert is in progress in the checkout's
+// repository (started here or outside the application; ADR 0023),
+// HolderOperation names its kind and HolderOperationID the application record,
+// when there is one.
 type WriterWait struct {
 	HolderThreadID     string `json:"holder_thread_id"`
 	Position           int    `json:"position"`
 	HolderGitCommandID string `json:"holder_git_command_id,omitempty"`
+	HolderOperation    string `json:"holder_operation,omitempty"`
+	HolderOperationID  string `json:"holder_operation_id,omitempty"`
 }

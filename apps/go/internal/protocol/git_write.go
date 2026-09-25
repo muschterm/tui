@@ -58,6 +58,14 @@ const (
 	GitKindPull         = "git.pull"
 	GitKindPush         = "git.push"
 	GitKindCancel       = "git.cancel"
+
+	// Merge and rebase (ADR 0023); payloads in GitIntegrate and
+	// GitOperationWrite below.
+	GitKindMerge             = "git.merge"
+	GitKindRebase            = "git.rebase"
+	GitKindOperationAbort    = "git.operation_abort"
+	GitKindOperationContinue = "git.operation_continue"
+	GitKindOperationSkip     = "git.operation_skip"
 )
 
 // Git write states, shared by Receipt.State, GitResult.State and GitOp.State.
@@ -156,6 +164,9 @@ type GitWrite struct {
 	Ref    *GitRefWrite `json:"ref,omitempty"`
 	Sync   *GitSync     `json:"sync,omitempty"`
 	Cancel *GitCancel   `json:"cancel,omitempty"`
+	// Additive (ADR 0023).
+	Integrate *GitIntegrate      `json:"integrate,omitempty"`
+	Operation *GitOperationWrite `json:"operation,omitempty"`
 }
 
 // GitPathPin names one status entry exactly as GitStatus showed it.
@@ -190,6 +201,9 @@ type GitResult struct {
 	Fetch           *GitFetchResult `json:"fetch,omitempty"`
 	Integration     *GitIntegration `json:"integration,omitempty"`
 	Push            *GitPushResult  `json:"push,omitempty"`
+	// Operation (additive, ADR 0023) reports git.merge, git.rebase and the
+	// git.operation_* commands.
+	Operation *GitOperationResult `json:"operation,omitempty"`
 }
 
 // GitOp is the latest Git write per repository, published in
@@ -536,4 +550,347 @@ func GitWorktreeFingerprint(st GitStatus) string {
 		h.Write([]byte(l + "\x00\x00"))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Merge and rebase (ADR 0023) use the same durable two-phase flow and hold
+// the checkout writer lease (checkout_busy while a thread works there; agent
+// turns wait while they run) and a Git slot that also excludes Git writes in
+// linked worktrees (git_busy). Every command that rewrites files first saves
+// and pauses open shared documents and reconciles them afterwards
+// (document_unsaved when a document could not be saved; Git did not run).
+// Git runs with the user's configuration (hooks, signing, merge drivers),
+// never with an editor (the message Git prepared is kept), and with
+// rerere.autoUpdate off, so a recorded resolution that rerere replays is
+// written to the file but never staged (GitOperationResult.RerereResolved).
+//
+// Every operation command runs with submodule.recurse=false, so no
+// submodule worktree is changed. Before an abort or skip changes anything,
+// the server backs up every file it would overwrite
+// (GitOperationResult.Backup, GitOperationBackup).
+//
+// While a merge, rebase, cherry-pick, revert or am is in progress in a
+// repository, whether started here or outside the application, agent turns
+// in checkouts overlapping it do not start; they wait with
+// WriterWait.HolderOperation (bisect does not block them). A running turn is
+// not interrupted. Merge, rebase, continue and skip have a 30 minute budget
+// (hooks included); abort has 5 minutes.
+//
+//   - git.merge, git.rebase: Integrate. Require an attached branch with a
+//     clean tracked tree (untracked files are allowed and never overwritten;
+//     staged or unstaged changes are refused, even when merge.autoStash or
+//     rebase.autoStash is configured: nothing is ever stashed), and no
+//     assume-unchanged or skip-worktree entry on a path the operation
+//     writes. Merge runs `git merge --no-autostash --no-overwrite-ignore
+//     --no-rerere-autoupdate --no-edit -m <message> <target oid>`; merge.ff
+//     and branch.<name>.mergeOptions apply as in the CLI (see
+//     GitIntegratePreview.MergeFF); the message is Git's usual
+//     "Merge branch '<name>'", "Merge remote-tracking branch '<name>'" or
+//     "Merge commit '<oid>'" (merge.log still appends a shortlog). Rebase
+//     is non-interactive only: `git rebase --merge --no-autostash
+//     --no-update-refs --no-rerere-autoupdate --no-fork-point
+//     --no-autosquash <target oid>`, so no other branch moves and no fork
+//     point guess changes the range; a range containing merge commits is
+//     refused.
+//   - git.operation_abort: returns to the state before the operation
+//     (`git <kind> --abort`), discarding resolution work. Needs Confirmed and
+//     the WorktreeFingerprint shown. When GitOperationState.DiscardsOnAbort
+//     is not empty, those files' changes are reset too: the confirmation
+//     must name them ("Abort the rebase and reset changes to: a.txt, b.txt")
+//     and AcknowledgeDiscard must list exactly them.
+//   - git.operation_continue: after every conflict is resolved and staged,
+//     `git <kind> --continue` without an editor (a rebase keeps each
+//     commit's message, a merge uses MERGE_MSG). It may stop again at the
+//     next conflict. Needs Confirmed and the StagedFingerprint shown (what
+//     will be committed), plus AcknowledgeMarkers listing exactly
+//     GitOperationState.MarkerPaths when staged files still contain
+//     conflict markers. Not offered at an interactive stop (StopReason).
+//   - git.operation_skip: rebase only, stopped at a commit with conflicts:
+//     drops that commit (SkipOid, which the confirmation must name) and
+//     continues. Needs Confirmed, the WorktreeFingerprint shown and, as for
+//     abort, AcknowledgeDiscard naming DiscardsOnSkip. Never offered to
+//     agents or at an interactive stop.
+//
+// The operation commands work for operations started outside the
+// application too (GitOperationState.Source external). Bisect is never
+// managed here.
+//
+// Additional refusal codes (protocol.Error.Code, nothing recorded):
+//
+//	dirty_tree            staged or unstaged changes (or conflicts) exist;
+//	                      commit or discard them first (untracked files are
+//	                      fine)
+//	detached              merge or rebase with a detached HEAD
+//	unborn                merge or rebase on a branch without commits
+//	already_up_to_date    the target is already contained in HEAD
+//	stale_target          the target ref no longer points at TargetOid (or
+//	                      does not exist)
+//	stale_upstream        Source upstream, but the branch's upstream is not
+//	                      TargetRef
+//	no_upstream           Source upstream on a branch without one
+//	unknown_commit        TargetOid is not a commit here
+//	stale_range           the commits a rebase would replay differ from
+//	                      ExpectedReplayCount
+//	range_has_merges      the rebase range contains merge commits; use a
+//	                      terminal
+//	published_commit      rebase would rewrite a commit that is on a
+//	                      remote-tracking ref, without AcknowledgePublished
+//	would_overwrite       an untracked (including ignored) file is in the
+//	                      way of a file the operation writes; the message
+//	                      names up to 20 paths
+//	operation_in_progress another operation (or bisect) is in progress
+//	no_operation          git.operation_* while nothing is in progress
+//	stale_operation       a different operation, step or stopped commit
+//	                      than the request names (or OperationID does not
+//	                      match the recorded operation)
+//	conflicted            continue while unmerged paths remain
+//	stale_status          continue with an UnmergedFingerprint that differs
+//	                      from the current one
+//	not_stopped           skip while the rebase is not stopped at a commit
+//	confirmation_required abort, continue or skip without Confirmed
+//	identity_missing      Git cannot determine the committer identity
+//	not_supported         bisect or am; an interactive rebase stop (edit,
+//	                      exec, break, reword, squash...); index entries
+//	                      marked assume-unchanged or skip-worktree on a path
+//	                      the merge or rebase writes (they may hide local
+//	                      changes); or too many paths to check (use a
+//	                      terminal)
+//	ff_only_configured    merge.ff=only (or --ff-only in the branch's
+//	                      mergeOptions) and the merge is not a fast forward
+//	discards_unacknowledged abort or skip would reset changes outside the
+//	                      conflicts (DiscardsOnAbort/DiscardsOnSkip) that
+//	                      AcknowledgeDiscard does not list exactly; the
+//	                      message names them
+//	markers_unacknowledged continue with staged conflict markers
+//	                      (MarkerPaths) that AcknowledgeMarkers does not list
+//	                      exactly
+//	drops_unacknowledged  abort of a cherry-pick or revert sequence without
+//	                      AcknowledgeDropped equal to AbortDropsFingerprint
+//	markers_incomplete    continue when the marker scan was incomplete
+//	                      (MarkersIncomplete) without
+//	                      AcknowledgeMarkersIncomplete
+//	backup_incomplete     abort or skip when not everything it overwrites
+//	                      can be backed up (BackupIncomplete) without
+//	                      AcknowledgeBackupIncomplete
+//	would_overwrite       also: continue or skip while ContinueInTheWay is
+//	                      not empty
+//	status_truncated      abort or skip when the changes they would reset
+//	                      could not be listed (DiscardsIncomplete)
+//	stale_status          also: the working tree (abort, skip) or the staged
+//	                      set (continue) differs from its fingerprint
+//
+// Codes in a final GitResult (see GitOperationResult.Outcome for what
+// happened to the operation):
+//
+//	stopped_conflicts  succeeded: Git stopped with conflicts; Operation.State
+//	                   lists them
+//	stopped            succeeded: Git stopped without conflicts (for example
+//	                   a hook refused the merge commit); review, then
+//	                   Continue or Abort
+//	hook_failed        succeeded: the operation finished but a hook after it
+//	                   (post-rewrite, post-merge) exited non-zero
+//	nothing_to_commit  failed: the resolution leaves nothing to commit, so
+//	                   Git did not continue; Skip drops the commit (rebase),
+//	                   or finish it in a terminal
+//	would_overwrite    failed: Git refused before changing anything; Paths
+//	                   lists the files
+//	partial_change     outcome_unknown: Git failed without starting the
+//	                   operation but files or the index changed
+//	stale_head, stale_target, stale_operation, stale_status
+//	                   failed: something changed between the checks and Git
+//	                   (including open documents being saved); nothing ran
+//	abort_incomplete   succeeded with a warning: the abort ended the
+//	                   operation, but tracked paths it restores still differ
+//	                   from what it restored (for example Git could not
+//	                   remove a directory); Paths lists them
+//	backup_incomplete  failed: abort or skip could not back up everything it
+//	                   overwrites; nothing was changed
+//	timeout            outcome_unknown: merge, rebase, continue or skip
+//	                   exceeded its 30 minute budget (5 minutes for abort),
+//	                   whatever Git had done by then; the message says what
+//	                   the operation looks like now and whether Git left
+//	                   index.lock behind
+//	documents_changed_tree
+//	                   failed (merge, rebase): saving open documents left
+//	                   staged or unstaged changes to tracked files; commit
+//	                   or discard them and start again; nothing ran
+//	git_failed         failed (nothing changed) or outcome_unknown
+//	document_unsaved   an open document could not be saved; Git did not run
+
+// GitIntegrate is GitWrite.Integrate for git.merge and git.rebase. It pins
+// what the user reviewed: the checked-out branch and HEAD (GitStatus.Branch
+// and HeadOid), and the target commit TargetOid. Source is upstream (the
+// branch's configured upstream, TargetRef its full name), branch (a local
+// branch or remote-tracking ref, TargetRef its full name, as GitBranch.Ref)
+// or commit (TargetRef empty). A ref's tip is re-checked immediately before
+// Git runs and a moved ref is refused (stale_target); Git is always given
+// TargetOid, never the name. Rebase also sends ExpectedReplayCount
+// (GitIntegratePreview.ReplayCount) and AcknowledgePublished when the
+// preview reported Published; merge sends neither.
+type GitIntegrate struct {
+	Source               string `json:"source"`
+	TargetRef            string `json:"target_ref,omitempty"`
+	TargetOid            string `json:"target_oid"`
+	ExpectedBranch       string `json:"expected_branch"`
+	ExpectedHead         string `json:"expected_head"`
+	ExpectedReplayCount  int    `json:"expected_replay_count,omitempty"`
+	AcknowledgePublished bool   `json:"acknowledge_published,omitempty"`
+}
+
+// GitOperationWrite is GitWrite.Operation for git.operation_abort,
+// git.operation_continue and git.operation_skip, pinning the
+// GitOperationState the user reviewed: Kind, ExpectedHead (HeadOid) and, for
+// continue and skip, ExpectedStep (Step). Continue also sends
+// UnmergedFingerprint (empty once every conflict is staged); skip sends
+// SkipOid (Current.Oid, the commit being dropped). OperationID, when set,
+// must be the recorded application operation. Confirmed is required for all
+// three.
+//
+// Additive (2026-09-25 review): WorktreeFingerprint (abort, skip) and
+// StagedFingerprint (continue) as the state showed them; AcknowledgeDiscard
+// (abort, skip) listing exactly the state's DiscardsOnAbort or
+// DiscardsOnSkip once the user accepted resetting them; AcknowledgeMarkers
+// (continue) listing exactly MarkerPaths.
+type GitOperationWrite struct {
+	OperationID         string   `json:"operation_id,omitempty"`
+	Kind                string   `json:"kind"`
+	ExpectedHead        string   `json:"expected_head"`
+	ExpectedStep        int      `json:"expected_step,omitempty"`
+	UnmergedFingerprint string   `json:"unmerged_fingerprint,omitempty"`
+	SkipOid             string   `json:"skip_oid,omitempty"`
+	Confirmed           bool     `json:"confirmed,omitempty"`
+	WorktreeFingerprint string   `json:"worktree_fingerprint,omitempty"`
+	StagedFingerprint   string   `json:"staged_fingerprint,omitempty"`
+	AcknowledgeDiscard  []string `json:"acknowledge_discard,omitempty"`
+	AcknowledgeMarkers  []string `json:"acknowledge_markers,omitempty"`
+	// Additive (second review): AcknowledgeMarkersIncomplete (continue)
+	// accepts that the marker scan did not cover every staged file;
+	// AcknowledgeBackupIncomplete (abort, skip) accepts running without a
+	// complete backup (GitOperationState.BackupIncomplete).
+	AcknowledgeMarkersIncomplete bool `json:"acknowledge_markers_incomplete,omitempty"`
+	AcknowledgeBackupIncomplete  bool `json:"acknowledge_backup_incomplete,omitempty"`
+	// Additive (third review): the fingerprint of the discard list (abort:
+	// DiscardsOnAbortFingerprint, skip: DiscardsOnSkipFingerprint) or of
+	// MarkerPaths (continue) the user accepted, as an alternative to listing
+	// the paths in AcknowledgeDiscard or AcknowledgeMarkers.
+	DiscardsFingerprint string `json:"discards_fingerprint,omitempty"`
+	MarkersFingerprint  string `json:"markers_fingerprint,omitempty"`
+	// AcknowledgeDropped (fourth review, abort of a cherry-pick or revert
+	// sequence): GitOperationState.AbortDropsFingerprint once the user
+	// accepted removing those commits.
+	AcknowledgeDropped string `json:"acknowledge_dropped,omitempty"`
+	// AcknowledgeBackupMissing (fifth review, abort and skip) is the
+	// fingerprint of the backup's missing files the user accepted
+	// (BackupMissingOnAbortFingerprint or BackupMissingOnSkipFingerprint);
+	// the files the backup actually could not copy must match it, or
+	// nothing runs (backup_incomplete). It supersedes
+	// AcknowledgeBackupIncomplete, which alone no longer suffices.
+	AcknowledgeBackupMissing string `json:"acknowledge_backup_missing,omitempty"`
+}
+
+// GitBackupEntry records one abort or skip backup in Snapshot.GitBackups
+// (at most 20 per repository toplevel, Checkout), so GET
+// /v1/git/operation/backup serves only recorded backups.
+//
+// CheckoutKey (fourth review) is the toplevel's bytes in standard base64,
+// which matches even when the path is not valid UTF-8 (JSON would replace
+// such bytes in Checkout).
+type GitBackupEntry struct {
+	Checkout    string `json:"checkout"`
+	CheckoutKey string `json:"checkout_key,omitempty"`
+	Oid         string `json:"oid"`
+	IndexOid    string `json:"index_oid"`
+	CommandID   string `json:"command_id"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// Operation outcomes (GitOperationResult.Outcome).
+const (
+	GitOutcomeCompleted        = "completed"
+	GitOutcomeStoppedConflicts = "stopped_conflicts"
+	GitOutcomeStopped          = "stopped"
+	GitOutcomeAborted          = "aborted"
+	GitOutcomeNotStarted       = "not_started"
+	GitOutcomeUnchanged        = "unchanged"
+	GitOutcomeUnknown          = "unknown"
+)
+
+// GitOperationResult is GitResult.Operation. Outcome: completed (the merge
+// commit or rebased branch exists and nothing is in progress),
+// stopped_conflicts or stopped (State is the operation now in progress),
+// aborted, not_started (a merge or rebase that Git refused before starting),
+// unchanged (an abort, continue or skip that did not change the operation)
+// or unknown. HeadBefore and HeadAfter are full hashes. Skipped is the
+// commit a skip dropped. RerereResolved lists paths Git's rerere rewrote
+// from a recorded resolution; they are still unmerged and must be reviewed.
+type GitOperationResult struct {
+	OperationID    string              `json:"operation_id,omitempty"`
+	Kind           string              `json:"kind"`
+	Outcome        string              `json:"outcome"`
+	HeadBefore     string              `json:"head_before,omitempty"`
+	HeadAfter      string              `json:"head_after,omitempty"`
+	State          *GitOperationState  `json:"state,omitempty"`
+	Skipped        *GitOperationCommit `json:"skipped,omitempty"`
+	RerereResolved []string            `json:"rerere_resolved,omitempty"`
+	// Backup (additive) is the copy made before an abort or skip.
+	Backup *GitOperationBackup `json:"backup,omitempty"`
+}
+
+// Git operation record states (GitOperationRecord.State).
+const (
+	// GitOperationRunning: a command of this operation is running.
+	GitOperationRunning = "running"
+	// GitOperationStoppedConflicts: stopped with unmerged paths.
+	GitOperationStoppedConflicts = "stopped_conflicts"
+	// GitOperationReady: stopped with no unmerged paths; Continue or Abort.
+	GitOperationReady = "ready"
+	// GitOperationCompleted, GitOperationAborted: ended by a command here.
+	GitOperationCompleted = "completed"
+	GitOperationAborted   = "aborted"
+	// GitOperationEndedExternal: the repository no longer has this
+	// operation in progress and no command here ended it (a terminal, or a
+	// server stop while Git ran).
+	GitOperationEndedExternal = "ended_external"
+	// GitOperationInterrupted: the server stopped while a command of this
+	// operation ran and the operation is still in progress; the next read
+	// reconciles it.
+	GitOperationInterrupted = "interrupted"
+
+	// Reserved for agent-assisted resolution (not produced yet).
+	GitOperationAgentRunning     = "agent_running"
+	GitOperationAgentReview      = "agent_review"
+	GitOperationAgentInterrupted = "agent_interrupted"
+)
+
+// GitOperationRecord is one application-started merge or rebase, in
+// Snapshot.GitOperations (the latest per repository toplevel, Checkout).
+// It pins what was started: Kind, Branch, OrigHead (HEAD before) and Target
+// (Oid, the name the user chose as Label, Subject). StartCommandID started
+// it and LastCommandID is the latest git.* command applied to it; ThreadID
+// or ProjectID is the start command's target. State is one of the
+// GitOperation* states; Code and Message repeat the latest result. The
+// server reconciles the record with the repository at startup and whenever
+// GET /v1/git/operation reads it: an operation no longer in progress, or a
+// different one, ends it as ended_external. JobThreadID is reserved for the
+// agent resolution job that may work on the operation (not used yet).
+// Times are RFC 3339.
+type GitOperationRecord struct {
+	OperationID    string             `json:"operation_id"`
+	Checkout       string             `json:"checkout"`
+	Kind           string             `json:"kind"`
+	State          string             `json:"state"`
+	Branch         string             `json:"branch,omitempty"`
+	OrigHead       string             `json:"orig_head,omitempty"`
+	Target         GitOperationCommit `json:"target"`
+	StartCommandID string             `json:"start_command_id"`
+	LastCommandID  string             `json:"last_command_id,omitempty"`
+	ThreadID       string             `json:"thread_id,omitempty"`
+	ProjectID      string             `json:"project_id,omitempty"`
+	JobThreadID    string             `json:"job_thread_id,omitempty"`
+	Code           string             `json:"code,omitempty"`
+	Message        string             `json:"message,omitempty"`
+	StartedAt      string             `json:"started_at"`
+	UpdatedAt      string             `json:"updated_at,omitempty"`
+	EndedAt        string             `json:"ended_at,omitempty"`
+	// Backup (additive) is the latest backup made for this operation.
+	Backup *GitOperationBackup `json:"backup,omitempty"`
 }

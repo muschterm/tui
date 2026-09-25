@@ -79,7 +79,14 @@ type gitWriteState struct {
 	unsaved map[string]gitUnsaved
 	// userCancels is git.cancel's handle on a journaled command (ADR 0021).
 	userCancels map[string]*gitCancelState
-	wg          sync.WaitGroup
+	// opDirs caches each checkout key's discovered Git directory and
+	// opPolling reports the waiter re-evaluation loop (git_operation.go).
+	opDirs    map[string]gitOpDir
+	opPolling bool
+	// opSeq counts journaled operation-record changes, so a read that
+	// observed the repository before one does not reconcile over it.
+	opSeq uint64
+	wg    sync.WaitGroup
 }
 
 // gitHold is a running Git write. Every hold occupies its repository's Git
@@ -109,6 +116,7 @@ func (e *engine) gitLocked() *gitWriteState {
 	if g.holders == nil {
 		g.holders, g.inflight, g.cancels, g.unsaved = map[string]gitHold{}, map[string]chan struct{}{}, map[string]context.CancelFunc{}, map[string]gitUnsaved{}
 		g.userCancels = map[string]*gitCancelState{}
+		g.opDirs = map[string]gitOpDir{}
 	}
 	return g
 }
@@ -171,6 +179,17 @@ func pruneGitOps(s *protocol.Snapshot) {
 	if len(s.GitOps) == 0 {
 		s.GitOps = nil
 	}
+	ops := s.GitOperations[:0]
+	for _, rec := range s.GitOperations {
+		if (rec.ThreadID == "" || threadByID(s, rec.ThreadID) != nil) && (rec.ProjectID == "" || projects[rec.ProjectID]) {
+			ops = append(ops, rec)
+		}
+	}
+	s.GitOperations = ops
+	if len(s.GitOperations) == 0 {
+		s.GitOperations = nil
+	}
+	pruneGitBackups(s)
 }
 
 func gitOpName(kind string) string { return strings.TrimPrefix(kind, "git.") }
@@ -183,6 +202,12 @@ func validateGitWrite(c protocol.Command) error {
 	}
 	if (c.ThreadID == "") == (c.ProjectID == "") {
 		return failure("invalid", "select exactly one project or thread")
+	}
+	if gitOperationKind(c.Kind) {
+		return validateGitOperationWrite(c.Kind, w)
+	}
+	if w.Integrate != nil || w.Operation != nil {
+		return failure("invalid", "integrate and operation payloads are not accepted for "+c.Kind)
 	}
 	if gitRefOrSyncKind(c.Kind) {
 		return validateGitRefSync(c.Kind, w)
@@ -356,11 +381,15 @@ func (e *engine) persistUnsavedGitLocked() {
 }
 
 // gitPlan is a revalidated write ready to run. runGitWrite sets rt before
-// run; a plan reads it through runtime().
+// run; a plan reads it through runtime(). journal, when set, updates the
+// snapshot being saved with each phase under the engine lock: with a nil
+// result in phase one (an error refuses the command, nothing recorded) and
+// with the final result in phase two (which it may annotate).
 type gitPlan struct {
-	paths []string
-	run   func(ctx context.Context) protocol.GitResult
-	rt    *gitRuntime
+	paths   []string
+	run     func(ctx context.Context) protocol.GitResult
+	rt      *gitRuntime
+	journal func(s *protocol.Snapshot, res *protocol.GitResult, now string) error
 }
 
 // gitRuntime connects a running plan to the engine (ADR 0021). cancelCtx is
@@ -405,7 +434,7 @@ func safeRun(ctx context.Context, plan *gitPlan) (r protocol.GitResult) {
 }
 
 func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string) (protocol.Receipt, error) {
-	kind := gitKindPolicy(c.Kind)
+	kind := operationKindPolicy(c.Kind, gitKindPolicy(c.Kind))
 	prepCtx, cancelPrep := context.WithTimeout(ctx, gitWriteBudget)
 	defer cancelPrep()
 	if !gitReadable(inspectWorkspace(prepCtx, dir)) {
@@ -439,7 +468,7 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	// One Git write per worktree; ref and remote actions also serialize
 	// with every write in the repository's other linked worktrees, since
 	// they share refs.
-	refOp := gitRefOrSyncKind(c.Kind)
+	refOp := gitRefOrSyncKind(c.Kind) || gitOperationKind(c.Kind)
 	for id, h := range gs.holders {
 		if h.top == w.top || (h.common == w.commonDir && (refOp || h.refOp)) {
 			e.mu.Unlock()
@@ -484,6 +513,14 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 		ThreadID: c.ThreadID, ProjectID: c.ProjectID, StartedAt: time.Now().UTC().Format(time.RFC3339), Cancellable: kind.cancellable}
 	next := clone(e.snap)
 	putGitOp(&next, op)
+	if plan.journal != nil {
+		gs.opSeq++
+		if err := plan.journal(&next, nil, op.StartedAt); err != nil {
+			e.mu.Unlock()
+			release()
+			return protocol.Receipt{}, err
+		}
+	}
 	next.Revision++
 	r := protocol.Receipt{ID: c.ID, State: protocol.GitStateRunning, Revision: next.Revision, TargetID: w.top, Git: &protocol.GitResult{Op: op.Op, State: protocol.GitStateRunning}}
 	if err := e.store.Save(next, &c, &r); err != nil {
@@ -510,13 +547,24 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 
 	result := safeRun(opCtx, plan)
 	result.Op = op.Op
-	if opCtx.Err() != nil && result.State != protocol.GitStateSucceeded {
+	// An operation command stopped by its budget is outcome_unknown whatever
+	// Git had done: its hooks and follow-up steps were cut short.
+	if opCtx.Err() != nil && (result.State != protocol.GitStateSucceeded || gitOperationKind(c.Kind)) {
 		code := "cancelled"
-		if kind.network && errors.Is(opCtx.Err(), context.DeadlineExceeded) {
+		if (kind.network || gitOperationKind(c.Kind)) && errors.Is(opCtx.Err(), context.DeadlineExceeded) {
 			code = "timeout"
 		}
 		result.State, result.Code = protocol.GitStateOutcomeUnknown, code
+		if result.Operation != nil {
+			result.Operation.Outcome = protocol.GitOutcomeUnknown
+		}
 		result.Message = "Git was stopped before it finished; refresh status to see what changed"
+		if code == "timeout" && gitOperationKind(c.Kind) {
+			result.Message = fmt.Sprintf("Git did not finish within its %s budget and was stopped; ", kind.budget) + describeOperationAfter(result.Operation)
+			if _, err := os.Lstat(filepath.Join(w.gitDir, "index.lock")); err == nil {
+				result.Message += "; Git left index.lock behind: check that no Git process is running, then remove it"
+			}
+		}
 	}
 	userCancel()
 	cancel()
@@ -536,6 +584,10 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	op.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	next = clone(e.snap)
 	putGitOp(&next, op)
+	if plan.journal != nil {
+		gs.opSeq++
+		_ = plan.journal(&next, &result, op.FinishedAt)
+	}
 	next.Revision++
 	r = protocol.Receipt{ID: c.ID, State: result.State, Revision: next.Revision, TargetID: w.top, Git: &result}
 	// Memory holds the outcome whatever storage does: retries are answered
@@ -605,8 +657,10 @@ func putGitOp(s *protocol.Snapshot, op protocol.GitOp) {
 	}
 }
 
-// recoverGitOps marks Git writes that were running when the server stopped.
+// recoverGitOps marks Git writes that were running when the server stopped
+// and reconciles recorded merge and rebase operations (git_operation.go).
 func recoverGitOps(s *protocol.Snapshot) {
+	recoverGitOperations(s)
 	for i := range s.GitOps {
 		// Progress is never journaled deliberately, but a snapshot saved for
 		// another reason can carry it.
@@ -654,6 +708,11 @@ func (e *engine) stopGitWrites() {
 			e.snap.GitOps[i].State, e.snap.GitOps[i].Code = protocol.GitStateOutcomeUnknown, "interrupted"
 			e.snap.GitOps[i].Message = gitInterruptedMessage
 			e.snap.GitOps[i].Progress, e.snap.GitOps[i].Cancellable = nil, false
+		}
+	}
+	for i := range e.snap.GitOperations {
+		if rec := &e.snap.GitOperations[i]; rec.State == protocol.GitOperationRunning {
+			rec.State, rec.Code, rec.Message = protocol.GitOperationInterrupted, "interrupted", gitInterruptedMessage
 		}
 	}
 	e.mu.Unlock()
@@ -767,6 +826,9 @@ type gitRunOpts struct {
 	// trace2 is a file that receives Git's trace2 events (push uses it to
 	// learn whether the pre-push hook refused).
 	trace2 string
+	// env is added after the policy environment (git_operation.go uses it
+	// for a private GIT_INDEX_FILE when writing a backup).
+	env []string
 }
 
 type gitRunResult struct {
@@ -863,6 +925,7 @@ func (w *gitWriter) runWith(ctx context.Context, o gitRunOpts, args ...string) g
 	if o.trace2 != "" {
 		cmd.Env = append(cmd.Env, "GIT_TRACE2_EVENT="+o.trace2)
 	}
+	cmd.Env = append(cmd.Env, o.env...)
 	output := &cappedOutput{limit: gitWriteOutputMax, drain: true}
 	tail := &gitTail{}
 	out := &cappedOutput{limit: gitStatusMaxBytes, drain: true}
@@ -1146,6 +1209,10 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return preparePull(ctx, g, w, *c.Git.Sync)
 	case protocol.GitKindPush:
 		return preparePush(ctx, g, w, *c.Git.Sync)
+	case protocol.GitKindMerge, protocol.GitKindRebase:
+		return prepareIntegrate(ctx, g, w, c)
+	case protocol.GitKindOperationAbort, protocol.GitKindOperationContinue, protocol.GitKindOperationSkip:
+		return prepareOperationCommand(ctx, g, w, c)
 	}
 	return nil, failure("unsupported_command", fmt.Sprintf("unsupported command %q", c.Kind))
 }
@@ -1341,7 +1408,7 @@ func prepareCommit(ctx context.Context, g *gitReader, w *gitWriter, req protocol
 		return nil, err
 	}
 	switch op := g.operation(ctx); op {
-	case "merge", "rebase", "cherry-pick", "revert":
+	case "merge", "rebase", "cherry-pick", "revert", protocol.GitOperationAm:
 		return nil, failure("operation_in_progress", "a "+op+" is in progress; finish or abort it before committing")
 	}
 	head := st.HeadOid

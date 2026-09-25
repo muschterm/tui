@@ -582,7 +582,7 @@ func Serve(ctx context.Context, home string) error {
 	if docsSupported && !slices.Contains(snap.Capabilities, "shared-documents") {
 		snap.Capabilities = append(snap.Capabilities, "shared-documents")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs"} {
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs", "git-operations"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
@@ -642,6 +642,9 @@ func Serve(ctx context.Context, home string) error {
 	mux.HandleFunc("GET /v1/git/show", e.gitShow)
 	mux.HandleFunc("GET /v1/git/branches", e.gitBranches)
 	mux.HandleFunc("GET /v1/git/compare", e.gitCompare)
+	mux.HandleFunc("GET /v1/git/operation", e.gitOperation)
+	mux.HandleFunc("GET /v1/git/operation/backup", e.gitOperationBackup)
+	mux.HandleFunc("GET /v1/git/integrate/preview", e.gitIntegratePreview)
 	mux.HandleFunc("GET /v1/terminals/{id}/stream", e.terminalStream)
 	mux.HandleFunc("GET /v1/documents/{id}/stream", e.documentStream)
 	mux.HandleFunc("GET /v1/documents/{id}/versions", e.documentVersionsHandler)
