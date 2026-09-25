@@ -47,9 +47,13 @@ type gitConflictViewer struct {
 	target   client.GitTarget
 	conflict protocol.GitConflict // the row as shown
 	tab      string
-	files    map[string]*protocol.GitConflictFile
-	errs     map[string]string
-	loading  map[string]bool
+	// item is the reviewed job item when opened from review mode; it adds
+	// the Agent diff and Staged diff tabs.
+	item    *protocol.GitResolveItem
+	itemGen string
+	files   map[string]*protocol.GitConflictFile
+	errs    map[string]string
+	loading map[string]bool
 	// reqs is each version's latest read; older replies are dropped.
 	reqs map[string]uint64
 	// lines are each version's display lines, built once per read.
@@ -119,11 +123,26 @@ func gitConflictKind(kind string) bool {
 	return kind == protocol.GitKindConflictChoose || kind == protocol.GitKindConflictResolve || kind == protocol.GitKindConflictRestore
 }
 
-// gitConflictAgentItems is the S4 hook for "Resolve with agent…".
-func (m *Model) gitConflictAgentItems(protocol.GitConflict) []menuItem { return nil }
+// gitConflictAgentItems offers "Resolve with agent…" for one path while no
+// job is attached.
+func (m *Model) gitConflictAgentItems(c protocol.GitConflict) []menuItem {
+	g := m.currentGitView()
+	if !m.gitJobsEnabled() || g == nil || g.oper == nil || g.oper.Review != nil {
+		return nil
+	}
+	return []menuItem{{Label: "Resolve with agent…", Action: action{Kind: "git-job-open", ID: c.Path}}}
+}
 
-// gitConflictReviewMode is the S4 hook for a row under agent review.
-func (m *Model) gitConflictReviewMode(protocol.GitConflict) bool { return false }
+// gitConflictReviewMode reports a row that an attached job covers: its
+// row controls then leave only the menu.
+func (m *Model) gitConflictReviewMode(c protocol.GitConflict) bool {
+	g := m.currentGitView()
+	if g == nil || g.oper == nil || g.oper.Review == nil {
+		return false
+	}
+	_, ok := gitReviewItem(g.oper, c.Path)
+	return ok
+}
 
 // gitRowConflict finds a displayed conflict row by path.
 func (m *Model) gitRowConflict(path string) (protocol.GitConflict, bool) {
@@ -172,8 +191,20 @@ func (m *Model) gitConflictAction(a action) (tea.Cmd, bool) {
 			return nil, true
 		}
 		v.tab, v.scroll = a.Value, 0
+		m.markGitReviewViewed(v)
 		m.markDirty()
 		return m.loadViewerTab(v), true
+	case "git-conflict-tabs":
+		v := m.gitCF.viewer
+		if v == nil {
+			return nil, true
+		}
+		var items []menuItem
+		for _, t := range v.tabs() {
+			items = append(items, menuItem{Label: title(t), Action: action{Kind: "git-conflict-tab", Value: t}})
+		}
+		m.showMenu("Versions", items)
+		return nil, true
 	case "git-conflict-confirm":
 		d := m.gitCF.dialog
 		m.gitCF.dialog = nil
@@ -233,7 +264,7 @@ func (m *Model) gitConflictAction(a action) (tea.Cmd, bool) {
 
 // loadViewerTab reads the viewer's tab when not loaded.
 func (m *Model) loadViewerTab(v *gitConflictViewer) tea.Cmd {
-	if v.files[v.tab] != nil || v.loading[v.tab] {
+	if v.tab == gitViewerAgentDiff || v.tab == gitViewerStagedDiff || v.files[v.tab] != nil || v.loading[v.tab] {
 		return nil
 	}
 	v.loading[v.tab] = true
@@ -252,6 +283,22 @@ func newGitConflictViewer(key string, target client.GitTarget, c protocol.GitCon
 func (v *gitConflictViewer) reset() {
 	v.files, v.errs, v.loading = map[string]*protocol.GitConflictFile{}, map[string]string{}, map[string]bool{}
 	v.reqs, v.lines = map[string]uint64{}, map[string][]gitViewerLine{}
+	if v.item != nil {
+		v.lines[gitViewerAgentDiff] = gitDiffLines(v.item.Diff)
+		v.lines[gitViewerStagedDiff] = gitDiffLines(v.item.IndexDiff)
+	}
+}
+
+// tabs are the viewer's versions: the review diffs first when present.
+func (v *gitConflictViewer) tabs() []string {
+	var out []string
+	if v.item != nil && v.item.Diff != "" {
+		out = append(out, gitViewerAgentDiff)
+	}
+	if v.item != nil && v.item.IndexDiff != "" {
+		out = append(out, gitViewerStagedDiff)
+	}
+	return append(out, gitConflictTabs...)
 }
 
 // gitViewerLines splits a text version into capped display lines.
@@ -663,7 +710,12 @@ func gitCopyTime(f *protocol.GitConflictFile, copyID string) string {
 // gitOperationToplevel is the repository toplevel of the operation, when
 // the server reports it (GitOperationState.Toplevel, S4 server); until then
 // it is empty and Edit is unavailable.
-func gitOperationToplevel(*protocol.GitOperationState) string { return "" }
+func gitOperationToplevel(o *protocol.GitOperationState) string {
+	if o == nil {
+		return ""
+	}
+	return o.Toplevel
+}
 
 // gitConflictEditPath maps a toplevel-relative conflict path to the Files
 // surface's checkout-relative path; reason explains when it cannot.
@@ -690,4 +742,50 @@ func (m *Model) closeGitConflictViewer() tea.Cmd {
 		return m.setFocus("git:conflict:" + v.conflict.Path)
 	}
 	return m.setFocus("git-refresh")
+}
+
+// gitViewerTabKey cycles the viewer's tabs with [ and ].
+func (m *Model) gitViewerTabKey(s string) (tea.Cmd, bool) {
+	v := m.gitCF.viewer
+	if v == nil || s != "[" && s != "]" || !(gitFocusKey(m.focus) || m.focus == "right-body") {
+		return nil, false
+	}
+	tabs := v.tabs()
+	i := slices.Index(tabs, v.tab)
+	if s == "]" {
+		i = (i + 1) % len(tabs)
+	} else {
+		i = (i - 1 + len(tabs)) % len(tabs)
+	}
+	return m.activate(action{Kind: "git-conflict-tab", Value: tabs[i]}), true
+}
+
+// gitNoDiffReason explains a review item without a diff.
+func gitNoDiffReason(it *protocol.GitResolveItem) string {
+	switch {
+	case it == nil:
+		return "No diff"
+	case it.Unknown:
+		return "No diff · the item could not be compared (error or time budget)"
+	case it.Binary:
+		return "No diff · binary content"
+	case it.Deleted:
+		return "No diff · the agent deleted the file"
+	case !it.Changed && !it.Staged:
+		return "No diff · unchanged since before the agent ran"
+	}
+	return "No diff was supplied"
+}
+
+// gitLinesCapped reports display lines cut by the viewer's caps.
+func gitLinesCapped(lines []gitViewerLine) bool {
+	if len(lines) >= gitConflictViewerLines {
+		return true
+	}
+	for _, l := range lines {
+		if strings.HasSuffix(l.text, "…") && ansi.StringWidth(l.text) >= gitViewerLineCells {
+			return true
+		}
+	}
+	return false
 }

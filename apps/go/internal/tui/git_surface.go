@@ -141,6 +141,7 @@ func (m *Model) nextGitRefresh() tea.Cmd {
 	}
 	m.gitDialogsSettle(key)
 	m.gitOperationSettle(key)
+	m.gitJobSettle(key)
 	opsDone := m.gitOpsChanged(key)
 	active := activeTurn(m.thread()) && !m.creatingThread()
 	ended := m.gitTurnKey == key && m.gitTurnActive && !active
@@ -277,6 +278,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 		return cmd
 	}
 	if cmd, ok := m.gitConflictAction(a); ok {
+		return cmd
+	}
+	if cmd, ok := m.gitJobAction(a); ok {
 		return cmd
 	}
 	return m.gitWriteAction(a)
@@ -430,6 +434,9 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 		action: action{Kind: "git-refresh"}, key: "git-refresh"}, gap}
 	if m.gitRefsEnabled() {
 		b[0] = m.gitHeadingBlock(key, g)
+	}
+	if s := m.gitJ.start; s != nil && s.key == key {
+		return append(b, m.gitJobStartBlocks(s)...)
 	}
 	if v := m.gitCF.viewer; v != nil && v.key == key {
 		return append(b, m.gitConflictViewerBlocks(v)...)

@@ -103,6 +103,7 @@ func (m *Model) gitOperationBlocks(g *gitView) []surfaceBlock {
 			}
 		}
 	}
+	b = append(b, m.gitJobBlocks(o)...)
 	b = append(b, gap)
 	type act struct {
 		kind, label, glyph string

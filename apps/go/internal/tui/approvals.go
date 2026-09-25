@@ -23,20 +23,20 @@ func (m *Model) submitApproval(a action) tea.Cmd {
 	}
 	reject := func(message string) tea.Cmd {
 		m.status = message
-		m.setRequestFeedback(m.state.Active, r.ID, r.Revision, message, false)
+		m.setRequestFeedback(m.requestThreadID(), r.ID, r.Revision, message, false)
 		m.configureInputs()
 		return m.showNoticeAs(noticeUnavailable, message)
 	}
-	if m.thread().NeedsResume {
+	if m.requestThread().NeedsResume {
 		return reject("Resume this thread first (F4 → Resume).")
 	}
 	if !m.connected {
 		return reject("Disconnected · wait for the server to reconnect.")
 	}
-	c := protocol.Command{Kind: "request.answer", TargetID: r.ID, Revision: r.Revision}
+	c := protocol.Command{Kind: "request.answer", ThreadID: m.requestThreadID(), TargetID: r.ID, Revision: r.Revision}
 	matches := 0
 	origin, _ := m.agentByID(r.Origin)
-	requiresIDs := len(r.ChoiceIDs) > 0 || r.DeliveryRoute == "native-response" || strings.HasPrefix(r.Delivery, "acp-") || origin.Kind == "acp" || agentoptions.IsACP(m.thread().AgentID)
+	requiresIDs := len(r.ChoiceIDs) > 0 || r.DeliveryRoute == "native-response" || strings.HasPrefix(r.Delivery, "acp-") || origin.Kind == "acp" || agentoptions.IsACP(m.requestThread().AgentID)
 	if m.hasCapability("approval-choice-ids") && requiresIDs {
 		labelMatches := false
 		for i, id := range r.ChoiceIDs {

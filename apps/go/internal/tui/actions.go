@@ -489,8 +489,13 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 	case "attention-item":
 		if t, ok := m.threadByID(a.ID); ok && jobThread(t) {
-			// A job thread's items belong to the Git operation panel.
-			return m.openJobGitPanel(t)
+			// A job thread's items belong to the Git operation panel; its
+			// pending request opens in the request card.
+			cmd := m.openJobGitPanel(t)
+			if a.Value != "" {
+				return tea.Batch(cmd, m.answerJobRequest(t.ID, a.Value))
+			}
+			return cmd
 		}
 		cmd = m.activate(action{Kind: "thread", ID: a.ID})
 		if m.state.Active == a.ID {

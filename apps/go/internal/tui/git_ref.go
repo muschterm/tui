@@ -116,7 +116,7 @@ func (m *Model) gitBranchInput() *textarea.Model {
 
 // gitRefKind reports the ADR 0021 command kinds.
 func gitRefKind(kind string) bool {
-	if gitOperationKind(kind) || gitConflictKind(kind) {
+	if gitOperationKind(kind) || gitConflictKind(kind) || gitJobKind(kind) {
 		return true
 	}
 	switch kind {
@@ -715,6 +715,10 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 			}
 		}
 		notice := m.showNoticeAs(noticeUnavailable, copyText)
+		if pe.Code == "review_pending" {
+			// Refresh and show the review the gate asks for.
+			return tea.Batch(notice, refresh(), m.refreshGitReview(msg.key, client.GitTarget{ThreadID: msg.cmd.ThreadID, ProjectID: msg.cmd.ProjectID}))
+		}
 		if gitStaleCode(pe.Code) || strings.HasPrefix(pe.Code, "stale_") || pe.Code == "carry_unacknowledged" || pe.Code == "behind_upstream" {
 			return tea.Batch(notice, refresh())
 		}
@@ -793,6 +797,16 @@ func (m *Model) gitRefDoneCopy(st *gitWriteState, r *protocol.GitResult) string 
 	}
 	if gitConflictKind(st.cmd.Kind) {
 		return gitConflictDone(st)
+	}
+	switch st.cmd.Kind {
+	case protocol.GitKindResolveJobStart:
+		return "Resolution job started"
+	case protocol.GitKindResolveJobFollowup:
+		return "Follow-up sent to the agent"
+	case protocol.GitKindResolveJobCancel:
+		return "Stop requested"
+	case protocol.GitKindResolveJobEnd:
+		return "Resolution job ended"
 	}
 	return m.gitSyncSummary(st, r)
 }
@@ -929,6 +943,16 @@ func gitRefCopy(kind, code string) string {
 		}
 	case "operation_in_progress":
 		return "Finish or abort the merge, rebase, cherry-pick, revert or bisect first"
+	case "job_running":
+		return "The agent is working · stop it first"
+	case "job_exists":
+		return "A resolution job is already attached · end it first"
+	case "no_job":
+		return "No resolution job is attached · refreshed"
+	case "job_thread":
+		return "The job thread takes no ordinary commands"
+	case "review_pending":
+		return "The agent's staged changes need review · review them and try again"
 	case "binary_unacknowledged":
 		return "The file is binary · review it and confirm staging it as it is"
 	case "unsaved_unacknowledged":
@@ -993,6 +1017,12 @@ const gitCredentialAdvice = "Run `git fetch` once in a terminal to trust the hos
 // branch, r soft reset, y copy hash.
 func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
 	if cmd, ok := m.gitConflictKey(s); ok {
+		return cmd, true
+	}
+	if cmd, ok := m.gitJobKey(s); ok {
+		return cmd, true
+	}
+	if cmd, ok := m.gitViewerTabKey(s); ok {
 		return cmd, true
 	}
 	if m.gitO.review != nil && strings.HasPrefix(m.focus, "git:review") {

@@ -275,6 +275,10 @@ type Model struct {
 	gitR          gitRefUI
 	gitO          gitOpUI
 	gitCF         gitConflictUI
+	gitJ          gitJobUI
+	// jobReq is a resolution job thread whose pending requests the request
+	// cards show (git_job.go); the active thread is unchanged.
+	jobReq string
 	// Read-only Files surface (files_surface.go): per-target views, the read
 	// generation, the target last shown and whether the disk poll is ticking.
 	filesReads   filesAPI
@@ -425,7 +429,7 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) requests() []protocol.Request {
 	var r []protocol.Request
-	for _, q := range m.thread().Requests {
+	for _, q := range m.requestThread().Requests {
 		if q.State == "pending" {
 			r = append(r, q)
 		}
@@ -617,8 +621,14 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	if m.gitR.ready {
 		m.gitR.name.Blur()
 	}
+	if m.gitJ.ready {
+		m.gitJ.input.Blur()
+	}
 	if key == gitBranchNameKey {
 		return m.gitBranchInput().Focus()
+	}
+	if key == gitJobInputKey {
+		return m.gitJobInput().Focus()
 	}
 	if key == gitMessageKey {
 		return m.gitMsg().Focus()
@@ -828,6 +838,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptGitOperation(msg)
 	case gitConflictFileMsg:
 		cmd = m.acceptConflictFile(msg)
+	case gitReviewMsg:
+		cmd = m.acceptGitReview(msg)
 	case gitPreviewMsg:
 		cmd = m.acceptGitPreview(msg)
 	case viewerImageMsg:
@@ -1134,6 +1146,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.gitMessagePaste(msg.Content)
 		} else if m.focus == gitBranchNameKey {
 			cmd = m.gitBranchNamePaste(msg.Content)
+		} else if m.focus == gitJobInputKey {
+			cmd = m.gitJobInputPaste(msg.Content)
 		} else if m.focus == "prompt" {
 			m.promptView.Reset()
 			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(msg.Content)})
@@ -1184,6 +1198,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if cmd, handled := m.viewerKey(k); handled {
 			return cmd
 		}
+	}
+	if s == "esc" && m.focus == gitJobInputKey && len(m.menu) == 0 {
+		return m.gitJobInputKeyPress(k)
 	}
 	if s == "esc" && m.focus == gitBranchNameKey && len(m.menu) == 0 {
 		return m.closeGitCreate()
@@ -1434,6 +1451,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	}
 	if m.focus == gitBranchNameKey {
 		return m.gitBranchNameKeyPress(k)
+	}
+	if m.focus == gitJobInputKey {
+		return m.gitJobInputKeyPress(k)
 	}
 	if cmd, handled := m.gitRowKey(s); handled {
 		return cmd

@@ -154,7 +154,23 @@ func gitSameStop(a, b protocol.GitOperationState) bool {
 		a.UnmergedFingerprint == b.UnmergedFingerprint &&
 		a.DiscardsOnAbortFingerprint == b.DiscardsOnAbortFingerprint && a.DiscardsOnSkipFingerprint == b.DiscardsOnSkipFingerprint &&
 		a.BackupMissingOnAbortFingerprint == b.BackupMissingOnAbortFingerprint && a.BackupMissingOnSkipFingerprint == b.BackupMissingOnSkipFingerprint &&
-		a.AbortDropsFingerprint == b.AbortDropsFingerprint && a.MarkersFingerprint == b.MarkersFingerprint && a.MarkersIncomplete == b.MarkersIncomplete
+		a.AbortDropsFingerprint == b.AbortDropsFingerprint && a.MarkersFingerprint == b.MarkersFingerprint && a.MarkersIncomplete == b.MarkersIncomplete &&
+		gitAgentChangesFingerprint(a) == gitAgentChangesFingerprint(b)
+}
+
+// gitAgentChangesFingerprint is the content gate's fingerprint ("" when
+// there is nothing to acknowledge).
+func gitAgentChangesFingerprint(s protocol.GitOperationState) string {
+	if !gitAgentChangesPending(s) {
+		return ""
+	}
+	return s.AgentChanges.Fingerprint + "/" + strconv.FormatBool(s.AgentChanges.Incomplete)
+}
+
+// gitAgentChangesPending reports index changes no decision explains, which
+// Continue and Skip must show and acknowledge.
+func gitAgentChangesPending(s protocol.GitOperationState) bool {
+	return s.AgentChanges != nil && (len(s.AgentChanges.Items) > 0 || s.AgentChanges.Incomplete)
 }
 
 // gitLongWrite sends a merge, rebase, continue or skip with a client
@@ -270,6 +286,9 @@ func (m *Model) gitOperationAction(a action) (tea.Cmd, bool) {
 			cmd := client.GitOperationContinueCommand(identity(), dlg.target, st, len(st.MarkerPaths) > 0)
 			if st.MarkersIncomplete {
 				cmd.Git.Operation.AcknowledgeMarkersIncomplete = true
+			}
+			if gitAgentChangesPending(st) {
+				client.AcknowledgeAgentChanges(&cmd, st.AgentChanges)
 			}
 			return m.sendGitWrite(key, cmd, st.Kind), true
 		case protocol.GitKindOperationSkip:
@@ -443,6 +462,8 @@ func (m *Model) showGitIntegrateDialog(dlg *gitIntegrateDialog) {
 type gitReviewSection struct {
 	heading string
 	items   []string
+	// path counts the section as one reviewed path (the gate's diffs).
+	path bool
 }
 
 // gitReviewPanel is the scrollable review that replaces a confirmation
@@ -491,7 +512,54 @@ func gitOpReviewSections(kind string, st protocol.GitOperationState) []gitReview
 	case protocol.GitKindOperationContinue:
 		add("Staged files still contain conflict markers:", st.MarkerPaths)
 	}
+	if kind == protocol.GitKindOperationContinue && gitAgentChangesPending(st) {
+		ac := st.AgentChanges
+		if ac.Incomplete {
+			reason := "Continuing commits whatever the index holds now"
+			if r := safe(singleLine(ac.Reason)); r != "" {
+				reason = r + " · " + reason
+			}
+			out = append(out, gitReviewSection{heading: "Changes could not all be compared:", items: []string{reason}, path: true})
+		}
+		for _, it := range ac.Items {
+			out = append(out, gitAgentChangeSection(it))
+		}
+	}
 	return out
+}
+
+// gitAgentChangeSection is one gate item: its staged diff, and why it is
+// not fully shown when it is not.
+func gitAgentChangeSection(it protocol.GitResolveItem) gitReviewSection {
+	heading := "Changed in the index since the agent started (not by your decisions): " + safe(singleLine(it.Path))
+	diff := it.IndexDiff
+	if diff == "" {
+		diff = it.Diff
+	}
+	var lines []string
+	shown := gitDiffLines(diff)
+	for _, l := range shown {
+		lines = append(lines, l.text)
+	}
+	if len(lines) == 0 {
+		lines = []string{"(" + gitNoDiffReason(&it) + ")"}
+	}
+	if it.DiffTruncated {
+		lines = append(lines, "(diff truncated by the server · not all of it is shown)")
+	}
+	if gitLinesCapped(shown) {
+		lines = append(lines, "(display capped at 2000 lines, 4096 cells per line)")
+	}
+	return gitReviewSection{heading: heading, items: lines, path: true}
+}
+
+// gitAgentChangeHidden reports a gate item whose content is not fully shown.
+func gitAgentChangeHidden(it protocol.GitResolveItem) bool {
+	diff := it.IndexDiff
+	if diff == "" {
+		diff = it.Diff
+	}
+	return diff == "" || it.DiffTruncated || it.Unknown || it.Binary || gitLinesCapped(gitDiffLines(diff))
 }
 
 // gitReviewFits reports lists short enough for the menu dialog: few items,
@@ -541,6 +609,9 @@ func (m *Model) openGitOpDialog(dlg *gitOpDialog) {
 		}
 		title, verb = "Skip commit · ", "Skip "+short
 		question = append(question, truncateCells("Skip "+short+" "+subject, 60)+"?", "Drops this commit from the rebased "+branch+" and continues")
+		if gitAgentChangesPending(st) {
+			question = append(question, "Skip discards the changes staged for this commit, including the agent's")
+		}
 	case protocol.GitKindOperationContinue:
 		title, verb = "Continue "+kind+" · ", "Continue the "+kind
 		question = append(question, "Continue the "+kind+" on "+branch+"?", "Commits what is staged now, with the "+kind+"'s own message")
@@ -550,12 +621,31 @@ func (m *Model) openGitOpDialog(dlg *gitOpDialog) {
 		if st.MarkersIncomplete {
 			question = append(question, "Not every staged file could be checked for markers")
 		}
+		if gitAgentChangesPending(st) {
+			var hidden []string
+			for _, it := range st.AgentChanges.Items {
+				if gitAgentChangeHidden(it) {
+					hidden = append(hidden, safe(singleLine(it.Path)))
+				}
+			}
+			if st.AgentChanges.Incomplete {
+				hidden = append(hidden, "changes that could not be compared")
+			}
+			if len(hidden) > 0 {
+				verb = "Acknowledge, including content not shown"
+				question = append(question, "Not fully shown: "+strings.Join(hidden, ", "))
+			}
+		}
 	}
 	sections := gitOpReviewSections(dlg.kind, st)
-	if !gitReviewFits(sections) {
+	if !gitReviewFits(sections) || (dlg.kind == protocol.GitKindOperationContinue && gitAgentChangesPending(st)) {
 		total := 0
 		for _, sec := range sections {
-			total += len(sec.items)
+			if sec.path {
+				total++
+			} else {
+				total += len(sec.items)
+			}
 		}
 		m.gitO.review = &gitReviewPanel{key: dlg.key, title: strings.TrimSuffix(title, " · "), question: question, sections: sections,
 			verb: verb, confirm: confirm, total: total}

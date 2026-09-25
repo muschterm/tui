@@ -1758,6 +1758,58 @@ viewer, the choose confirmation and the restore menu (dark and light). The
 client cannot yet read a specific copy's content (`copy_id`), so copies are
 listed and restorable but not viewable individually.
 
+### Agent conflict resolution (TUI) — 2026-09-25
+
+`internal/tui/git_job.go` and `git_job_view.go` add ADR 0023 S4 to the
+operation panel (offered with the server's `git-jobs` capability). Edit now maps paths through `GitOperationState.Toplevel`.
+
+- **Start**: "Resolve with agent…" on the panel (all paths) or a conflict
+  row's menu (that path) opens a form in the Git surface body, Cancel
+  focused: the agent (radio rows), the settings it will use (the saved
+  new-thread defaults when they are for that agent, shown read-only, else
+  the agent's own defaults; changing them stays in Settings › Agents), a
+  paths checklist and optional instructions (Enter starts, Esc cancels).
+- **Job section**: status ("<agent> working · thinking/waiting",
+  interrupted, finished), one **Answer · …** / **Approve or deny · …** entry
+  per pending request of the job thread, which shows that request in the
+  ordinary question or approval card (the same components and commands,
+  targeting the job thread and request revision; the active thread does not
+  change; the attention bell's job items do the same), **Open agent
+  transcript** (the job thread's activity in the read-only viewer, refreshed
+  live; the thread never joins navigation), Stop agent while running, Follow up… (inline input) and End
+  job… (confirmation).
+- **Review mode** (after the turn): Stale banner, Refresh review
+  (`?review=refresh`, `client.GitOperationRefreshReview`), violations in
+  red, an incomplete note, and one row per path with changed / staged /
+  deleted / markers / binary / unknown badges or its decision. Enter opens
+  the conflict viewer with Agent diff and Staged diff tabs (`[` / `]`
+  cycle, ⋯ lists tabs that do not fit), which follows the latest review of
+  the path and states server truncation, display caps and why an item has
+  no diff. Accept (`a` / ✓) is offered only after the item's diffs (Agent,
+  and Staged for staged items) were viewed in the current review generation,
+  otherwise it opens the viewer first; it pins the reviewed tokens
+  (keep_staged for staged items; markers or binary confirm "as it is").
+  Reject (`x` / ↺) names what it replaces and restores the pre-job copy.
+  Keys and slots refuse decided, stale, unknown or running items alike.
+  The start form sends explicit paths when conflicts are truncated (saying
+  so), leaves submodule conflicts out and refuses a changed stop
+  (unmerged fingerprint included); review refresh replies apply in order.
+- **Content gate**: Continue with `AgentChanges` opens the scrollable review
+  listing every path "Changed in the index since the agent started (not by
+  your decisions)" with its staged diff, truncation and no-diff reasons and
+  `Reason` (the count is of paths; confirm only after scrolling to the end),
+  and sends `AcknowledgeAgentChanges` with the shown fingerprint; when
+  anything was not fully shown the confirm reads "Acknowledge, including
+  content not shown" and the question lists those items. Skip needs no
+  acknowledgement and notes that it discards the staged changes.
+  `review_pending` refreshes the review.
+
+Tests: `internal/tui/git_job_test.go` (Toplevel mapping, start form with row
+subset, running section and transcript, accept/reject/stale/refresh,
+follow-up and end, viewer diff tabs, content-gate acknowledgement and
+review_pending). `TestGitJobCaptures` renders start, running, review and
+the continue review (dark and light).
+
 ### Embedded terminals — 2026-09-24
 
 Phase 3 of [ADR 0019](../adr/0019-embedded-terminal-sessions.md): right-host

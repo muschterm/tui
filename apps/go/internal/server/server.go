@@ -589,7 +589,7 @@ func Serve(ctx context.Context, home string) error {
 	if docsSupported && !slices.Contains(snap.Capabilities, "shared-documents") {
 		snap.Capabilities = append(snap.Capabilities, "shared-documents")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs", "git-operations", "git-conflicts"} {
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs", "git-operations", "git-conflicts", "git-jobs"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}

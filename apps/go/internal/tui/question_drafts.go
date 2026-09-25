@@ -76,7 +76,7 @@ func (m *Model) questionDraft(r protocol.Request, i int) answerDraft {
 }
 
 func (m *Model) saveQuestionDraft(r protocol.Request, i int, draft answerDraft) {
-	m.clearRequestFeedback(m.state.Active, r.ID, r.Revision, true)
+	m.clearRequestFeedback(m.requestThreadID(), r.ID, r.Revision, true)
 	v := m.viewState()
 	if v.QuestionDrafts == nil {
 		v.QuestionDrafts = map[string][]answerDraft{}
@@ -299,25 +299,25 @@ func (m *Model) submitRequestAction(a action) tea.Cmd {
 	}
 	reject := func(message string) tea.Cmd {
 		m.status = message
-		m.setRequestFeedback(m.state.Active, r.ID, r.Revision, message, false)
+		m.setRequestFeedback(m.requestThreadID(), r.ID, r.Revision, message, false)
 		m.configureInputs()
 		return nil
 	}
 	if !slices.Contains(questionOfferedActions(r), a.Value) {
 		return reject("This request does not offer " + strings.ToLower(questionActionLabel(a.Value)) + " · nothing sent")
 	}
-	if m.thread().NeedsResume {
+	if m.requestThread().NeedsResume {
 		return reject("Resume this thread first (F4 → Resume).")
 	}
 	if !m.connected {
 		return reject("Disconnected · wait for the server to reconnect.")
 	}
-	c := protocol.Command{Kind: "request.answer", TargetID: r.ID, Revision: r.Revision, RequestAction: a.Value}
+	c := protocol.Command{Kind: "request.answer", ThreadID: m.requestThreadID(), TargetID: r.ID, Revision: r.Revision, RequestAction: a.Value}
 	cmd := m.command(c, a)
 	if cmd == nil {
 		return reject(m.status)
 	}
-	m.clearRequestFeedback(m.state.Active, r.ID, r.Revision, false)
+	m.clearRequestFeedback(m.requestThreadID(), r.ID, r.Revision, false)
 	return cmd
 }
 
@@ -328,11 +328,11 @@ func (m *Model) submitAnswers(a action) tea.Cmd {
 	}
 	reject := func(message string, validation bool) tea.Cmd {
 		m.status = message
-		m.setRequestFeedback(m.state.Active, r.ID, r.Revision, message, validation)
+		m.setRequestFeedback(m.requestThreadID(), r.ID, r.Revision, message, validation)
 		m.configureInputs()
 		return nil
 	}
-	if m.thread().NeedsResume {
+	if m.requestThread().NeedsResume {
 		return reject("Resume this thread first (F4 → Resume).", false)
 	}
 	if !m.connected {
@@ -349,7 +349,7 @@ func (m *Model) submitAnswers(a action) tea.Cmd {
 		}
 		answers[i] = draftAnswer(q, d)
 	}
-	c := protocol.Command{Kind: "request.answer", TargetID: r.ID, Revision: r.Revision, QuestionAnswers: answers}
+	c := protocol.Command{Kind: "request.answer", ThreadID: m.requestThreadID(), TargetID: r.ID, Revision: r.Revision, QuestionAnswers: answers}
 	if legacy {
 		// A still-running original server only accepts Answers. Its untyped
 		// questions support one choice or free text, so this is lossless.
@@ -366,6 +366,6 @@ func (m *Model) submitAnswers(a action) tea.Cmd {
 	if cmd == nil {
 		return reject(m.status, false)
 	}
-	m.clearRequestFeedback(m.state.Active, r.ID, r.Revision, false)
+	m.clearRequestFeedback(m.requestThreadID(), r.ID, r.Revision, false)
 	return cmd
 }

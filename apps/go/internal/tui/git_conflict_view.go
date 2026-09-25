@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -98,6 +99,20 @@ func (m *Model) gitConflictViewerRefresh(key string, g *gitView) tea.Cmd {
 	if v == nil || v.key != key {
 		return nil
 	}
+	if v.item != nil {
+		// A review item follows the latest review of its path.
+		if it, ok := gitReviewItem(g.oper, v.item.Path); ok {
+			if gitReviewGen(g.oper, it) != v.itemGen {
+				v.item, v.itemGen = &it, gitReviewGen(g.oper, it)
+				v.reset()
+				if !slices.Contains(v.tabs(), v.tab) {
+					v.tab = protocol.GitConflictVersionWorking
+				}
+				m.markGitReviewViewed(v)
+				return m.loadViewerTab(v)
+			}
+		}
+	}
 	for _, c := range g.oper.Conflicts {
 		if c.Path == v.conflict.Path {
 			if c.ConflictPin != v.conflict.ConflictPin || c.WorktreeStat != v.conflict.WorktreeStat {
@@ -126,12 +141,36 @@ func (m *Model) gitConflictViewerBlocks(v *gitConflictViewer) []surfaceBlock {
 		{kind: surfaceHeadingBlock, label: "Conflict", value: gitConflictBadge(c.Kind)},
 		text(safe(singleLine(c.Path)), p.text),
 		button("Close", m.icon("close"), "git:conflict-close", action{Kind: "git-conflict-close"}),
-		{kind: surfaceGitBlock, git: &gitRow{kind: "ctabs", text: v.tab, key: "", help: "Versions"}},
+		{kind: surfaceGitBlock, git: &gitRow{kind: "ctabs", text: v.tab, refs: v.tabs(), key: "", help: "Versions"}},
 	}
 	if label := m.gitSideLabel(v.tab); v.tab != protocol.GitConflictVersionWorking && v.tab != protocol.GitConflictVersionSaved && label != v.tab {
 		b = append(b, text(label, p.muted))
 	}
 	f := v.files[v.tab]
+	if v.tab == gitViewerAgentDiff || v.tab == gitViewerStagedDiff {
+		for _, line := range v.lines[v.tab] {
+			ink := p.text
+			switch {
+			case line.marker:
+				ink = p.gold
+			case strings.HasPrefix(line.text, "+"):
+				ink = p.green
+			case strings.HasPrefix(line.text, "-"):
+				ink = p.red
+			}
+			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: line.text, ink: ink})
+		}
+		if len(v.lines[v.tab]) == 0 {
+			b = append(b, text(gitNoDiffReason(v.item), p.muted))
+		}
+		if v.item != nil && v.item.DiffTruncated {
+			b = append(b, text("The server truncated this diff · not all of it is shown", p.gold))
+		}
+		if gitLinesCapped(v.lines[v.tab]) {
+			b = append(b, text("Display capped (2000 lines, 4096 cells per line)", p.gold))
+		}
+		f = nil
+	}
 	switch {
 	case v.loading[v.tab]:
 		b = append(b, statusBlock(m, "Reading "+v.tab+"…", "pending", false))
@@ -213,10 +252,19 @@ func gitMarkerLine(line string) bool {
 func (m *Model) paintGitConflictTabs(f *frame, x, y, width int, r *gitRow) {
 	p := m.colors()
 	cx := x
-	for _, tab := range gitConflictTabs {
+	tabs := r.refs
+	if len(tabs) == 0 {
+		tabs = gitConflictTabs
+	}
+	for i, tab := range tabs {
 		label := " " + title(tab) + " "
 		w := ansi.StringWidth(label)
-		if cx+w > x+width {
+		if cx+w > x+width-3 && i < len(tabs)-1 || cx+w > x+width {
+			// Overflow: the rest are reachable from a menu and [ / ].
+			k := "git:conflict-tabs-more"
+			v := m.componentStyle(squareFill, m.controlState(false, k), p.text, p.panel)
+			f.styledButton(x+width-3, y, 3, " ⋯ ", k, action{Kind: "git-conflict-tabs"}, v)
+			f.hits[len(f.hits)-1].Label = "More versions · [ and ] cycle"
 			break
 		}
 		key := "git:conflict-tab:" + tab

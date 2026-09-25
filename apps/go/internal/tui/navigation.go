@@ -185,6 +185,7 @@ func (m *Model) selectThread(id string) {
 		v.RightVisible = m.state.Layout.Right
 	}
 	m.state.Active, m.state.DraftProjectID = id, ""
+	m.jobReq = ""
 	m.state.Layout.Right = id != "" && m.viewState().RightVisible
 	m.state.Layout.Maximized = false
 	m.state.Layout.ClearReveal()

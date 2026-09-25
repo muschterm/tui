@@ -181,7 +181,7 @@ func (m *Model) questionInputRows(r protocol.Request) int {
 // submitBlocked reports that Submit cannot currently send; the card renders
 // it disabled and requestCardNotice names the reason.
 func (m *Model) submitBlocked() bool {
-	return m.thread().NeedsResume || !m.connected || m.answerInFlight()
+	return m.requestThread().NeedsResume || !m.connected || m.answerInFlight()
 }
 
 // answerInFlight is a request answer being delivered; other commands do not
@@ -295,7 +295,7 @@ func (m *Model) requestHeight(width int) int {
 
 func (m *Model) requestMode(req protocol.Request) (string, bool) {
 	switch {
-	case m.thread().NeedsResume:
+	case m.requestThread().NeedsResume:
 		return "Awaiting Resume", true
 	case req.Kind == "approval":
 		return "Approval required", true
@@ -793,12 +793,15 @@ func (m *Model) questionCardKey(s string) (bool, tea.Cmd) {
 // chosen agent, so repeating "Claude" or "Codex" on every card says nothing
 // new; the raw origin stays in the request detail and Activity.
 func (m *Model) requestOriginLabel(req protocol.Request) string {
+	if m.jobReq != "" && m.requestThread().ID == m.jobReq {
+		return "Resolution job"
+	}
 	origin := strings.TrimSpace(safe(req.Origin))
 	if origin == "" || strings.EqualFold(origin, "agent") {
 		return ""
 	}
 	label := agentDisplayName(origin)
-	if t := m.thread(); strings.EqualFold(origin, t.Agent) || strings.EqualFold(origin, t.AgentID) || strings.EqualFold(label, agentDisplayName(t.Agent)) {
+	if t := m.requestThread(); strings.EqualFold(origin, t.Agent) || strings.EqualFold(origin, t.AgentID) || strings.EqualFold(label, agentDisplayName(t.Agent)) {
 		return ""
 	}
 	return label
