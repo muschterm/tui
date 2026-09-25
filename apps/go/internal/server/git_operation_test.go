@@ -1419,14 +1419,6 @@ func TestGitSequenceAbortListsAndBacksUpFilesItRestores(t *testing.T) {
 				wantGitCode(t, err, "discards_unacknowledged")
 				_, err = e.command(client.GitOperationAbortCommand("ab-undropped", gitTarget, st, true, false))
 				wantGitCode(t, err, "drops_unacknowledged")
-				if !ignored {
-					// Git itself refuses to overwrite an untracked file.
-					r := mustGit(t, e, client.GitOperationAbortCommand("ab", gitTarget, st, true, true), protocol.GitStateFailed)
-					if r.Git.Operation.Outcome != protocol.GitOutcomeUnchanged || readText(t, root, restored) != "USER WORK\n" {
-						t.Fatalf("untracked %s: %+v", restored, r.Git)
-					}
-					return
-				}
 				r := mustGit(t, e, client.GitOperationAbortCommand("ab", gitTarget, st, true, true), protocol.GitStateSucceeded)
 				if git("rev-parse", "HEAD") != start || backupText(t, e, root, r.Git.Operation.Backup.Oid, restored) != "USER WORK\n" {
 					t.Fatalf("abort: head %s, backup of %s missing", git("rev-parse", "HEAD"), restored)

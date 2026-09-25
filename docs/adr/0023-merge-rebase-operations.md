@@ -227,6 +227,67 @@ later.
 - Conflict listing is bounded (500 paths) and binary detection runs one
   bounded blob read per side for the first 64 conflicts.
 
+## Manual conflict resolution (S3)
+
+- **Saved copies.** When an operation stops with conflicts (after a merge,
+  rebase, continue or skip here, or before the first `git.conflict_*`
+  command changes an operation started elsewhere), every unmerged path is
+  saved: stages 1-3 with their modes and objects, and the working-tree
+  content (mode, symlink target, or absence), in an unreferenced commit
+  (`s1/`, `s2/`, `s3/`, `w/` subtrees and a manifest blob). Git objects
+  were chosen over a SQLite table for the same reasons as the abort
+  backups: the stages are already objects, the copy restores with
+  ordinary Git commands, and no storage schema is added. The copy is
+  recorded in `Snapshot.GitConflictCopies` by repository and stop (kind,
+  target, original head, current commit, step, HEAD and attempt), pruned
+  with their repository (retention below).
+- **Reading.** `GET /v1/git/conflict?path&version=base|ours|theirs|working|saved`
+  serves a path that is unmerged now, or has a saved copy for the current
+  stop, bounded to 1 MiB, with the path's current pins (`ConflictPin` over
+  its index entries, `WorktreeToken`) and, for the working file, whether it
+  still has conflict markers.
+- **Commands.** `git.conflict_choose` writes one side into the working tree
+  only (`checkout-index --stage=N -f`, so filters apply; a deleting side
+  removes the file); the path stays unmerged. `git.conflict_resolve` stages
+  the working-tree file (`add -- <path>`) or resolves it as deleted (`rm
+  --cached -- <path>`), touching no other path; a file that still has
+  conflict markers, or is too large to check, needs `AcknowledgeMarkers`
+  equal to the reviewed working-tree token. The operation becomes ready
+  when no unmerged path remains. `git.conflict_restore` puts a saved copy
+  back: the working-tree content atomically (temporary file or symlink
+  renamed over it) and the stages through `update-index --index-info`, so
+  `ls-files -u` and the file are byte-identical to the saved state. All
+  three are journaled, hold the lease, pin the path, save and pause open
+  documents first (a saved unsaved edit makes the pin stale: nothing
+  changes), run while the operation reserves the checkout, and are refused
+  when nothing is in progress. Submodule conflicts and paths that are
+  directories in the working tree are refused. S4 agent jobs will use the
+  same commands to accept or reject a proposed resolution.
+- **S3 review: nothing is overwritten without a copy.** Before a choose or
+  restore replaces or removes a file, the file's current content is copied
+  (a `before_overwrite` copy, `GitOperationResult.Previous`, restorable with
+  `git.conflict_restore`) unless it equals the saved state or the content
+  about to be written; a path the stop's copy does not hold gets a
+  `before_first_change` copy first. Copies are recorded durably before
+  anything changes. Stop keys include the attempt (the inode and
+  modification time of the file the operation's start created), so a
+  retried operation never reuses an earlier attempt's copies. A file the
+  server cannot copy (over 64 MiB, special) is overwritten only with
+  `AcknowledgeUnsaved`; staging a binary file needs `AcknowledgeBinary`.
+  Restore keeps the saved permission bits and removes a temporary file an
+  interrupted restore left (its name is kept in the Git directory while it
+  exists). An abort after resolving a path as deleted lists the untracked
+  file left behind, backs it up and moves it aside once acknowledged, so
+  the abort proceeds instead of failing. Files moved aside are unlinked
+  only while they still match the token the backup read, and any that Git
+  did not replace are put back from the backup (content and permission
+  bits) whatever Git's outcome; the result says so, and a file that cannot
+  be put back makes the outcome unknown. A merge, cherry-pick or revert
+  abort that Git would refuse because a file it resets has unstaged
+  changes is refused first (`AbortBlockedBy`, `abort_blocked`). A restore
+  trusts the copy's manifest for whether the saved file existed, so a
+  failed read never deletes the working file.
+
 ## Known limits
 
 Accepted residual risks from the five review rounds (2026-09-25):
@@ -285,6 +346,22 @@ Accepted residual risks from the five review rounds (2026-09-25):
 - **Platforms.** Worktree checks are Unix-only; elsewhere these commands
   are effectively refused, and the server package does not currently
   build on Windows for unrelated reasons.
+- **Conflict copies.** Saved copies have the same pruning and secrecy
+  caveats as backups; working-tree files beyond 64 MiB in total, special
+  files and directories are not saved (`Missing`) and cannot be restored
+  here; overwriting such a file needs `AcknowledgeUnsaved`. Retention:
+  `before_overwrite` copies are deduplicated by content per path (and not
+  made when the content equals an index stage, the original copy or the
+  content being written), at most 100 per path; a repository keeps 300
+  copies and all repositories 2000, evicting other stops' copies first,
+  oldest first, and never the stop being written (a copy of another
+  repository's still-active stop can be evicted beyond 2000). A copy of
+  the current stop that has to be evicted is named in
+  `GitOperationResult.Evicted`. The attempt identity relies on file inode and modification time
+  (not available on every platform), so an operation restarted within
+  the same timestamp resolution on a reused inode would share copies. A restore creates missing parent directories but refuses symlinked
+  or non-directory parents; the parent check and the rename are not atomic
+  against a concurrent program replacing a parent directory.
 - **Merge message.** `-m` reproduces Git's usual message without
   " into <branch>"; `merge.log` still appends.
 

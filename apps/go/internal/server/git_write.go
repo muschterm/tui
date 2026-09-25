@@ -190,6 +190,7 @@ func pruneGitOps(s *protocol.Snapshot) {
 		s.GitOperations = nil
 	}
 	pruneGitBackups(s)
+	pruneConflictCopies(s)
 }
 
 func gitOpName(kind string) string { return strings.TrimPrefix(kind, "git.") }
@@ -204,9 +205,15 @@ func validateGitWrite(c protocol.Command) error {
 		return failure("invalid", "select exactly one project or thread")
 	}
 	if gitOperationKind(c.Kind) {
+		if w.Conflict != nil {
+			return failure("invalid", "conflict payloads are not accepted for "+c.Kind)
+		}
 		return validateGitOperationWrite(c.Kind, w)
 	}
-	if w.Integrate != nil || w.Operation != nil {
+	if gitConflictKind(c.Kind) {
+		return validateGitConflictWrite(c.Kind, w)
+	}
+	if w.Integrate != nil || w.Operation != nil || w.Conflict != nil {
 		return failure("invalid", "integrate and operation payloads are not accepted for "+c.Kind)
 	}
 	if gitRefOrSyncKind(c.Kind) {
@@ -390,6 +397,9 @@ type gitPlan struct {
 	run     func(ctx context.Context) protocol.GitResult
 	rt      *gitRuntime
 	journal func(s *protocol.Snapshot, res *protocol.GitResult, now string) error
+	// copies are saved copies of conflicted files made by run without an
+	// engine runtime (git_conflict.go), recorded in phase two.
+	copies []protocol.GitConflictCopy
 }
 
 // gitRuntime connects a running plan to the engine (ADR 0021). cancelCtx is
@@ -403,6 +413,9 @@ type gitRuntime struct {
 	// rewrite brackets a Git command that rewrites working-tree files
 	// (git_ref.go, beginWorktreeRewrite).
 	rewrite func(ctx context.Context, top string) (end func(), err error)
+	// recordCopy records a saved copy of conflicted files durably before
+	// the command changes anything (git_conflict.go).
+	recordCopy func(protocol.GitConflictCopy) ([]protocol.GitConflictCopy, error)
 }
 
 func (p *gitPlan) runtime(ctx context.Context) *gitRuntime {
@@ -447,6 +460,11 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	w, err := newGitWriter(prepCtx, g)
 	if err != nil {
 		return protocol.Receipt{}, err
+	}
+	w.copyLookup = func(key string) []protocol.GitConflictCopy {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.conflictCopiesLocked(w.top, key)
 	}
 
 	// Take the lease, or refuse; a Git write never queues.
@@ -541,6 +559,20 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	gs.cancels[c.ID] = cancel
 	gs.userCancels[c.ID] = &gitCancelState{cancel: userCancel, cancellable: kind.cancellable}
 	plan.rt = e.gitRuntimeFor(c.ID, userCtx)
+	plan.rt.recordCopy = func(saved protocol.GitConflictCopy) ([]protocol.GitConflictCopy, error) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		next := clone(e.snap)
+		evicted := putConflictCopy(&next, saved)
+		next.Revision++
+		gs.opSeq++
+		if err := e.store.Save(next, nil, nil); err != nil {
+			return nil, failure("storage", "the saved copy could not be recorded, so nothing was changed")
+		}
+		e.snap = next
+		e.publish()
+		return evicted, nil
+	}
 	gs.wg.Add(1)
 	e.mu.Unlock()
 	defer gs.wg.Done()
@@ -587,6 +619,10 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	if plan.journal != nil {
 		gs.opSeq++
 		_ = plan.journal(&next, &result, op.FinishedAt)
+	}
+	for _, c := range plan.copies {
+		gs.opSeq++
+		putConflictCopy(&next, c)
 	}
 	next.Revision++
 	r = protocol.Receipt{ID: c.ID, State: result.State, Revision: next.Revision, TargetID: w.top, Git: &result}
@@ -728,6 +764,9 @@ type gitWriter struct {
 	// writeFetchHead: `git fetch --write-fetch-head` exists (Git 2.29+,
 	// alongside fetch.writeFetchHEAD).
 	writeFetchHead bool
+	// copyLookup finds the saved copy of an operation stop (git_conflict.go);
+	// set by runGitWrite.
+	copyLookup func(stopKey string) []protocol.GitConflictCopy
 }
 
 var gitVersion = sync.OnceValues(func() ([2]int, error) {
@@ -1213,6 +1252,8 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return prepareIntegrate(ctx, g, w, c)
 	case protocol.GitKindOperationAbort, protocol.GitKindOperationContinue, protocol.GitKindOperationSkip:
 		return prepareOperationCommand(ctx, g, w, c)
+	case protocol.GitKindConflictChoose, protocol.GitKindConflictResolve, protocol.GitKindConflictRestore:
+		return prepareConflict(ctx, g, w, c)
 	}
 	return nil, failure("unsupported_command", fmt.Sprintf("unsupported command %q", c.Kind))
 }

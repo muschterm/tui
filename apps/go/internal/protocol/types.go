@@ -26,6 +26,8 @@ type Snapshot struct {
 	GitOperations []GitOperationRecord `json:"git_operations,omitempty"`
 	// GitBackups lists recorded abort and skip backups (ADR 0023). Additive.
 	GitBackups []GitBackupEntry `json:"git_backups,omitempty"`
+	// GitConflictCopies lists saved copies of conflicted files (S3).
+	GitConflictCopies []GitConflictCopy `json:"git_conflict_copies,omitempty"`
 	// Documents lists loaded shared documents (document.go). It is a
 	// projection of the documents tables, rebuilt at server start.
 	Documents []DocumentStatus `json:"documents,omitempty"`

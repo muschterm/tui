@@ -318,6 +318,18 @@ type GitOperationState struct {
 	BackupMissingOnAbortFingerprint string   `json:"backup_missing_on_abort_fingerprint,omitempty"`
 	BackupMissingOnSkipFingerprint  string   `json:"backup_missing_on_skip_fingerprint,omitempty"`
 	ContinueUpdatesRefs             []string `json:"continue_updates_refs,omitempty"`
+	// ConflictCopy (additive, S3) is the saved copy of this stop's
+	// conflicted files, when one was made (GitConflictWrite).
+	ConflictCopy string `json:"conflict_copy,omitempty"`
+	// Attempt (additive, S3 review) is an opaque identity of this attempt of
+	// the operation (the start of its state files), so retrying an operation
+	// never reuses an earlier attempt's saved copies.
+	Attempt string `json:"attempt,omitempty"`
+	// AbortBlockedBy (additive) lists files with unstaged changes that a
+	// merge, cherry-pick or revert abort would have to reset; Git refuses
+	// such an abort ("not uptodate"), so it is refused here too until they
+	// are staged or discarded (abort_blocked).
+	AbortBlockedBy []string `json:"abort_blocked_by,omitempty"`
 }
 
 // GitOperationBackup is the copy the server makes immediately before an
@@ -399,6 +411,9 @@ type GitConflict struct {
 	Submodule     bool                `json:"submodule,omitempty"`
 	Symlink       bool                `json:"symlink,omitempty"`
 	WorktreeStat  string              `json:"worktree_stat,omitempty"`
+	// ConflictPin (additive, manual resolution) digests every index entry
+	// of the path; git.conflict_* commands send it back with WorktreeStat.
+	ConflictPin string `json:"conflict_pin,omitempty"`
 }
 
 // GitOperationActions says whether each command is accepted now.

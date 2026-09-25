@@ -297,6 +297,13 @@ func observeOperation(ctx context.Context, g *gitReader, gitDir string) (protoco
 // observeOperationLists is observeOperation plus what abort and skip back
 // up (nil when nothing is in progress).
 func observeOperationLists(ctx context.Context, g *gitReader, gitDir string) (protocol.GitOperationState, *opLists, error) {
+	return observeOperationMode(ctx, g, gitDir, true)
+}
+
+// observeOperationMode is observeOperationLists; without full it skips what
+// abort, skip and continue would touch (pins, discard lists, markers), for
+// callers that only need the operation and its conflicts.
+func observeOperationMode(ctx context.Context, g *gitReader, gitDir string, full bool) (protocol.GitOperationState, *opLists, error) {
 	var lists *opLists
 	st := protocol.GitOperationState{Kind: gitDirOperation(gitDir), Conflicts: []protocol.GitConflict{}}
 	head, err := readHead(ctx, g)
@@ -372,7 +379,8 @@ func observeOperationLists(ctx context.Context, g *gitReader, gitDir string) (pr
 			return st, nil, err
 		}
 	}
-	if managedOperation(st.Kind) {
+	st.Attempt = attemptID(gitDir, st.Kind)
+	if full && managedOperation(st.Kind) {
 		if lists, err = observeChanges(ctx, g, gitDir, &st); err != nil {
 			return st, nil, err
 		}
@@ -437,8 +445,12 @@ func readConflicts(ctx context.Context, g *gitReader, st *protocol.GitOperationS
 	h := sha256.New()
 	h.Write([]byte("unmerged-v1\x00"))
 	index := map[string]int{}
+	byPath := map[string][]string{}
 	for _, rec := range records {
 		h.Write([]byte(rec + "\x00"))
+		if _, p, ok := strings.Cut(rec, "\t"); ok {
+			byPath[p] = append(byPath[p], rec)
+		}
 		meta, path, ok := strings.Cut(rec, "\t")
 		f := strings.Fields(meta)
 		if !ok || len(f) != 3 || len(f[2]) != 1 || f[2][0] < '1' || f[2][0] > '3' {
@@ -464,6 +476,9 @@ func readConflicts(ctx context.Context, g *gitReader, st *protocol.GitOperationS
 	}
 	if len(st.Conflicts) == 0 {
 		return nil
+	}
+	for i := range st.Conflicts {
+		st.Conflicts[i].ConflictPin = indexPin(byPath[st.Conflicts[i].Path])
 	}
 	top := g.dir
 	paths := make([]string, 0, len(st.Conflicts))
@@ -531,6 +546,8 @@ func operationActions(st protocol.GitOperationState) protocol.GitOperationAction
 	}
 	a.Abort = yes
 	switch {
+	case len(st.AbortBlockedBy) > 0:
+		a.Abort = no("unstaged changes to " + listPaths(st.AbortBlockedBy) + " would block the abort; stage or discard them first")
 	case len(st.NestedOnAbort) > 0:
 		a.Abort = no(nestedReason(st.NestedOnAbort))
 	case st.DiscardsOnAbortIncomplete:
@@ -1003,6 +1020,9 @@ func (e *engine) attachOperation(st *protocol.GitOperationState, top string, seq
 	}
 	e.rebalanceWritersAndFlushLocked()
 	annotateOperation(st, gitOperationFor(&e.snap, top))
+	if c := e.conflictCopyLocked(top, stopKey(*st)); c != nil && st.Kind != "" {
+		st.ConflictCopy = c.CopyID
+	}
 }
 
 func (e *engine) gitIntegratePreview(w http.ResponseWriter, r *http.Request) {
@@ -1598,6 +1618,9 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		if len(st.NestedOnAbort) > 0 {
 			return nil, failure("not_supported", nestedReason(st.NestedOnAbort))
 		}
+		if len(st.AbortBlockedBy) > 0 {
+			return nil, failure("abort_blocked", "unstaged changes to "+listPaths(st.AbortBlockedBy)+" would make Git refuse the abort; stage or discard them first")
+		}
 		if err := checkDiscards(st, req, st.DiscardsOnAbort, st.DiscardsOnAbortIncomplete, "abort"); err != nil {
 			return nil, err
 		}
@@ -1654,6 +1677,7 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 			op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, pe.Code, pe.Message+"; nothing was changed", nil)
 			return res
 		}
+		var removed []string
 		if c.Kind != protocol.GitKindOperationContinue {
 			// A copy of everything the command overwrites, made after the
 			// documents were saved and before Git runs.
@@ -1667,7 +1691,7 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 					paths = againLists.skip
 				}
 			}
-			backup, err := w.makeBackup(ctx, g, paths, verb+" of the "+st.Kind)
+			backup, tokens, err := w.makeBackup(ctx, g, paths, verb+" of the "+st.Kind)
 			switch {
 			case err != nil:
 				op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, "backup_incomplete", "the files could not be backed up ("+err.Error()+"); nothing was changed", nil)
@@ -1677,6 +1701,47 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 				return res
 			}
 			op.Backup = backup
+			// Untracked and ignored files in the way were listed,
+			// acknowledged and backed up: remove them so Git neither
+			// refuses the command nor overwrites them itself.
+			remove := lists.abortRemove
+			if againLists != nil {
+				remove = againLists.abortRemove
+			}
+			if c.Kind == protocol.GitKindOperationSkip {
+				remove = lists.skipRemove
+				if againLists != nil {
+					remove = againLists.skipRemove
+				}
+			}
+			for _, rp := range remove {
+				b, ok := tokens[rp]
+				if !ok {
+					continue // not backed up (acknowledged as missing): Git decides
+				}
+				// Unlinked only while it is exactly what the backup read.
+				if err := removeUntracked(w.top, rp, b.token); err != nil {
+					note := restoreRemoved(ctx, g, w, backup, tokens, removed)
+					op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, "stale_entry", "an untracked file in the way changed after it was backed up ("+rp+"); Git did not run"+note, nil)
+					if strings.Contains(note, "could not") {
+						op.Outcome, res.State = protocol.GitOutcomeUnknown, protocol.GitStateOutcomeUnknown
+					}
+					return res
+				}
+				removed = append(removed, rp)
+			}
+			// Whatever happens next, files moved aside that Git did not
+			// replace are put back byte-exact from the backup.
+			defer func() {
+				if len(removed) == 0 {
+					return
+				}
+				note := restoreRemoved(context.WithoutCancel(ctx), g, w, backup, tokens, removed)
+				res.Message += note
+				if strings.Contains(note, "could not") {
+					res.State, op.Outcome = protocol.GitStateOutcomeUnknown, protocol.GitOutcomeUnknown
+				}
+			}()
 		}
 		args := append(append([]string{}, operationArgs...), st.Kind, "--"+verb)
 		run := w.runWith(ctx, gitRunOpts{combined: true, cMessages: true}, args...)
@@ -1719,6 +1784,9 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		operationOutcome(&res, op, st, after, run, verb)
 		if c.Kind == protocol.GitKindOperationSkip && op.Outcome != protocol.GitOutcomeUnchanged {
 			op.Skipped = skipped
+		}
+		if op.Outcome == protocol.GitOutcomeStoppedConflicts {
+			_ = w.ensureConflictCopy(vctx, p, after, op) // best effort; conflict commands retry
 		}
 		return res
 	}
@@ -1981,6 +2049,9 @@ func prepareIntegrate(ctx context.Context, g *gitReader, w *gitWriter, c protoco
 				op.Outcome = protocol.GitOutcomeUnknown
 				res = gitResult(protocol.GitStateOutcomeUnknown, "git_failed", "a different operation is now in progress; review it", run.output)
 			}
+			if op.Outcome == protocol.GitOutcomeStoppedConflicts {
+				_ = w.ensureConflictCopy(vctx, p, after, op) // best effort; conflict commands retry
+			}
 			res.Commit = after.HeadOid
 		}
 		return res
@@ -2137,4 +2208,32 @@ func describeOperationAfter(op *protocol.GitOperationResult) string {
 
 func nestedReason(paths []string) string {
 	return "a nested repository or untracked directory is in the way at " + listPaths(paths) + "; resolve it in a terminal"
+}
+
+// restoreRemoved puts back, byte-exact with their permission bits, the
+// untracked files an abort or skip moved aside that are still absent (Git
+// did not write anything there). It returns a note for the result message.
+func restoreRemoved(ctx context.Context, g *gitReader, w *gitWriter, backup *protocol.GitOperationBackup, tokens map[string]backedUp, removed []string) string {
+	var restored, failed []string
+	for _, p := range removed {
+		tok := worktreeStat(w.top, p)
+		if tokenKind(tok) != tokenAbsent {
+			continue // Git wrote the path; the moved file stays in the backup
+		}
+		mode, oid, ok := copyEntry(ctx, g, backup.Oid, p)
+		data, truncated, err := g.read(ctx, gitBackupBytesMax, "cat-file", "blob", oid)
+		if !ok || err != nil || truncated || writeWorktreeAtomic(w, p, tok, true, mode, tokens[p].perm, data) != nil {
+			failed = append(failed, p)
+			continue
+		}
+		restored = append(restored, p)
+	}
+	note := ""
+	if len(restored) > 0 {
+		note += "; the untracked files moved aside were put back: " + listPaths(restored)
+	}
+	if len(failed) > 0 {
+		note += "; these untracked files could not be put back and remain in backup " + shortOid(backup.Oid) + ": " + listPaths(failed)
+	}
+	return note
 }

@@ -262,7 +262,7 @@ func gitFailure(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, pe)
 	case errors.As(err, &pe) && pe.Code == "not_found":
 		writeJSON(w, http.StatusNotFound, pe)
-	case errors.As(err, &pe) && pe.Code == "not_diffable":
+	case errors.As(err, &pe) && (pe.Code == "not_diffable" || pe.Code == "no_operation"):
 		writeJSON(w, http.StatusConflict, pe)
 	case errors.As(err, &pe):
 		writeJSON(w, http.StatusServiceUnavailable, pe)

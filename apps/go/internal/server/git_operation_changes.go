@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,6 +46,10 @@ type opLists struct {
 	abort, skip []string
 	// written lists the tracked paths abort rewrites, to verify them after.
 	written []string
+	// abortRemove and skipRemove are the untracked or ignored files in the
+	// command's way; once listed, acknowledged and backed up they are
+	// removed before Git runs, so Git neither refuses nor overwrites them.
+	abortRemove, skipRemove []string
 }
 
 // rawChange is one `diff-index --raw` or `diff-tree --raw` record: the old
@@ -188,6 +193,24 @@ func observeChanges(ctx context.Context, g *gitReader, gitDir string, st *protoc
 		}
 	}
 	written = slices.Clone(abortCandidates)
+	if !rebase {
+		// `reset --merge` refuses the whole abort when a path it resets has
+		// unstaged changes ("not uptodate"); name them so nothing is tried.
+		resets := map[string]bool{}
+		for _, p := range abortCandidates {
+			resets[p] = true
+		}
+		var blocked []string
+		for _, p := range unstaged {
+			if resets[p] && !unmerged[p] {
+				blocked = append(blocked, p)
+			}
+		}
+		st.AbortBlockedBy = sortedUnique(blocked)
+		if len(st.AbortBlockedBy) == 0 {
+			st.AbortBlockedBy = nil
+		}
+	}
 	abortRisk, ok := untrackedAt(ctx, g, abortCandidates)
 	abortRisk = dropGitlinks(ctx, g, *st, abortRisk)
 	abortInc = abortInc || !ok
@@ -195,7 +218,7 @@ func observeChanges(ctx context.Context, g *gitReader, gitDir string, st *protoc
 	for _, c := range staged {
 		hiddenCandidates = append(hiddenCandidates, c.path)
 	}
-	lists := &opLists{abort: sortedUnique(append(slices.Clone(dirty), withoutNested(abortRisk)...)), written: sortedUnique(written)}
+	lists := &opLists{abort: sortedUnique(append(slices.Clone(dirty), withoutNested(abortRisk)...)), written: sortedUnique(written), abortRemove: sortedUnique(withoutNested(abortRisk))}
 	st.DiscardsOnAbort = sortedUnique(append(slices.Clone(listed), abortRisk...))
 	st.NestedOnAbort = nestedEntries(abortRisk)
 	pending, updateRefs, pendingOK := pendingAdds(ctx, g, gitDir, *st)
@@ -219,6 +242,7 @@ func observeChanges(ctx context.Context, g *gitReader, gitDir string, st *protoc
 		st.DiscardsOnSkip = sortedUnique(append(slices.Clone(listed), skipRisk...))
 		st.NestedOnSkip = nestedEntries(skipRisk)
 		lists.skip = sortedUnique(append(slices.Clone(dirty), withoutNested(skipRisk)...))
+		lists.skipRemove = sortedUnique(withoutNested(skipRisk))
 	}
 	st.NestedInTheWay = nil
 	if nested := sortedUnique(slices.Concat(st.NestedOnAbort, st.NestedOnSkip, st.NestedOnContinue)); len(nested) > 0 {
@@ -787,8 +811,16 @@ func hasConflictMarker(data []byte, size int) bool {
 // into two unreferenced commits in the repository's object database, before
 // an abort or skip overwrites them. Nothing in the index, working tree or
 // refs changes. missing lists paths that could not be copied.
-func (w *gitWriter) makeBackup(ctx context.Context, g *gitReader, paths []string, what string) (*protocol.GitOperationBackup, error) {
+// backedUp is what makeBackup copied of each path: the token it was read
+// under (a later unlink must still match it) and its permission bits.
+type backedUp struct {
+	token string
+	perm  fs.FileMode
+}
+
+func (w *gitWriter) makeBackup(ctx context.Context, g *gitReader, paths []string, what string) (*protocol.GitOperationBackup, map[string]backedUp, error) {
 	b := &protocol.GitOperationBackup{CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	copied := map[string]backedUp{}
 	var worktree, index bytes.Buffer
 	var total int64
 	files := 0
@@ -819,6 +851,7 @@ func (w *gitWriter) makeBackup(ctx context.Context, g *gitReader, paths []string
 			return
 		}
 		var data []byte
+		var perm fs.FileMode
 		mode := "120000"
 		if content.symlink {
 			data = content.link
@@ -826,8 +859,11 @@ func (w *gitWriter) makeBackup(ctx context.Context, g *gitReader, paths []string
 			data, err = io.ReadAll(io.LimitReader(content.file, gitBackupBytesMax-total+1))
 			fi, statErr := content.file.Stat()
 			content.file.Close()
-			mode = "100644"
-			if statErr == nil && fi.Mode()&0o111 != 0 {
+			mode, perm = "100644", 0o644
+			if statErr == nil {
+				perm = fi.Mode().Perm()
+			}
+			if perm&0o111 != 0 {
 				mode = "100755"
 			}
 			if err != nil || total+int64(len(data)) > gitBackupBytesMax {
@@ -843,13 +879,14 @@ func (w *gitWriter) makeBackup(ctx context.Context, g *gitReader, paths []string
 		}
 		total += int64(len(data))
 		b.Paths = append(b.Paths, p)
+		copied[p] = backedUp{token: tok, perm: perm}
 		fmt.Fprintf(&worktree, "%s %s\t%s\x00", mode, oid, p)
 	}
 	for _, p := range sortedUnique(paths) {
 		add(p)
 	}
 	if nestedErr != nil {
-		return nil, nestedErr
+		return nil, nil, nestedErr
 	}
 	if len(paths) > 0 {
 		records, ok := lsFilesChunk(ctx, g, []string{"--stage"}, sortedUnique(paths))
@@ -864,51 +901,22 @@ func (w *gitWriter) makeBackup(ctx context.Context, g *gitReader, paths []string
 			}
 		}
 	}
-	tmp, err := os.MkdirTemp("", "tui-backup-")
+	indexTree, err := w.writeTree(ctx, &index)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer os.RemoveAll(tmp)
-	tree := func(name string, entries *bytes.Buffer) (string, error) {
-		env := []string{"GIT_INDEX_FILE=" + filepath.Join(tmp, name)}
-		if r := w.runWith(ctx, gitRunOpts{stdin: entries, env: env}, "update-index", "-z", "--add", "--index-info"); r.err != nil {
-			return "", fmt.Errorf("backup index: %w", r.err)
-		}
-		r := w.runWith(ctx, gitRunOpts{env: env}, "write-tree")
-		if r.err != nil {
-			return "", fmt.Errorf("backup tree: %w", r.err)
-		}
-		return strings.TrimSpace(string(r.stdout)), nil
-	}
-	ident := []string{"GIT_AUTHOR_NAME=Operation backup", "GIT_AUTHOR_EMAIL=backup@localhost", "GIT_COMMITTER_NAME=Operation backup", "GIT_COMMITTER_EMAIL=backup@localhost"}
-	commit := func(treeOid, message string, parents ...string) (string, error) {
-		args := []string{"commit-tree", "--no-gpg-sign", "-m", message}
-		for _, p := range parents {
-			args = append(args, "-p", p)
-		}
-		r := w.runWith(ctx, gitRunOpts{env: ident}, append(args, treeOid)...)
-		oid := strings.TrimSpace(string(r.stdout))
-		if r.err != nil || !gitFullHash.MatchString(oid) {
-			return "", fmt.Errorf("backup commit: %v", r.err)
-		}
-		return oid, nil
-	}
-	indexTree, err := tree("index", &index)
+	worktreeTree, err := w.writeTree(ctx, &worktree)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	worktreeTree, err := tree("worktree", &worktree)
-	if err != nil {
-		return nil, err
+	if b.IndexOid, err = w.commitTree(ctx, indexTree, "Operation backup (staged) before "+what); err != nil {
+		return nil, nil, err
 	}
-	if b.IndexOid, err = commit(indexTree, "Operation backup (staged) before "+what); err != nil {
-		return nil, err
-	}
-	if b.Oid, err = commit(worktreeTree, "Operation backup (working tree) before "+what, b.IndexOid); err != nil {
-		return nil, err
+	if b.Oid, err = w.commitTree(ctx, worktreeTree, "Operation backup (working tree) before "+what, b.IndexOid); err != nil {
+		return nil, nil, err
 	}
 	b.Incomplete = len(b.Missing) > 0
-	return b, nil
+	return b, copied, nil
 }
 
 // gitOperationBackup is GET /v1/git/operation/backup: one file of a backup
@@ -962,4 +970,39 @@ func readBackupFile(ctx context.Context, dir, oid, p string, recorded func(top, 
 	}
 	f.Content, f.Truncated = data, truncated
 	return f, nil
+}
+
+// writeTree writes a tree from `update-index -z --index-info` entries
+// through a private index file; the repository's index is not touched.
+func (w *gitWriter) writeTree(ctx context.Context, entries *bytes.Buffer) (string, error) {
+	tmp, err := os.MkdirTemp("", "tui-backup-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(tmp, "index")}
+	if r := w.runWith(ctx, gitRunOpts{stdin: entries, env: env}, "update-index", "-z", "--add", "--index-info"); r.err != nil {
+		return "", fmt.Errorf("backup index: %w", r.err)
+	}
+	r := w.runWith(ctx, gitRunOpts{env: env}, "write-tree")
+	oid := strings.TrimSpace(string(r.stdout))
+	if r.err != nil || !gitFullHash.MatchString(oid) {
+		return "", fmt.Errorf("backup tree: %v", r.err)
+	}
+	return oid, nil
+}
+
+// commitTree makes an unreferenced, unsigned commit with a fixed identity.
+func (w *gitWriter) commitTree(ctx context.Context, tree, message string, parents ...string) (string, error) {
+	ident := []string{"GIT_AUTHOR_NAME=Operation backup", "GIT_AUTHOR_EMAIL=backup@localhost", "GIT_COMMITTER_NAME=Operation backup", "GIT_COMMITTER_EMAIL=backup@localhost"}
+	args := []string{"commit-tree", "--no-gpg-sign", "-m", message}
+	for _, p := range parents {
+		args = append(args, "-p", p)
+	}
+	r := w.runWith(ctx, gitRunOpts{env: ident}, append(args, tree)...)
+	oid := strings.TrimSpace(string(r.stdout))
+	if r.err != nil || !gitFullHash.MatchString(oid) {
+		return "", fmt.Errorf("backup commit: %v", r.err)
+	}
+	return oid, nil
 }

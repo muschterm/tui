@@ -66,6 +66,11 @@ const (
 	GitKindOperationAbort    = "git.operation_abort"
 	GitKindOperationContinue = "git.operation_continue"
 	GitKindOperationSkip     = "git.operation_skip"
+
+	// Manual conflict resolution (ADR 0023, S3); payload GitConflictWrite.
+	GitKindConflictChoose  = "git.conflict_choose"
+	GitKindConflictResolve = "git.conflict_resolve"
+	GitKindConflictRestore = "git.conflict_restore"
 )
 
 // Git write states, shared by Receipt.State, GitResult.State and GitOp.State.
@@ -167,6 +172,8 @@ type GitWrite struct {
 	// Additive (ADR 0023).
 	Integrate *GitIntegrate      `json:"integrate,omitempty"`
 	Operation *GitOperationWrite `json:"operation,omitempty"`
+	// Additive (S3).
+	Conflict *GitConflictWrite `json:"conflict,omitempty"`
 }
 
 // GitPathPin names one status entry exactly as GitStatus showed it.
@@ -563,6 +570,11 @@ func GitWorktreeFingerprint(st GitStatus) string {
 // rerere.autoUpdate off, so a recorded resolution that rerere replays is
 // written to the file but never staged (GitOperationResult.RerereResolved).
 //
+// Untracked and ignored files an abort or skip lists in its discards are
+// backed up and, once acknowledged, moved aside so Git can proceed; any
+// that Git did not replace are put back byte-exact from the backup
+// afterwards (also when Git fails), and the result message says so.
+//
 // Every operation command runs with submodule.recurse=false, so no
 // submodule worktree is changed. Before an abort or skip changes anything,
 // the server backs up every file it would overwrite
@@ -663,6 +675,8 @@ func GitWorktreeFingerprint(st GitStatus) string {
 //	markers_unacknowledged continue with staged conflict markers
 //	                      (MarkerPaths) that AcknowledgeMarkers does not list
 //	                      exactly
+//	abort_blocked         a merge, cherry-pick or revert abort while files it
+//	                      resets have unstaged changes (AbortBlockedBy)
 //	drops_unacknowledged  abort of a cherry-pick or revert sequence without
 //	                      AcknowledgeDropped equal to AbortDropsFingerprint
 //	markers_incomplete    continue when the marker scan was incomplete
@@ -833,6 +847,16 @@ type GitOperationResult struct {
 	RerereResolved []string            `json:"rerere_resolved,omitempty"`
 	// Backup (additive) is the copy made before an abort or skip.
 	Backup *GitOperationBackup `json:"backup,omitempty"`
+	// ConflictCopy (additive, S3) is the saved copy of the conflicted files
+	// made when this command left the operation stopped with conflicts (or
+	// before a git.conflict_* command first changed them).
+	ConflictCopy string `json:"conflict_copy,omitempty"`
+	// Previous (additive, S3 review) is the copy of what a choose or
+	// restore overwrote, when that differed from the saved state.
+	Previous *GitConflictPrevious `json:"previous,omitempty"`
+	// Evicted (additive) lists copies of this stop that recording a new
+	// copy had to drop (only beyond 100 distinct copies of one path).
+	Evicted []GitConflictCopyRef `json:"evicted,omitempty"`
 }
 
 // Git operation record states (GitOperationRecord.State).
@@ -893,4 +917,190 @@ type GitOperationRecord struct {
 	EndedAt        string             `json:"ended_at,omitempty"`
 	// Backup (additive) is the latest backup made for this operation.
 	Backup *GitOperationBackup `json:"backup,omitempty"`
+}
+
+// Manual conflict resolution (ADR 0023, S3). Three journaled commands act on
+// one unmerged path of the merge, rebase, cherry-pick or revert in progress
+// (started here or not). They hold the checkout lease like the other
+// operation commands, run while the operation reserves the checkout (they
+// are its own commands), are refused when nothing is in progress, and pin
+// the path's index entries (ConflictPin, GitConflict.ConflictPin or
+// GitConflictFile.ConflictPin) and its working-tree token (WorktreeToken,
+// GitConflict.WorktreeStat or GitConflictFile.WorktreeToken). Each first
+// saves and pauses open documents and reconciles them afterwards; an unsaved
+// edit that saving writes makes the pinned token stale (nothing changes).
+//
+// Saved copies. When an operation stops with conflicts (after git.merge,
+// git.rebase, continue or skip here, or before a git.conflict_* command
+// first changes anything in an operation started elsewhere), the server
+// saves every unmerged path as it is: stages 1-3 (mode and object) and the
+// working-tree content (mode, symlink target, or absence). The copy is an
+// unreferenced commit in the repository's object database (like
+// GitOperationBackup; the same pruning caveats apply) named by
+// GitOperationState.ConflictCopy and recorded in Snapshot.GitConflictCopies
+// for that stop of that operation.
+//
+//   - git.conflict_choose: Side ours, theirs or base. Writes that side's
+//     content to the working tree only (`git checkout-index --stage=N -f`,
+//     so filters apply as in the CLI); when that side is absent (deleted),
+//     removes the working-tree file. The path stays unmerged.
+//   - git.conflict_resolve: As content stages the working-tree file (`git
+//     add -- <path>`); As deleted resolves it as a deletion (`git rm
+//     --cached -- <path>`, the file stays as untracked). No other path is
+//     touched. When the file still has conflict-marker lines (or is too
+//     large to check, over 8 MiB), AcknowledgeMarkers must equal the
+//     WorktreeToken the user reviewed; a binary file, whose markers cannot
+//     be checked, needs AcknowledgeBinary likewise. When no unmerged path
+//     remains the operation becomes ready.
+//   - git.conflict_restore: CopyID (any copy of the current stop holding
+//     the path, GitConflictFile.Copies). Restores the saved working-tree
+//     content atomically, with its permission bits, and the path's saved
+//     index entries (the original copy's stages make it unmerged again),
+//     whatever was resolved.
+//
+// Nothing a choose or restore overwrites is lost: immediately before it
+// replaces or removes the working-tree file, a file that differs from the
+// saved state is copied (a before_overwrite copy, GitOperationResult.Previous)
+// and can be restored like any other copy. If the path's original copy was
+// made in an earlier attempt of the stop or did not hold it, a
+// before_first_change copy of that path is made first. A file the server
+// cannot copy (larger than 64 MiB, or not a regular file or symlink) is
+// overwritten only with AcknowledgeUnsaved (unsaved_unacknowledged). Copies
+// are recorded durably before anything changes.
+//
+// Submodule (gitlink) conflicts and paths whose working tree is a
+// directory are refused (not_supported). Refusal codes: invalid,
+// no_operation, not_conflicted (choose or resolve of a path that is not
+// unmerged), no_saved_copy (restore without a saved copy of the current
+// stop), stale_entry (ConflictPin or WorktreeToken no longer match; also in
+// the result when saving open documents changed the file),
+// stale_operation, markers_unacknowledged, binary_unacknowledged,
+// unsaved_unacknowledged, not_supported, unavailable.
+// Choosing a side that deleted the file removes the working-tree file. A
+// resolve whose file changed while Git staged it succeeds with warning
+// staged_newer_content.
+type GitConflictWrite struct {
+	Path               string `json:"path"`
+	Side               string `json:"side,omitempty"`
+	As                 string `json:"as,omitempty"`
+	ConflictPin        string `json:"conflict_pin"`
+	WorktreeToken      string `json:"worktree_token"`
+	AcknowledgeMarkers string `json:"acknowledge_markers,omitempty"`
+	CopyID             string `json:"copy_id,omitempty"`
+	// Additive (S3 review). AcknowledgeBinary (resolve as content of a file
+	// with a NUL in its first 8 KiB, whose markers cannot be checked) and
+	// AcknowledgeUnsaved (choose or restore that must overwrite a file the
+	// server cannot copy first: larger than 64 MiB or not a regular file or
+	// symlink) are the WorktreeToken the user reviewed.
+	AcknowledgeBinary  string `json:"acknowledge_binary,omitempty"`
+	AcknowledgeUnsaved string `json:"acknowledge_unsaved,omitempty"`
+}
+
+// Saved-copy reasons (GitConflictCopy.Reason).
+const (
+	GitCopyAtStop            = "at_stop"
+	GitCopyBeforeFirstChange = "before_first_change"
+	GitCopyBeforeOverwrite   = "before_overwrite"
+)
+
+// GitConflictCopyRef names one saved copy of a path.
+type GitConflictCopyRef struct {
+	CopyID    string `json:"copy_id"`
+	Reason    string `json:"reason"`
+	CreatedAt string `json:"created_at"`
+}
+
+// GitConflictPrevious is GitOperationResult.Previous: the copy of the
+// working-tree content a choose or restore replaced (CopyID, restorable with
+// git.conflict_restore; Oid is the saved blob).
+type GitConflictPrevious struct {
+	CopyID string `json:"copy_id"`
+	Oid    string `json:"oid,omitempty"`
+}
+
+// Conflict sides and resolutions.
+const (
+	GitConflictSideOurs   = "ours"
+	GitConflictSideTheirs = "theirs"
+	GitConflictSideBase   = "base"
+
+	GitConflictAsContent = "content"
+	GitConflictAsDeleted = "deleted"
+)
+
+// Versions for GET /v1/git/conflict.
+const (
+	GitConflictVersionBase    = "base"
+	GitConflictVersionOurs    = "ours"
+	GitConflictVersionTheirs  = "theirs"
+	GitConflictVersionWorking = "working"
+	GitConflictVersionSaved   = "saved"
+)
+
+// GitConflictFile is GET /v1/git/conflict?path=&version=base|ours|theirs|
+// working|saved (plus the target): one version of a path that is unmerged
+// now or has a saved copy for the operation's current stop. base, ours and
+// theirs are the index stages while the path is unmerged, else those of the
+// saved copy; working is the file now; saved is the working-tree content
+// the saved copy holds. Present is false for an absent side or file.
+// Content is at most 1 MiB (Truncated beyond); Binary means a NUL in the
+// first 8 KiB; Symlink content is the link target. ConflictPin and
+// WorktreeToken are the path's current pins for git.conflict_* commands;
+// HasMarkers (working) reports conflict-marker lines, MarkersUnknown that
+// the file was too large to check. CopyID is the saved copy of the current
+// stop, when there is one.
+type GitConflictFile struct {
+	Path           string `json:"path"`
+	Version        string `json:"version"`
+	Present        bool   `json:"present"`
+	Mode           string `json:"mode,omitempty"`
+	Oid            string `json:"oid,omitempty"`
+	Size           int64  `json:"size"`
+	Content        []byte `json:"content,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+	Binary         bool   `json:"binary,omitempty"`
+	Symlink        bool   `json:"symlink,omitempty"`
+	Unmerged       bool   `json:"unmerged,omitempty"`
+	ConflictPin    string `json:"conflict_pin,omitempty"`
+	WorktreeToken  string `json:"worktree_token,omitempty"`
+	HasMarkers     bool   `json:"has_markers,omitempty"`
+	MarkersUnknown bool   `json:"markers_unknown,omitempty"`
+	CopyID         string `json:"copy_id,omitempty"`
+	// Additive (S3 review). Kind is the node: file, symlink, absent,
+	// directory or other (Present is false for the last three). CopyReason
+	// and CopyCreatedAt describe CopyID, the copy this path was first saved
+	// in; Copies lists every copy of this stop that holds the path (the
+	// original, then each before_overwrite copy), any of which
+	// git.conflict_restore accepts; version saved with copy_id reads a
+	// specific one.
+	Kind          string               `json:"kind,omitempty"`
+	CopyReason    string               `json:"copy_reason,omitempty"`
+	CopyCreatedAt string               `json:"copy_created_at,omitempty"`
+	Copies        []GitConflictCopyRef `json:"copies,omitempty"`
+}
+
+// GitConflictCopy records one saved copy in Snapshot.GitConflictCopies:
+// StopKey identifies the stop of the
+// operation it was made for, CopyID the commit; Missing lists paths whose
+// working-tree content could not be saved (a directory, special file, or
+// beyond 64 MiB).
+//
+// Additive (S3 review): Reason is at_stop (all conflicts, when the stop was
+// first seen), before_first_change (one path the original copy did not
+// hold) or before_overwrite (one path's content immediately before a choose
+// or restore replaced it); Path names the path of a one-path copy and
+// ContentOid the working-tree content it holds. before_overwrite copies are
+// deduplicated by content per path and at most 100 are kept per path; a
+// repository keeps 300 copies and all repositories 2000, evicting copies of
+// other stops first (never the stop being written).
+type GitConflictCopy struct {
+	Reason      string   `json:"reason,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	ContentOid  string   `json:"content_oid,omitempty"`
+	Checkout    string   `json:"checkout"`
+	CheckoutKey string   `json:"checkout_key"`
+	StopKey     string   `json:"stop_key"`
+	CopyID      string   `json:"copy_id"`
+	CreatedAt   string   `json:"created_at"`
+	Missing     []string `json:"missing,omitempty"`
 }
