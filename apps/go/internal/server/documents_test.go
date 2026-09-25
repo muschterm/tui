@@ -462,9 +462,11 @@ func TestDocumentOpenEditSaveCloseAndEditorGate(t *testing.T) {
 		t.Fatalf("status after open: %+v", st)
 	}
 	h.mustCommand(protocol.DocumentKindEdit, id, "alice")
-	if _, err := h.command(protocol.Command{Kind: protocol.DocumentKindEdit, TargetID: id, ClientID: "bob"}); err == nil || !strings.Contains(err.Error(), "editor_busy") {
+	// Simultaneous editing: a second edit claim succeeds (compatibility).
+	if _, err := h.command(protocol.Command{Kind: protocol.DocumentKindEdit, TargetID: id, ClientID: "bob"}); err != nil {
 		t.Fatalf("second editor: %v", err)
 	}
+	h.mustCommand(protocol.DocumentKindEdit, id, "alice")
 	if _, err := h.command(protocol.Command{Kind: protocol.DocumentKindEdit, TargetID: id, ClientID: "mallory"}); err == nil || !strings.Contains(err.Error(), "not_open") {
 		t.Fatalf("non-opener edit: %v", err)
 	}
@@ -502,32 +504,36 @@ func TestDocumentOpenEditSaveCloseAndEditorGate(t *testing.T) {
 		t.Fatalf("temporary files left: %v", matches)
 	}
 
-	// Bob is an observer: his updates are refused and his replica resynced.
-	bob.gen = st.EditGen
+	// Bob edits too: every opener may edit, whatever Editor/EditGen say.
+	bob.gen = 99
 	bop, _ := bob.insert(0, "x")
-	rej := bob.next("rejected", rejectedFor(bop))
-	if rej.Rejected.Reason != protocol.DocumentRejectNotEditor || rej.Rejected.Message != protocol.DocumentSimultaneousUnavailable || !rej.Rejected.Resync {
-		t.Fatalf("observer rejection %+v", rej.Rejected)
+	h.commit(id)
+	bob.next("ack", ackFor(bop))
+	alice.next("bob's update", func(ev protocol.DocumentEvent) bool {
+		return ev.Type == protocol.DocumentEventUpdate && ev.Client == "bob"
+	})
+	if alice.text.ToString() != "xhello, world\n" {
+		t.Fatalf("alice sees %q", alice.text.ToString())
 	}
-	// The stream ends; the client reconnects with a new replica.
-	bob.ended("resync")
-	bob = h.connect(id, "bob", 203)
-
-	// Take-edit transfers the role; Alice's stale generation is refused.
+	// Take-edit is accepted without changing EditGen.
 	h.mustCommand(protocol.DocumentKindTakeEdit, id, "bob")
-	st = h.waitStatus(id, "bob editor", func(s protocol.DocumentStatus) bool { return s.Editor == "bob" })
-	if st.EditGen != 2 {
-		t.Fatalf("edit gen %d", st.EditGen)
+	st = h.waitStatus(id, "bob claimant", func(s protocol.DocumentStatus) bool { return s.Editor == "bob" })
+	if st.EditGen != 1 || !st.Collaborative {
+		t.Fatalf("status %+v", st)
 	}
-	alice.gen = 1
 	aop, _ := alice.insert(0, "y")
-	if rej := alice.next("rejected", rejectedFor(aop)); rej.Rejected.Reason != protocol.DocumentRejectNotEditor {
-		t.Fatalf("former editor: %+v", rej.Rejected)
+	h.commit(id)
+	alice.next("ack", ackFor(aop))
+	// A client without the document open cannot edit through a stream.
+	if _, err := h.client.OpenDocumentStream(context.Background(), id, "mallory", 303); err == nil || !strings.Contains(err.Error(), "not_editor") {
+		t.Fatalf("non-opener stream: %v", err)
 	}
 
 	// Closing by every opener unloads the saved document.
 	h.mustCommand(protocol.DocumentKindClose, id, "alice")
 	h.mustCommand(protocol.DocumentKindClose, id, "bob")
+	// Closing never discards edits: the document saves, then unloads.
+	h.clock.Advance(docSaveMax)
 	h.waitStatus(id, "unloaded", func(s protocol.DocumentStatus) bool { return s.ID == "" })
 	bob.next("closed", func(ev protocol.DocumentEvent) bool { return ev.Type == protocol.DocumentEventClosed })
 	if records, _ := h.store.LoadDocuments(); len(records) != 0 {
@@ -1184,6 +1190,7 @@ func TestDocumentSlowObserverDoesNotBlock(t *testing.T) {
 	fast := h.connect(id, "bob", 0)
 	ed.gen = 1
 	// A raw observer that never reads.
+	h.open("o.txt", "slow")
 	u := strings.Replace(h.client.Discovery.URL, "http://", "ws://", 1) + "/v1/documents/" + id + "/stream?client_id=slow"
 	slow, _, err := websocket.Dial(context.Background(), u, nil)
 	if err != nil {
@@ -1194,6 +1201,7 @@ func TestDocumentSlowObserverDoesNotBlock(t *testing.T) {
 	received := 0
 	const rounds = 6
 	for round := 0; round < rounds; round++ {
+		h.clock.Advance(2 * time.Second) // refill the request rate
 		var ops []string
 		for i := 0; i < 300; i++ {
 			if i%2 == 0 {

@@ -21,14 +21,17 @@ package protocol
 //     a document with no openers keeps autosaving and is unloaded (removed
 //     from the snapshot and storage) only once it is saved; a paused or
 //     failed document stays listed until resolved.
-//   - document.edit (TargetID, ClientID) makes ClientID the editor when no
-//     client is (idempotent for the editor); otherwise it fails with
-//     "editor_busy". Only one editor at a time (multi-editor collaboration
-//     is slice C): other clients are observers and see Editor with the
-//     reason DocumentSimultaneousUnavailable.
-//   - document.take-edit (TargetID, ClientID) transfers the editor role
-//     immediately and increments EditGen (idempotent for the editor). The
-//     previous editor's later updates are rejected (stale_generation).
+//   - Editing is simultaneous (slice C): every client in Openers may send
+//     updates on its streams at the same time; DocumentStatus.Collaborative
+//     is true. document.edit and document.take-edit (TargetID, ClientID) are
+//     kept for compatibility: both succeed for an opener (not_open
+//     otherwise), record ClientID as the most recent claimant in Editor and
+//     never fail with editor_busy. EditGen is set to 1 on the first claim and
+//     never changes; the Gen of an update is ignored, so stale_generation is
+//     no longer sent (documents from slice B keep their last EditGen).
+//     There is no exclusive mode. Only openers may connect a stream
+//     (not_editor otherwise); after document.close the client's updates and
+//     presence are refused and its presence is removed.
 //   - document.resolve (TargetID, ClientID, Text = DocumentResolve*,
 //     Revision = the DurableRev the client reviewed, DocumentDisk = the
 //     DiskID of the DocumentVersions it reviewed) resolves a paused document.
@@ -115,8 +118,8 @@ const DocumentTextName = "t"
 // endings) and every document text.
 const DocumentMaxBytes = 1 << 20
 
-// DocumentSimultaneousUnavailable is the observer reason while another client
-// holds the editor role.
+// DocumentSimultaneousUnavailable was the observer reason under the single
+// editor of slice B. It is no longer sent; kept for older clients.
 const DocumentSimultaneousUnavailable = "Simultaneous editing unavailable"
 
 // DocumentStatus is a document's server-authoritative state (Snapshot.Documents).
@@ -134,7 +137,10 @@ type DocumentStatus struct {
 	// Error is the last low-level failure (failed state).
 	Error                string `json:",omitempty"`
 	DurableRev, SavedRev int64
-	// Editor is the ClientID allowed to send updates, valid with EditGen.
+	// Editor is the most recent document.edit/take-edit claimant
+	// (informational since slice C: every opener may edit). EditGen is kept
+	// for older clients: 1 after the first claim, or the last value a slice B
+	// document stored; it no longer changes and is not checked.
 	Editor  string `json:",omitempty"`
 	EditGen int64
 	Openers []string `json:",omitempty"`
@@ -149,6 +155,10 @@ type DocumentStatus struct {
 	// edited or streamed; open the file again for a new document, and
 	// document.dismiss deletes the retained data.
 	Quarantined bool `json:",omitempty"`
+	// Collaborative reports simultaneous editing: every client in Openers
+	// may send updates (slice C). Editor then only records the most recent
+	// document.edit/take-edit claimant, and EditGen is not checked.
+	Collaborative bool `json:",omitempty"`
 }
 
 // DocumentVersions are the retained versions of a paused document, as file
@@ -181,7 +191,44 @@ const (
 	// Client → server.
 	DocumentRequestUpdate = "update"
 	DocumentRequestSync   = "sync"
+	// DocumentRequestPresence / DocumentEventPresence carry ephemeral
+	// cursor presence (DocumentPeer); never persisted.
+	DocumentRequestPresence = "presence"
+	DocumentEventPresence   = "presence"
 )
+
+// Presence limits: each position encoding is at most
+// DocumentMaxPresenceBytes; the server forwards at most one presence per peer
+// every DocumentPresenceInterval (latest wins) and forgets a peer whose last
+// presence is older than DocumentPresenceTimeout or whose stream closed.
+const (
+	DocumentMaxPresenceBytes = 256
+	DocumentPresenceInterval = 100 // milliseconds
+	DocumentPresenceTimeout  = 30  // seconds
+)
+
+// DocumentPeer is one other stream's cursor. Peer identifies the stream (a
+// client may have several); Client is its ClientID and Replica its Yjs client
+// ID (0 when the stream has none). Color is a stable palette index 0–7 assigned by the
+// server while the stream lives. Anchor and Head are Yjs RelativePosition
+// encodings (crdt.EncodeRelativePosition against the root text) of the
+// selection anchor and cursor; resolve them against your replica with
+// crdt.ToAbsolutePosition (UTF-16 index); keep them and re-resolve after
+// every applied update, hiding the cursor while it does not resolve. A
+// peer's cursor is forwarded only after its own accepted updates were
+// broadcast. Positions must be canonical encodings anchored to an item or to
+// the root text. Removed reports the peer left (stream closed, closed the
+// document, cleared its presence or timed out); other fields are then
+// empty.
+type DocumentPeer struct {
+	Peer    string `json:"peer"`
+	Client  string `json:"client,omitempty"`
+	Replica uint64 `json:"replica,omitempty"`
+	Color   int    `json:"color"`
+	Anchor  []byte `json:"anchor,omitempty"`
+	Head    []byte `json:"head,omitempty"`
+	Removed bool   `json:"removed,omitempty"`
+}
 
 // Rejection reasons (DocumentRejected.Reason). Content reasons come from the
 // document layer: invalid, origin, content, surrogate_split, too_large and
@@ -191,7 +238,10 @@ const (
 // each transaction's own update. too_large also covers more than 4096 new
 // insert runs or new delete ranges in one update.
 const (
-	DocumentRejectNotEditor       = "not_editor"
+	// DocumentRejectNotEditor: the stream's client has not opened the
+	// document (document.open), so it may not edit.
+	DocumentRejectNotEditor = "not_editor"
+	// DocumentRejectStaleGeneration is no longer sent (slice C).
 	DocumentRejectStaleGeneration = "stale_generation"
 	DocumentRejectUnavailable     = "unavailable" // storage failing; retry later
 	DocumentRejectInvalid         = "invalid"
@@ -227,6 +277,9 @@ type DocumentEvent struct {
 	Op       string            `json:"op,omitempty"`
 	Rejected *DocumentRejected `json:"rejected,omitempty"`
 	Status   *DocumentStatus   `json:"status,omitempty"`
+	// Presence lists changed peers (presence events only), at most one entry
+	// per peer, latest state.
+	Presence []DocumentPeer `json:"presence,omitempty"`
 	// ServerClient is the server replica's Yjs client ID (state).
 	ServerClient uint64 `json:"server_client,omitempty"`
 	// Reason explains closed.
@@ -242,6 +295,9 @@ type DocumentRejected struct {
 	// closes the stream normally; reconnect with a NEW replica ID and
 	// re-apply unacknowledged edits as a draft (client/document.go).
 	Resync bool `json:"resync,omitempty"`
+	// RetryAfterMs (unavailable only): resend the refused op no earlier than
+	// this; set when a per-stream rate limit refused it.
+	RetryAfterMs int `json:"retry_after_ms,omitempty"`
 }
 
 // DocumentRequest is one client→server stream message.
@@ -252,10 +308,15 @@ type DocumentRejected struct {
 // nothing and is acked. sync sends the replica's encoded state vector; the
 // answer is a sync event with the missing update (use it after a reconnect
 // when the replica may still be valid, then resend unacknowledged ops).
+// Gen is ignored since simultaneous editing (slice C). presence sends the
+// stream's cursor as Anchor/Head RelativePosition encodings (both empty
+// clears it); send at most about ten per second, latest wins.
 type DocumentRequest struct {
 	Type        string `json:"type"`
 	Op          string `json:"op,omitempty"`
 	Gen         int64  `json:"gen,omitempty"`
 	Update      []byte `json:"update,omitempty"`
 	StateVector []byte `json:"state_vector,omitempty"`
+	Anchor      []byte `json:"anchor,omitempty"`
+	Head        []byte `json:"head,omitempty"`
 }

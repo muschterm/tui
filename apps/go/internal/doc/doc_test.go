@@ -345,3 +345,26 @@ func TestDocAcceptsTypingCorrectionsAndSelectAll(t *testing.T) {
 		t.Fatalf("state %d bytes after cycles", n)
 	}
 }
+
+func TestValidPosition(t *testing.T) {
+	d, snap, _ := New("hello")
+	_ = d
+	c := newReplica(t, 7, snap)
+	item := crdt.EncodeRelativePosition(crdt.CreateRelativePositionFromIndex(c.text, 2, 0))
+	end := crdt.EncodeRelativePosition(crdt.CreateRelativePositionFromIndex(c.text, 5, 0))
+	if !ValidPosition(item) || !ValidPosition(end) {
+		t.Fatal("valid positions refused")
+	}
+	other := crdt.EncodeRelativePosition(crdt.RelativePosition{Tname: "other"})
+	for name, b := range map[string][]byte{
+		"trailing":   append(append([]byte(nil), item...), 0),
+		"other root": other,
+		"nested":     {2, 7, 1, 0},
+		"garbage":    {0xff, 0xff},
+		"empty":      nil,
+	} {
+		if ValidPosition(b) {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

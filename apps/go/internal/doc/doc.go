@@ -19,6 +19,7 @@
 package doc
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
@@ -537,3 +538,23 @@ func utf16Len(s string) int {
 // UTF16Len returns the length of s in UTF-16 code units (the CRDT index
 // unit).
 func UTF16Len(s string) int { return utf16Len(s) }
+
+// ValidPosition reports whether b is exactly one canonical Yjs
+// RelativePosition encoding anchored to an item or to the root text
+// TextName: trailing bytes, other root names and positions anchored to
+// nested types are refused.
+func ValidPosition(b []byte) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	rp, err := crdt.DecodeRelativePosition(b)
+	if err != nil {
+		return false
+	}
+	if rp.Item == nil && rp.Tname != TextName {
+		return false
+	}
+	return bytes.Equal(crdt.EncodeRelativePosition(rp), b)
+}

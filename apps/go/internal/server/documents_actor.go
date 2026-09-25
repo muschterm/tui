@@ -155,7 +155,7 @@ func (e *engine) newDocActor(id, root, rel string, d *doc.Doc, meta docMeta, bas
 	}
 	return &docActor{
 		e: e, id: id, root: root, path: rel, clock: e.docClock(), store: e.docStore(),
-		inbox: make(chan any, 64), quit: make(chan struct{}),
+		inbox: make(chan any, 256), quit: make(chan struct{}),
 		d: d, meta: meta, baseline: baseline, streams: map[*docStream]struct{}{}, retryDelay: docRetryMin, tokenAt: time.Now(), stateBytes: -1,
 	}
 }
@@ -275,6 +275,7 @@ func (a *docActor) timer() (<-chan time.Time, func()) {
 		}
 	}
 	consider(a.batchDue)
+	consider(a.presenceDeadline())
 	if t, ok := a.saveDeadline(); ok {
 		consider(t)
 	}
@@ -289,6 +290,9 @@ func (a *docActor) timer() (<-chan time.Time, func()) {
 
 func (a *docActor) onTimer() {
 	now := a.clock.Now()
+	if t := a.presenceDeadline(); !t.IsZero() && !now.Before(t) {
+		a.flushPresence(now)
+	}
 	if !a.batchDue.IsZero() && !now.Before(a.batchDue) {
 		a.commitBatch()
 	}
@@ -346,6 +350,7 @@ func (a *docActor) handle(m any) {
 			m.s.gone = true
 		}
 		a.releaseReplica(m.s)
+		a.presenceGone(m.s)
 	case docCommandMsg:
 		// The status is published before the reply so a command's effect
 		// is in the snapshot when its receipt is.
@@ -430,6 +435,7 @@ func (a *docActor) send(s *docStream, ev protocol.DocumentEvent) {
 		s.gone = true
 		delete(a.streams, s)
 		close(s.kill)
+		a.presenceGone(s)
 	}
 }
 
@@ -450,10 +456,18 @@ func (a *docActor) join(s *docStream) error {
 	if a.stopping {
 		return failure("stopping", "server is shutting down")
 	}
+	if !a.meta.hasOpener(s.clientID) {
+		return failure("not_editor", "open the document (document.open) before connecting a stream")
+	}
 	if s.replica != 0 {
 		key := strconv.FormatUint(s.replica, 10)
 		if s.replica == a.d.ServerClientID() {
 			return failure("replica_conflict", "the replica ID is the server's; choose another")
+		}
+		for other := range a.streams {
+			if other.replica == s.replica {
+				return failure("replica_conflict", "another stream is using this replica ID; if a previous connection is still closing, retry shortly")
+			}
 		}
 		switch bound := a.meta.Replicas[key]; {
 		case bound == s.clientID:
@@ -473,6 +487,7 @@ func (a *docActor) join(s *docStream) error {
 	}
 	a.streams[s] = struct{}{}
 	a.send(s, a.stateEvent())
+	a.joinPresence(s)
 	return nil
 }
 
@@ -508,6 +523,7 @@ func (a *docActor) endStreams() {
 		s.gone = true
 		close(s.out)
 		a.releaseReplica(s)
+		a.presenceGone(s)
 	}
 }
 
@@ -548,6 +564,8 @@ func (a *docActor) request(s *docStream, req protocol.DocumentRequest) {
 	case protocol.DocumentRequestUpdate:
 		a.updates++
 		a.update(s, req)
+	case protocol.DocumentRequestPresence:
+		a.presenceRequest(s, req)
 	default:
 		a.reject(s, req.Op, protocol.DocumentRejectInvalid, "unknown request type", false)
 	}
@@ -562,25 +580,33 @@ func (a *docActor) update(s *docStream, req protocol.DocumentRequest) {
 	case req.Op == "" || len(req.Op) > 128:
 		a.reject(s, "", protocol.DocumentRejectInvalid, "an update needs a bounded op", true)
 		return
-	case s.clientID != a.meta.Editor:
-		a.reject(s, req.Op, protocol.DocumentRejectNotEditor, protocol.DocumentSimultaneousUnavailable, true)
-		return
-	case req.Gen != a.meta.EditGen:
-		a.reject(s, req.Op, protocol.DocumentRejectStaleGeneration, "the editor role changed; use the current EditGen", true)
+	case !a.meta.hasOpener(s.clientID):
+		// Every client with the document open may edit (slice C); Gen is
+		// not checked. A client that closed the document stops here.
+		a.reject(s, req.Op, protocol.DocumentRejectNotEditor, "open the document (document.open) before editing it", true)
 		return
 	case s.holdOp != "" && req.Op != s.holdOp:
 		// After unavailable, later updates (which may depend on the refused
 		// one) are refused too until the client resends from holdOp.
-		a.reject(s, req.Op, protocol.DocumentRejectUnavailable, "an earlier update was refused; resend unacknowledged updates in order from op "+s.holdOp, false)
+		a.send(s, protocol.DocumentEvent{Type: protocol.DocumentEventRejected, Op: req.Op, Rejected: &protocol.DocumentRejected{
+			Reason: protocol.DocumentRejectUnavailable, Message: "an earlier update was refused; resend unacknowledged updates in order from op " + s.holdOp, RetryAfterMs: s.holdRetry}})
 		return
 	case a.stopping:
-		s.holdOp = req.Op
-		a.reject(s, req.Op, protocol.DocumentRejectUnavailable, "server is shutting down; resend after reconnecting", false)
+		a.hold(s, req.Op, 0, "server is shutting down; resend after reconnecting")
+		return
+	case a.batchBytes+len(req.Update) > docMaxPendingBytes && a.storeFailing:
+		// Not applied; the client's replica is still valid and resends.
+		a.hold(s, req.Op, 0, "document storage is failing; resend when the status is no longer failed")
 		return
 	case a.batchBytes+len(req.Update) > docMaxPendingBytes:
-		// Not applied; the client's replica is still valid and resends.
-		s.holdOp = req.Op
-		a.reject(s, req.Op, protocol.DocumentRejectUnavailable, "document storage is failing; resend later", false)
+		// The shared batch is full because editors sent a lot within one
+		// commit interval; it drains at the next commit.
+		a.hold(s, req.Op, 200, "the document is busy with other edits; resend after the delay")
+		return
+	case !a.takeTokens(s, len(req.Update)):
+		// A per-stream rate limit keeps one editor from monopolizing the
+		// document; the replica stays valid and resends after the delay.
+		a.hold(s, req.Op, 1000, "update rate limit exceeded")
 		return
 	}
 	s.holdOp = ""
@@ -1130,6 +1156,7 @@ func (a *docActor) commandLocal(c protocol.Command) error {
 			a.meta.Editor = ""
 			changed = true
 		}
+		a.closePresence(c.ClientID)
 		// Replica bindings of a client that closed and has no stream end:
 		// its next open must use a fresh replica.
 		connected := false
@@ -1148,15 +1175,17 @@ func (a *docActor) commandLocal(c protocol.Command) error {
 		if !a.meta.hasOpener(c.ClientID) {
 			return failure("not_open", "open the document before editing it")
 		}
+		// Compatibility (slice C): every opener may edit, so both commands
+		// succeed. Editor records the most recent claimant for older clients;
+		// EditGen no longer changes after the first claim and is not checked.
 		if a.meta.Editor == c.ClientID {
 			return nil
 		}
-		if a.meta.Editor != "" && c.Kind == protocol.DocumentKindEdit {
-			return failure("editor_busy", protocol.DocumentSimultaneousUnavailable+": another client is editing; take over explicitly")
-		}
 		prev, prevGen := a.meta.Editor, a.meta.EditGen
 		a.meta.Editor = c.ClientID
-		a.meta.EditGen++
+		if a.meta.EditGen == 0 {
+			a.meta.EditGen = 1
+		}
 		if err := a.persistMeta(nil); err != nil {
 			a.meta.Editor, a.meta.EditGen = prev, prevGen
 			return failure("storage", "the editor change could not be stored")
@@ -1292,7 +1321,7 @@ func (a *docActor) status() protocol.DocumentStatus {
 	st := protocol.DocumentStatus{
 		ID: a.id, Checkout: a.root, Path: a.path, DurableRev: a.meta.DurableRev, SavedRev: a.meta.SavedRev,
 		Editor: a.meta.Editor, EditGen: a.meta.EditGen, Openers: append([]string(nil), a.meta.Openers...),
-		Newline: a.meta.Format.Newline, BOM: a.meta.Format.BOM, Versions: a.meta.Versions,
+		Newline: a.meta.Format.Newline, BOM: a.meta.Format.BOM, Versions: a.meta.Versions, Collaborative: true,
 	}
 	switch {
 	case a.meta.Pause != "":
@@ -1411,4 +1440,182 @@ func (a *docActor) maxStateBytes() int {
 		return a.e.docs.maxState
 	}
 	return docMaxStateBytes
+}
+
+// --- presence ---
+
+// Per-stream update rate limit: docRateBytes per second with a burst of
+// docRateBurst. Presence is limited by coalescing, not by this bucket.
+const (
+	docRateBytes     = 4 << 20
+	docRateBurst     = 16 << 20
+	docPresenceEvery = protocol.DocumentPresenceInterval * time.Millisecond
+	docPresenceTTL   = protocol.DocumentPresenceTimeout * time.Second
+)
+
+func (a *docActor) takeTokens(s *docStream, n int) bool {
+	if !a.takeRequest(s) {
+		return false
+	}
+	now := a.clock.Now()
+	if s.tokensAt.IsZero() {
+		s.tokens, s.tokensAt = docRateBurst, now
+	}
+	s.tokens = min(docRateBurst, s.tokens+now.Sub(s.tokensAt).Seconds()*docRateBytes)
+	s.tokensAt = now
+	if float64(n) > s.tokens {
+		return false
+	}
+	s.tokens -= float64(n)
+	return true
+}
+
+// presenceRequest records a stream's cursor; it is forwarded coalesced.
+func (a *docActor) presenceRequest(s *docStream, req protocol.DocumentRequest) {
+	if !a.meta.hasOpener(s.clientID) {
+		a.clearPresence(s)
+		a.reject(s, "", protocol.DocumentRejectNotEditor, "open the document before publishing presence", false)
+		return
+	}
+	if !a.takeRequest(s) {
+		// Presence beyond the request rate is dropped (latest wins anyway).
+		return
+	}
+	if len(req.Anchor) == 0 && len(req.Head) == 0 {
+		a.clearPresence(s)
+		return
+	}
+	if len(req.Anchor) > protocol.DocumentMaxPresenceBytes || len(req.Head) > protocol.DocumentMaxPresenceBytes ||
+		!doc.ValidPosition(req.Anchor) || !doc.ValidPosition(req.Head) {
+		a.reject(s, "", protocol.DocumentRejectInvalid, "presence needs anchor and head RelativePosition encodings of at most 256 bytes", false)
+		return
+	}
+	s.presence = &protocol.DocumentPeer{Peer: s.peer, Client: s.clientID, Replica: s.replica, Color: s.color,
+		Anchor: append([]byte(nil), req.Anchor...), Head: append([]byte(nil), req.Head...)}
+	s.presAt, s.presDirty = a.clock.Now(), true
+}
+
+func (a *docActor) clearPresence(s *docStream) {
+	if s.presence == nil {
+		return
+	}
+	s.presence, s.presDirty = nil, false
+	removed := protocol.DocumentPeer{Peer: s.peer, Color: s.color, Removed: true}
+	for other := range a.streams {
+		if other != s {
+			other.deliverPresence(removed)
+		}
+	}
+}
+
+// presenceGone removes a closed stream's cursor from the others.
+func (a *docActor) presenceGone(s *docStream) {
+	a.clearPresence(s)
+}
+
+// joinPresence assigns the stream's color and sends it the live cursors.
+func (a *docActor) joinPresence(s *docStream) {
+	used := map[int]bool{}
+	for other := range a.streams {
+		if other != s {
+			used[other.color] = true
+		}
+	}
+	for s.color = 0; used[s.color] && s.color < 7; s.color++ {
+	}
+	for other := range a.streams {
+		if other != s && other.presence != nil {
+			s.deliverPresence(*other.presence)
+		}
+	}
+}
+
+// presenceDeadline is the next coalesced flush or expiry, or zero.
+func (a *docActor) presenceDeadline() time.Time {
+	var next time.Time
+	for s := range a.streams {
+		if s.presence == nil {
+			continue
+		}
+		t := s.presAt.Add(docPresenceTTL)
+		if s.presDirty && !a.hasPending(s) {
+			// A cursor is forwarded only after the peer's own accepted
+			// updates are committed and broadcast, so it never points at an
+			// edit the receivers have not seen.
+			t = s.presSent.Add(docPresenceEvery)
+		}
+		if next.IsZero() || t.Before(next) {
+			next = t
+		}
+	}
+	return next
+}
+
+// flushPresence forwards changed cursors and expires stale ones.
+func (a *docActor) flushPresence(now time.Time) {
+	for s := range a.streams {
+		switch {
+		case s.presence == nil:
+		case !now.Before(s.presAt.Add(docPresenceTTL)):
+			a.clearPresence(s)
+		case s.presDirty && !a.hasPending(s) && !now.Before(s.presSent.Add(docPresenceEvery)):
+			s.presDirty, s.presSent = false, now
+			for other := range a.streams {
+				if other != s {
+					other.deliverPresence(*s.presence)
+				}
+			}
+		}
+	}
+}
+
+// hold refuses an update as unavailable without a resync: this op and every
+// later one on the stream are refused until the client resends from op.
+func (a *docActor) hold(s *docStream, op string, retryMs int, message string) {
+	if s.holdOp == "" {
+		s.holdOp = op
+	}
+	s.holdRetry = retryMs
+	a.send(s, protocol.DocumentEvent{Type: protocol.DocumentEventRejected, Op: op, Rejected: &protocol.DocumentRejected{
+		Reason: protocol.DocumentRejectUnavailable, Message: message + "; resend unacknowledged updates in order from op " + s.holdOp, RetryAfterMs: retryMs}})
+}
+
+// Per-stream request rate (updates and presence together): docRequestRate
+// per second with a burst of docRequestBurst.
+const (
+	docRequestRate  = 200
+	docRequestBurst = 400
+)
+
+func (a *docActor) takeRequest(s *docStream) bool {
+	now := a.clock.Now()
+	if s.reqAt.IsZero() {
+		s.reqTokens, s.reqAt = docRequestBurst, now
+	}
+	s.reqTokens = min(docRequestBurst, s.reqTokens+now.Sub(s.reqAt).Seconds()*docRequestRate)
+	s.reqAt = now
+	if s.reqTokens < 1 {
+		return false
+	}
+	s.reqTokens--
+	return true
+}
+
+// hasPending reports accepted updates of s that are not yet committed.
+func (a *docActor) hasPending(s *docStream) bool {
+	for _, e := range a.batch {
+		if e.stream == s {
+			return true
+		}
+	}
+	return false
+}
+
+// closePresence removes the presence of a client that closed the document.
+func (a *docActor) closePresence(client string) {
+	for s := range a.streams {
+		if s.clientID == client {
+			a.clearPresence(s)
+		}
+	}
 }

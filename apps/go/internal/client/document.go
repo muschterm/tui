@@ -31,6 +31,42 @@ import (
 // through the read-only Files view. Content, acknowledgements and status
 // travel on a DocumentStream.
 //
+// Simultaneous editing (slice C): every client that has the document open
+// (document.open, listed in Openers) may send updates at the same time;
+// status.Collaborative is true.
+//
+//   - Open first: OpenDocumentStream fails with not_editor for a client that
+//     has not opened the document. After document.close the client's updates
+//     are refused (not_editor, Resync) and its presence is removed and
+//     refused (not_editor, no Resync); close its streams.
+//   - document.edit and document.take-edit still succeed for openers but only
+//     record the most recent claimant in Editor. EditGen does not change any
+//     more (it is set to 1 on the first claim; documents from slice B keep
+//     their last value) and the gen of SendUpdate is ignored, so neither
+//     ever causes stale_generation.
+//   - Concurrent edits merge by CRDT: apply every update event to your
+//     replica as it arrives; each client undoes only its own edits, on its
+//     own replica.
+//   - One live stream per replica ID: a second concurrent stream with the
+//     same replica fails with replica_conflict.
+//   - Presence: other streams' cursors arrive as presence events
+//     (protocol.DocumentPeer, latest per peer; Removed when a peer leaves,
+//     closes the document or times out). The server forwards a peer's cursor
+//     only after that peer's own accepted updates were broadcast, and writes
+//     queued updates before presence, but a cursor can still refer to text
+//     your replica has not integrated (for example while you resync). Keep
+//     each peer's encoded Anchor/Head and re-resolve them with
+//     crdt.ToAbsolutePosition after every update you apply; when ok is false,
+//     hide that cursor until it resolves. Send your own with SendPresence.
+//   - Limits per stream: updates about 4 MiB/s (16 MiB burst) and 200
+//     requests/s (burst 400) for updates and presence together. An update
+//     over a limit is refused as unavailable with RetryAfterMs 1000
+//     ("rate limit"); when all editors together fill the document's pending
+//     batch it is refused as unavailable with RetryAfterMs 200 ("busy"). In
+//     both cases wait RetryAfterMs, then resend from the refused op as in 6.
+//     Presence over the request rate is dropped silently; send at most about
+//     ten per second.
+//
 // Editing with a replica (github.com/reearth/ygo/crdt, pinned v1.50.0):
 //
 //  1. Create the replica with a fresh random client ID
@@ -53,7 +89,7 @@ import (
 //     changes) with crdt.ApplyUpdateV1. Your own updates come back only as
 //     acks, never as update events.
 //  5. rejected with Resync true (invalid, origin, content, surrogate_split,
-//     too_large, rejected, not_editor, stale_generation, resync_pending) is
+//     too_large, rejected, not_editor, resync_pending) is
 //     the ONE recovery path for a diverged replica:
 //     a. The rejected update was not applied, and the server applies no
 //        later update from this stream (later ops get resync_pending). Every
@@ -75,15 +111,18 @@ import (
 //     16 MiB pending bound, or the server stopping) means that update was
 //     NOT applied and your replica is still valid. The server then refuses
 //     every later update on this stream (also unavailable) until you resend
-//     the refused op. Stop sending, wait for a status event whose State is
-//     not failed (or for the stream to close, then reconnect as in 7), and
-//     resend all unacknowledged updates in their original order starting
-//     with the refused op, with their original op IDs and bytes.
+//     the refused op. Stop sending, wait RetryAfterMs when it is set,
+//     otherwise for a status event whose State is not failed (or for the
+//     stream to close, then reconnect as in 7), and resend all
+//     unacknowledged updates in their original order starting with the
+//     refused op, with their original op IDs and bytes.
 //  7. After a connection loss (Events closed with an error, or a server
 //     stop), open a new stream with the SAME replica ID, apply its state
 //     event to the existing replica (or send Sync with the replica's state
-//     vector) and resend unacknowledged updates in order. A replica ID
-//     bound to another client fails with replica_conflict: recover as in 5.
+//     vector) and resend unacknowledged updates in order. replica_conflict
+//     can mean the old connection is still closing on the server: retry
+//     after about a second; if it persists (the ID is bound to another
+//     client or stream), recover as in 5.
 //
 // Offsets in the replica are UTF-16 code units; keep cursors on grapheme
 // boundaries and never split a surrogate pair (the server rejects it).
@@ -207,6 +246,16 @@ func (s *DocumentStream) Err() error {
 // identifies it in the ack or rejected event; gen is the current EditGen.
 func (s *DocumentStream) SendUpdate(op string, gen int64, update []byte) error {
 	return s.send(protocol.DocumentRequest{Type: protocol.DocumentRequestUpdate, Op: op, Gen: gen, Update: update})
+}
+
+// SendPresence publishes this stream's cursor to the other streams as Yjs
+// RelativePosition encodings of the selection anchor and head (at most
+// protocol.DocumentMaxPresenceBytes each; both nil clears it). Send on
+// cursor changes, at most about ten per second; the server coalesces to the
+// latest and forgets it after protocol.DocumentPresenceTimeout seconds
+// without a new one, so resend periodically while the cursor rests.
+func (s *DocumentStream) SendPresence(anchor, head []byte) error {
+	return s.send(protocol.DocumentRequest{Type: protocol.DocumentRequestPresence, Anchor: anchor, Head: head})
 }
 
 // Sync asks for the update a replica with the encoded state vector sv is

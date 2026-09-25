@@ -50,11 +50,36 @@ later.
   compacted into a snapshot after 256 updates or 8 MiB. Documents are
   identified per incarnation (`doc-<random>`), keyed by canonical checkout and
   relative path, and shared by every client that opens the file.
-- **Single editor until slice C.** `document.edit` grants the editor role when
-  nobody holds it; `document.take-edit` transfers it immediately and increments
-  `EditGen`, like terminal Take control. A client's replica bindings are
-  released when it closes the document with no stream connected. Updates from other clients or with a
-  stale generation are refused with "Simultaneous editing unavailable".
+- **Simultaneous editors (slice C, 2026-09-25).** Every client that has the
+  document open may send updates at the same time; concurrent edits merge by
+  CRDT and each update is validated independently (the visible-text rule, the
+  range and size bounds all still apply per update). `document.edit` and
+  `document.take-edit` remain for compatibility: they succeed for openers,
+  only record the most recent claimant in `Editor`, and never change
+  `EditGen` after the first claim (slice B documents keep their stored
+  value); the update `Gen` is ignored. There is no exclusive mode. Only
+  openers may connect a stream (`not_editor`); after `document.close` a
+  client's updates and presence are refused and its cursor removed. One live
+  stream per replica ID (`replica_conflict`). Each stream has an update rate
+  limit (4 MiB/s, 16 MiB burst) and a request rate (200/s, burst 400, updates
+  and presence together), checked after the stopping and pending-batch
+  checks so refused updates are not charged; excess updates are refused as
+  `unavailable` with `RetryAfterMs` 1000, and a pending batch filled by
+  editors' volume (not a storage failure) with a distinct "busy" message and
+  `RetryAfterMs` 200. The actor inbox is bounded and FIFO, so one editor
+  cannot starve another.
+- **Presence** is ephemeral and never persisted: a stream sends its cursor as
+  Yjs RelativePosition encodings (at most 256 bytes each); the server
+  attaches the peer ID, ClientID, replica and a palette color, forwards at
+  most one per peer every 100 ms (latest wins) through a per-stream
+  latest-only map that is separate from the update queue (presence can never
+  delay or drop updates), sends live cursors after a joiner's first state,
+  forwards a peer's cursor only after that peer's accepted updates were
+  committed and broadcast (and writes queued updates before presence), and
+  removes a peer when its stream closes, its client closes the document, it
+  clears its presence or 30 s pass without a new one. Positions must be
+  canonical encodings anchored to an item or to the root text; clients
+  re-resolve cursors after every applied update and hide unresolvable ones.
 - **Editable files:** a regular, singly linked file of at most 1 MiB, valid
   UTF-8 without NUL, with consistent LF or CRLF line endings, and writable by
   its owner. Document text is always LF; the server restores CRLF and a UTF-8

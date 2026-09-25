@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -36,9 +38,52 @@ type docStream struct {
 	// holdOp: after an unavailable rejection, only a resend of this op is
 	// accepted next (later ones may depend on it).
 	holdOp string
+	// holdRetry is the RetryAfterMs repeated while holding (rate limit).
+	holdRetry int
 	// ending: a resync was required; no more updates are applied and the
 	// stream closes once its earlier ops are answered.
 	ending bool
+
+	// peer identifies the stream in presence. presPending (latest per peer)
+	// is filled by the actor and drained by the stream writer; presence
+	// never occupies the update queue, so it cannot delay or drop updates.
+	peer        string
+	presMu      sync.Mutex
+	presPending map[string]protocol.DocumentPeer
+	presWake    chan struct{}
+	// Actor-owned presence and rate-limit state.
+	color     int
+	presence  *protocol.DocumentPeer
+	presAt    time.Time
+	presDirty bool
+	presSent  time.Time
+	tokens    float64
+	tokensAt  time.Time
+	reqTokens float64
+	reqAt     time.Time
+}
+
+// deliverPresence queues a peer's latest presence for this stream.
+func (s *docStream) deliverPresence(p protocol.DocumentPeer) {
+	s.presMu.Lock()
+	s.presPending[p.Peer] = p
+	s.presMu.Unlock()
+	select {
+	case s.presWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *docStream) takePresence() []protocol.DocumentPeer {
+	s.presMu.Lock()
+	defer s.presMu.Unlock()
+	out := make([]protocol.DocumentPeer, 0, len(s.presPending))
+	for _, p := range s.presPending {
+		out = append(out, p)
+	}
+	clear(s.presPending)
+	sort.Slice(out, func(i, j int) bool { return out[i].Peer < out[j].Peer })
+	return out
 }
 
 // documentStream serves GET /v1/documents/{id}/stream?client_id=…&replica=…
@@ -86,7 +131,8 @@ func (e *engine) documentStream(w http.ResponseWriter, r *http.Request) {
 		ds.streams[""]--
 		e.docs.mu.Unlock()
 	}()
-	s := &docStream{clientID: clientID, replica: replica, out: make(chan protocol.DocumentEvent, docStreamBuffer), kill: make(chan struct{})}
+	s := &docStream{clientID: clientID, replica: replica, out: make(chan protocol.DocumentEvent, docStreamBuffer), kill: make(chan struct{}),
+		peer: "peer-" + ID()[:12], presPending: map[string]protocol.DocumentPeer{}, presWake: make(chan struct{}, 1)}
 	reply := make(chan error, 1)
 	if !a.post(docJoinMsg{s, reply}) {
 		writeJSONError(w, http.StatusNotFound, "not_found", "document is not open")
@@ -138,7 +184,15 @@ func (e *engine) documentStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+	stateSent := false
+	var presWake chan struct{}
 	for {
+		// Until the state is written, presence waits (the wake is re-armed
+		// after the state).
+		presWake = s.presWake
+		if !stateSent {
+			presWake = nil
+		}
 		select {
 		case ev, ok := <-s.out:
 			if !ok {
@@ -147,6 +201,37 @@ func (e *engine) documentStream(w http.ResponseWriter, r *http.Request) {
 			}
 			if writeDocEvent(ctx, conn, ev) != nil {
 				return
+			}
+			if ev.Type == protocol.DocumentEventState && !stateSent {
+				// Presence resolves against the replica, so it follows the
+				// first state.
+				stateSent = true
+				select {
+				case s.presWake <- struct{}{}:
+				default:
+				}
+			}
+		case <-presWake:
+			// Updates queued before the presence are written first, so a
+			// cursor never precedes the edit it refers to.
+			for drained := false; !drained; {
+				select {
+				case ev, ok := <-s.out:
+					if !ok {
+						conn.Close(websocket.StatusNormalClosure, "document closed")
+						return
+					}
+					if writeDocEvent(ctx, conn, ev) != nil {
+						return
+					}
+				default:
+					drained = true
+				}
+			}
+			if peers := s.takePresence(); len(peers) > 0 {
+				if writeDocEvent(ctx, conn, protocol.DocumentEvent{Type: protocol.DocumentEventPresence, Presence: peers}) != nil {
+					return
+				}
 			}
 		case <-s.kill:
 			conn.Close(websocket.StatusPolicyViolation, "resync required: slow client")
