@@ -273,6 +273,7 @@ type Model struct {
 	gitTurnActive bool
 	gitW          gitWriteUI
 	gitR          gitRefUI
+	gitO          gitOpUI
 	// Read-only Files surface (files_surface.go): per-target views, the read
 	// generation, the target last shown and whether the disk poll is ticking.
 	filesReads   filesAPI
@@ -822,6 +823,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptGitHead(msg)
 	case gitCancelMsg:
 		cmd = m.acceptGitCancel(msg)
+	case gitOperationMsg:
+		m.acceptGitOperation(msg)
+	case gitPreviewMsg:
+		cmd = m.acceptGitPreview(msg)
 	case viewerImageMsg:
 		cmd = m.acceptViewerImage(msg)
 	case thumbnailMsg:

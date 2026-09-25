@@ -116,6 +116,9 @@ func (m *Model) gitBranchInput() *textarea.Model {
 
 // gitRefKind reports the ADR 0021 command kinds.
 func gitRefKind(kind string) bool {
+	if gitOperationKind(kind) {
+		return true
+	}
 	switch kind {
 	case protocol.GitKindBranchCreate, protocol.GitKindSwitch, protocol.GitKindResetSoft,
 		protocol.GitKindFetch, protocol.GitKindPull, protocol.GitKindPush:
@@ -132,7 +135,7 @@ func gitSyncKind(kind string) bool {
 // so wait while an agent turn holds it; fetch, push and branch creation run
 // beside agent turns.
 func gitLeaseKind(kind string) bool {
-	return kind == protocol.GitKindSwitch || kind == protocol.GitKindResetSoft || kind == protocol.GitKindPull
+	return kind == protocol.GitKindSwitch || kind == protocol.GitKindResetSoft || kind == protocol.GitKindPull || gitOperationKind(kind)
 }
 
 // gitUpstreamRemote is the remote part of an upstream such as origin/main,
@@ -186,6 +189,13 @@ func (m *Model) gitRefBlock(key string, g *gitView, kind string) string {
 		case kind == protocol.GitKindPush && s.HeadOid == "":
 			return "Nothing to push on an unborn branch"
 		}
+	case protocol.GitKindMerge, protocol.GitKindRebase:
+		switch {
+		case s.Operation != "":
+			return gitErrorCopy("operation_in_progress")
+		case s.Workspace.State == "detached" || s.Branch == "":
+			return gitRefCopy(kind, "detached")
+		}
 	case protocol.GitKindSwitch, protocol.GitKindResetSoft:
 		if s.Operation != "" {
 			return gitErrorCopy("operation_in_progress")
@@ -206,6 +216,9 @@ func (m *Model) gitRefBlock(key string, g *gitView, kind string) string {
 // switch and soft reset (open documents are flushed first, then Git has up
 // to 5 minutes), use the 16 minute GitSync call when the client offers it.
 func (m *Model) dispatchGitRef(key string, cmd protocol.Command) tea.Cmd {
+	if gitOperationKind(cmd.Kind) {
+		return m.gitLongWrite(key, cmd)
+	}
 	w := m.gitWriter()
 	api, ok := w.(gitSyncAPI)
 	long := gitSyncKind(cmd.Kind) || cmd.Kind == protocol.GitKindSwitch || cmd.Kind == protocol.GitKindResetSoft
@@ -492,7 +505,7 @@ func (m *Model) startGitSwitch(dlg *gitCarryDialog) tea.Cmd {
 // stay unchanged.
 func plural(n int, word string) string {
 	s := strconv.Itoa(n) + " " + word
-	if n != 1 && word == "change" || n != 1 && word == "commit" {
+	if n != 1 && (word == "change" || word == "commit" || word == "file" || word == "item") {
 		s += "s"
 	}
 	return s
@@ -692,7 +705,13 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 			}
 			return m.showNoticeAs(noticeUnavailable, "Review required · Git")
 		}
-		notice := m.showNoticeAs(noticeUnavailable, gitRefCopy(kind, pe.Code))
+		copyText := gitRefCopy(kind, pe.Code)
+		if gitOperationKind(kind) && (pe.Code == "would_overwrite" || pe.Code == "discards_unacknowledged") {
+			if msg := safe(singleLine(pe.Message)); msg != "" {
+				copyText += " · " + msg
+			}
+		}
+		notice := m.showNoticeAs(noticeUnavailable, copyText)
 		if gitStaleCode(pe.Code) || strings.HasPrefix(pe.Code, "stale_") || pe.Code == "carry_unacknowledged" || pe.Code == "behind_upstream" {
 			return tea.Batch(notice, refresh())
 		}
@@ -733,10 +752,18 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 		st.unknown = true
 		st.failure = "Result unknown · refresh and check"
 		switch r.Code {
-		case "partial_switch":
+		case "partial_switch", "partial_change":
 			st.failure = gitRefCopy(kind, r.Code)
-		case "cancelled", "timeout", "transport":
-			if kind == protocol.GitKindPush {
+		case "cancelled", "timeout", "transport", "git_failed":
+			if gitOperationKind(kind) && (r.Code == "timeout" || r.Code == "git_failed") {
+				st.failure = gitRefCopy(kind, "timeout")
+				if r.Code == "git_failed" {
+					st.failure = "Git failed · result unknown, refresh and check"
+				}
+				if msg := safe(singleLine(r.Message)); msg != "" {
+					st.failure += " · " + msg
+				}
+			} else if kind == protocol.GitKindPush && r.Code != "git_failed" {
 				st.failure = gitRefCopy(kind, r.Code) + " · the remote may have accepted it; refresh and check"
 			}
 		}
@@ -757,6 +784,9 @@ func (m *Model) gitRefDoneCopy(st *gitWriteState, r *protocol.GitResult) string 
 		return "Switched to " + label
 	case protocol.GitKindResetSoft:
 		return "Soft reset " + label
+	}
+	if gitOperationKind(st.cmd.Kind) {
+		return gitOperationDoneCopy(st, r)
 	}
 	return m.gitSyncSummary(st, r)
 }
@@ -824,6 +854,9 @@ func gitRefCopy(kind, code string) string {
 	case "already_at_target":
 		return "HEAD is already at this commit"
 	case "published_commit":
+		if kind == protocol.GitKindRebase {
+			return "The rebase would rewrite published commits · review the preview again"
+		}
 		return "These commits are on the remote · review to reset anyway"
 	case "not_ancestor":
 		return "Target is not an ancestor of HEAD · review to reset anyway"
@@ -862,6 +895,9 @@ func gitRefCopy(kind, code string) string {
 	case "transport":
 		return "Could not reach the remote"
 	case "timeout":
+		if gitOperationKind(kind) {
+			return "Git exceeded its time budget · result unknown, refresh and check"
+		}
 		return "Git stopped · no output for too long or the time budget ended"
 	case "cancelled":
 		if gitSyncKind(kind) {
@@ -872,15 +908,61 @@ func gitRefCopy(kind, code string) string {
 	case "document_unsaved":
 		return "An open document could not be saved · Git did not run"
 	case "hook_failed":
+		if gitOperationKind(kind) {
+			return "Finished, but a hook after it failed · see output"
+		}
 		return "Switched, but the post-checkout hook failed · see output"
 	case "pushed_newer_head":
 		return "Pushed a newer commit than shown · the branch moved"
 	case "not_supported":
+		if gitOperationKind(kind) {
+			return "Not supported here · interactive stop, hidden index entries, nested repositories or too many paths; use a terminal"
+		}
 		if gitRefKind(kind) {
 			return "Not supported here · local upstream, other push remote, push.default=nothing, mirror or unsafe name"
 		}
 	case "operation_in_progress":
 		return "Finish or abort the merge, rebase, cherry-pick, revert or bisect first"
+	case "dirty_tree":
+		return "Commit or discard changes first · merge and rebase need a clean tracked tree (untracked files are fine)"
+	case "unborn":
+		return "No commits on this branch yet"
+	case "already_up_to_date":
+		return "Already up to date · nothing to do"
+	case "stale_range":
+		return "Commits to replay changed since shown · review again"
+	case "range_has_merges":
+		return "The rebase range contains merge commits · rebase in a terminal"
+	case "ff_only_configured":
+		return "merge.ff=only and this is not a fast forward · rebase instead or merge in a terminal"
+	case "no_operation":
+		return "No merge or rebase in progress · refreshed"
+	case "stale_operation":
+		return "The operation moved on since shown · refreshed, review again"
+	case "not_stopped":
+		return "The rebase is not stopped at a commit · nothing to skip"
+	case "discards_unacknowledged":
+		return "Files the command resets differ from shown · review again"
+	case "markers_unacknowledged":
+		return "Staged conflict markers differ from shown · review again"
+	case "markers_incomplete":
+		return "Not every staged file was checked for markers · review again"
+	case "drops_unacknowledged":
+		return "Commits the abort removes differ from shown · review again"
+	case "backup_incomplete":
+		return "Not every overwritten file can be backed up · review again; nothing changed"
+	case "stopped_conflicts":
+		return "Stopped with conflicts · resolve and stage them, then Continue"
+	case "stopped":
+		return "Stopped without conflicts · review, then Continue or Abort"
+	case "nothing_to_commit":
+		return "Nothing to commit for this step · Skip it (rebase) or finish in a terminal"
+	case "partial_change":
+		return "Git failed but files or the index changed · review status"
+	case "abort_incomplete":
+		return "Aborted, but some restored files still differ · review them"
+	case "documents_changed_tree":
+		return "Saving open documents changed tracked files · commit or discard them, then start again"
 	}
 	return gitErrorCopy(code)
 }
@@ -896,6 +978,15 @@ const gitCredentialAdvice = "Run `git fetch` once in a terminal to trust the hos
 // Git row or control has focus: f fetch, p pull, P push, S switch, b new
 // branch, r soft reset, y copy hash.
 func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
+	if m.gitO.review != nil && strings.HasPrefix(m.focus, "git:review") {
+		switch s {
+		case "pgdown", "pgup", "home", "end", "up", "down":
+			// Scrolling the review moves focus to the surface body so it
+			// stays valid while the buttons scroll out of view.
+			m.setFocus("right-body")
+			return nil, false
+		}
+	}
 	focus := m.focus
 	if rest, ok := strings.CutPrefix(focus, "git-bact:"); ok {
 		_, ref, _ := strings.Cut(rest, ":")
@@ -971,6 +1062,12 @@ func (m *Model) openGitContextMenu(focus string) tea.Cmd {
 		if !br.Remote && !br.Head {
 			items = append(items, menuItem{Label: "Switch to " + name + " (S)", Action: action{Kind: "git-switch", ID: br.Ref}})
 		}
+		if m.gitOperationsEnabled() && !br.Head && g.status.Branch != "" {
+			cur := safe(singleLine(g.status.Branch))
+			items = append(items,
+				menuItem{Label: "Merge " + name + " into " + cur + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationMerge, ID: br.Ref}},
+				menuItem{Label: "Rebase " + cur + " onto " + name + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: br.Ref}})
+		}
 		items = append(items,
 			menuItem{Label: "Create branch from " + name + " " + gitShort(br.Tip) + "… (b)", Action: action{Kind: "git-branch-new", ID: br.Tip, Value: br.Name}},
 			menuItem{Label: "Compare " + name + " with HEAD (Enter)", Action: action{Kind: "git-compare", ID: br.Ref, Value: br.Name}})
@@ -985,6 +1082,12 @@ func (m *Model) openGitContextMenu(focus string) tea.Cmd {
 			menuItem{Label: "Create branch at " + short + "… (b)", Action: action{Kind: "git-branch-new", ID: c.Hash, Value: c.Short}})
 		if c.Hash != g.status.HeadOid {
 			items = append(items, menuItem{Label: "Soft reset " + head + " to " + short + "… (r)", Action: action{Kind: "git-reset", ID: c.Hash}})
+		}
+		if m.gitOperationsEnabled() && c.Hash != g.status.HeadOid && g.status.Branch != "" {
+			cur := safe(singleLine(g.status.Branch))
+			items = append(items,
+				menuItem{Label: "Merge " + short + " into " + cur + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationMerge, ID: c.Hash}},
+				menuItem{Label: "Rebase " + cur + " onto " + short + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: c.Hash}})
 		}
 		items = append(items, menuItem{Label: "Copy hash " + short + " (y)", Action: action{Kind: "context-copy", Value: c.Hash}})
 	} else {

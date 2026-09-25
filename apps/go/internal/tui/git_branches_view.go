@@ -242,6 +242,10 @@ func gitExtraRowText(r *gitRow) string {
 		return strings.TrimSpace(mark + strings.ToUpper(r.text) + " " + r.when)
 	case "heading":
 		return "GIT"
+	case "conflict":
+		return strings.TrimSpace(gitConflictBadge(r.conflict.Kind) + " " + r.text + " " + gitConflictFlags(r.conflict))
+	case "review-end":
+		return "— " + r.text + " —"
 	case "name":
 		return "Branch name: " + r.text
 	case "branch":
@@ -259,7 +263,7 @@ func gitExtraRowText(r *gitRow) string {
 
 // paintGitExtraRow paints scope, section and branch rows.
 func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
-	if r.kind == "heading" || r.kind == "name" {
+	if r.kind == "heading" || r.kind == "name" || r.kind == "review-end" {
 		m.paintGitRefRow(f, x, y, width, r)
 		return
 	}
@@ -324,6 +328,8 @@ func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
 			room -= vw + 2
 		}
 		f.componentText(cx, y, max(0, min(room, ansi.StringWidth(label))), label, componentVisual{foreground: p.muted, background: bg, bold: v.bold})
+	case "conflict":
+		m.paintGitConflictRow(f, x, y, width, r, v)
 	case "branch":
 		mark, ink := " ", p.muted
 		if r.on {

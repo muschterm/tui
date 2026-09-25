@@ -115,6 +115,9 @@ func (m *Model) gitRefResultBlocks(key string, g *gitView, st *gitWriteState) []
 		code = r.Code
 	}
 	succeeded := r != nil && r.State == protocol.GitStateSucceeded
+	if gitOperationKind(st.cmd.Kind) && st.transport == "" {
+		return m.gitOperationResultBlocks(st)
+	}
 	switch {
 	case st.ack != nil:
 		b = append(b, text(st.failure, p.gold),
@@ -154,6 +157,16 @@ func (m *Model) gitRefResultBlocks(key string, g *gitView, st *gitWriteState) []
 			base = "refs/remotes/" + st.cmd.Git.Sync.Upstream
 		}
 		b = append(b, button("Compare with "+up, m.icon("git"), "git:pull-compare", action{Kind: "git-compare", ID: base, Value: up}))
+		if m.gitOperationsEnabled() {
+			// The full upstream ref from the log (HEAD@{upstream}), else
+			// the fetched commit itself; never a guessed refs/remotes name.
+			ref := r.Integration.To
+			if g != nil && g.log != nil && strings.HasPrefix(g.log.Upstream, "refs/") {
+				ref = g.log.Upstream
+			}
+			b = append(b, button("Merge "+up+"…", m.icon("git"), "git:pull-merge", action{Kind: "git-integrate", Value: protocol.GitOperationMerge, ID: ref}),
+				button("Rebase onto "+up+"…", m.icon("git"), "git:pull-rebase", action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: ref}))
+		}
 	case r != nil && st.cmd.Kind == protocol.GitKindPull && r.Fetch != nil && r.Fetch.State == protocol.GitFetchSucceeded:
 		remote := safe(singleLine(r.Fetch.Remote))
 		b = append(b, text("Fetched "+remote+", not integrated · "+st.failure, p.red))
@@ -303,6 +316,8 @@ func (m *Model) paintGitRefRow(f *frame, x, y, width int, r *gitRow) {
 			}
 			m.paintGitSlot(f, sx, y, r.tools[i], bg, true)
 		}
+	case "review-end":
+		f.text(x, y, width, truncateCells("— "+r.text+" —", width), p.muted, bg)
 	case "name":
 		focused := m.focus == r.key
 		v := m.containerStyle(focused, p.text, p.input)

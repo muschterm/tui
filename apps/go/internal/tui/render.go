@@ -523,6 +523,14 @@ func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
 // path as a navigation card so activating the line selects that thread.
 func (m *Model) writerWaitLine(t protocol.Thread, p palette) contentLine {
 	status := "Waiting for checkout"
+	op := safe(singleLine(t.WriterWait.HolderOperation))
+	if op != "" {
+		article := "the "
+		if op == "am" {
+			article = "an "
+		}
+		status = "Waiting for " + article + op + " in " + gitShortCheckout(t.Checkout)
+	}
 	holderID := t.WriterWait.HolderThreadID
 	holder, known := m.threadByID(holderID)
 	if holderID != "" && known {
@@ -535,6 +543,8 @@ func (m *Model) writerWaitLine(t protocol.Thread, p palette) contentLine {
 	line := contentLine{text: lead + " " + status, fg: p.text, bg: p.canvas, lead: lead, leadFG: p.muted}
 	if holderID != "" && known {
 		line.action = action{Kind: "thread", ID: holderID}
+	} else if op != "" {
+		line.action = action{Kind: "open", Value: "git"}
 	}
 	return line
 }
@@ -1019,6 +1029,10 @@ func menuItemDestructive(item menuItem) bool {
 	switch item.Action.Kind {
 	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove", "git-discard-confirm", "git-commit-ack", "git-ack-confirm", "git-reset-confirm":
 		return true
+	case "git-op-confirm":
+		return item.Action.Value != protocol.GitKindOperationContinue || item.Action.ID == "markers"
+	case "git-integrate-confirm":
+		return item.Action.Value == "published"
 	case "doc-close-force", "doc-quit-force", "doc-dismiss-confirm", "doc-resolve-confirm", "doc-take-confirm":
 		// Shared-document choices that discard or overwrite someone's text.
 		return true

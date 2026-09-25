@@ -27,8 +27,11 @@ type fakeGit struct {
 	show   protocol.GitShow
 	branch protocol.GitBranches
 	cmp    protocol.GitCompare
-	err    error
-	calls  []string
+	// oper and preview answer the merge/rebase reads (git_operation_test.go).
+	oper    protocol.GitOperationState
+	preview protocol.GitIntegratePreview
+	err     error
+	calls   []string
 }
 
 func (g *fakeGit) record(call string) {

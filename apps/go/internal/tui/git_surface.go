@@ -67,6 +67,10 @@ type gitView struct {
 	branchErr              string
 	branchLoad, branchOpen bool
 	branchGen              uint64
+	// oper is the merge/rebase in progress (git_operation.go), read with
+	// status in the same generation.
+	oper    *protocol.GitOperationState
+	operErr string
 }
 
 func (g *gitView) loading() bool { return g.statusLoad || g.logLoad || g.branchLoad }
@@ -136,6 +140,7 @@ func (m *Model) nextGitRefresh() tea.Cmd {
 		m.syncGitDraft(key)
 	}
 	m.gitDialogsSettle(key)
+	m.gitOperationSettle(key)
 	opsDone := m.gitOpsChanged(key)
 	active := activeTurn(m.thread()) && !m.creatingThread()
 	ended := m.gitTurnKey == key && m.gitTurnActive && !active
@@ -194,10 +199,11 @@ func (m *Model) refreshGit() tea.Cmd {
 		l, err := api.GitLog(deadline, target, gitLogLimit, scope)
 		return gitLogMsg{key: key, gen: gen, log: l, err: err}
 	}
+	oper := m.readGitOperation(key, target, gen)
 	if g.branchOpen && m.gitHistoryEnabled() {
-		return tea.Batch(status, log, m.readGitBranches(key, target, g))
+		return tea.Batch(status, log, oper, m.readGitBranches(key, target, g))
 	}
-	return tea.Batch(status, log)
+	return tea.Batch(status, log, oper)
 }
 
 // acceptGitView returns the view a result belongs to, or nil when the
@@ -267,6 +273,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 	if cmd, ok := m.gitRefAction(a); ok {
 		return cmd
 	}
+	if cmd, ok := m.gitOperationAction(a); ok {
+		return cmd
+	}
 	return m.gitWriteAction(a)
 }
 
@@ -300,6 +309,8 @@ type gitRow struct {
 	kind       string
 	disclosure bool
 	branch     protocol.GitBranch
+	// conflict is a conflict row's path (git_operation_view.go).
+	conflict protocol.GitConflict
 	// graph and graphRow place a commit row's cells in the cached layout.
 	graph    *gitGraph
 	graphRow int
@@ -417,6 +428,10 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	if m.gitRefsEnabled() {
 		b[0] = m.gitHeadingBlock(key, g)
 	}
+	if r := m.gitO.review; r != nil && r.key == key {
+		// The review of an acknowledged list takes over the body.
+		return append(b, m.gitReviewBlocks(r)...)
+	}
 	b = append(b, m.gitCheckoutBlocks()...)
 	s := g.status
 	if s != nil && s.Upstream != "" {
@@ -429,7 +444,10 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	} else if s != nil && s.Workspace.State == "branch" {
 		b = append(b, surfaceBlock{kind: surfacePairBlock, label: "Upstream", value: "none", ink: p.muted})
 	}
-	if s != nil && s.Operation != "" {
+	if s != nil && s.Operation != "" && g.oper != nil && g.oper.Kind != "" && m.gitOperationsEnabled() {
+		b = append(b, gap)
+		b = append(b, m.gitOperationBlocks(g)...)
+	} else if s != nil && s.Operation != "" {
 		glyph, ink := panelStatusMark(m, "blocked")
 		b = append(b, gap, surfaceBlock{kind: surfaceStatusBlock, label: gitOperationTitle(s.Operation), glyph: glyph, ink: ink, bold: true},
 			surfaceBlock{kind: surfaceTextBlock, value: "Read-only here · continue or abort it with Git", ink: p.muted})

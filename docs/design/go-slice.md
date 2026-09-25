@@ -1625,6 +1625,73 @@ context menus. `TestGitRefCaptures` writes captures (progress, diverged,
 carry, reset, branch row, create; dark and light). Not yet verified against a
 live server in a real terminal.
 
+### Merge and rebase (TUI) — 2026-09-25
+
+`internal/tui/git_operation.go` and `git_operation_view.go` add ADR 0023 S1+S2
+to the Git surface while the server has `git-operations` (with the ref
+capabilities). Commands share the ref-action write slot: one at a time,
+**Retry** resends the same ID, results stay at the source. Merge, rebase,
+continue and skip use a 31 minute client timeout (server budget 30 minutes).
+
+- **Entry points.** A diverged pull result offers "Merge \<upstream\>…" and
+  "Rebase onto \<upstream\>…" (targeting the log's full upstream ref from
+  `HEAD@{upstream}`, else the fetched commit's hash; the dialog shows the
+  source and full target ref); branch-row menus offer "Merge \<branch\> into
+  \<current\>…" and "Rebase \<current\> onto \<branch\>…"; commit-row menus
+  the same for the commit. Each reads `GET /v1/git/integrate/preview` (a
+  newer preview or another target drops an older reply; a reply arriving
+  over an open menu waits with "Review required · Git") and confirms from it,
+  Cancel focused: fast-forward or merge commit (per `merge.ff`), "Replays N
+  commits · Git may drop ones already upstream", a published warning whose
+  confirm reads "Rebase published commits" and sends AcknowledgePublished,
+  "Conflicts are not predicted". A Blocked preview (dirty tree, detached,
+  range with merges, hidden entries, …) shows the reason and offers only
+  Cancel; up to date offers nothing.
+- **Operation panel** replaces the passive banner while `GitStatus.Operation`
+  is set and `GET /v1/git/operation` (read with status in the same refresh
+  generation, so stale replies drop) has a kind: title with step i/N and
+  source (started here / in a terminal), branch, target, current commit,
+  side labels, the interactive StopReason, UNMERGED rows (kind badge UU, AA,
+  DU, UD, AU, UA, DD in red, binary/submodule/symlink flags; rows open the
+  diff and reserve two S3 slots via `gitConflictControls`, empty for now),
+  files in the way / hidden entries / nested repositories, and Continue…,
+  Skip commit… (rebase) and Abort… driven by `Can`, each replaced by
+  "\<Action\> unavailable · \<reason\>" when refused.
+- **Confirmations** (Cancel focused; Abort, Skip, "Rebase published
+  commits" and "Continue with conflict markers" red) name everything their
+  fingerprints cover and send exactly the shown state. Lists of at most six
+  items that fit whole stay in the menu dialog (paths left-truncated,
+  keeping the file name); longer lists open a review that takes over the Git
+  surface body: the question, Cancel (focused), every heading and every item
+  wrapped (never cut), and the confirm only after the end of the lists has
+  been on screen ("Scroll to review all N items" until then; PgUp/PgDn,
+  Home/End, wheel and scrollbar all scroll it). Of those, Abort lists
+  DiscardsOnAbort, BackupMissingOnAbort and a sequence's dropped commits (and
+  "and N more" when incomplete), sending WorktreeFingerprint,
+  DiscardsFingerprint, AcknowledgeBackupMissing and AcknowledgeDropped; Skip
+  names the dropped commit and DiscardsOnSkip; Continue lists MarkerPaths
+  (confirm "Continue with conflict markers", MarkersFingerprint) and the
+  incomplete-scan note (AcknowledgeMarkersIncomplete). A refresh showing
+  another stop or any changed list fingerprint drops the dialog or review.
+- **Results**: merged/rebased/continued/skipped/aborted copy, "Stopped with
+  conflicts · resolve and stage them, then Continue", rerere-rewritten paths,
+  the backup's object IDs with recovery commands (`git show <oid>:<path> >
+  <path>`, `git checkout <index-oid> -- <path>`; copy only, nothing runs) and
+  the gc caveat, abort_incomplete paths, nothing_to_commit with **Skip
+  commit…**, timeout outcome unknown with Refresh, and copy for every new
+  refusal code.
+- **Reservation**: a thread waiting on `WriterWait.HolderOperation` reads
+  "Waiting for the \<kind\> in \<last two checkout path parts\>" ("an am"),
+  and activating it opens the Git surface.
+
+Tests: `internal/tui/git_operation_test.go` (fake reads and writes): merge
+and rebase previews (default Cancel, pins and acknowledgement sent), blocked
+preview, stale preview dropped, panel copy, abort/skip/continue
+fingerprints, sequence drops, stale stop, Retry reusing the ID, results with
+backup, nothing_to_commit Skip, code copy, the reservation line and the
+diverged entry points. `TestGitOperationCaptures` renders preview, panel and
+abort (dark and light). Not yet verified against a live server in a terminal.
+
 ### Embedded terminals — 2026-09-24
 
 Phase 3 of [ADR 0019](../adr/0019-embedded-terminal-sessions.md): right-host
