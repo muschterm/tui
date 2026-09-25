@@ -1401,6 +1401,49 @@ client edits at a time; peer cursors and simultaneous editors are slice C.
   control, and wiring of Git rewrites to document pauses in the TUI. No
   interactive terminal session with a real user has been recorded yet.
 
+### Simultaneous editing and presence (TUI) — 2026-09-25
+
+Editor slice C (TUI side) over the server's collaborative documents
+(`DocumentStatus.Collaborative`; `internal/tui/editor_presence.go`).
+
+- **No role gate.** When the status is collaborative, Enter or a click
+  enters edit mode directly (no `document.edit`); the single-editor row,
+  Take over and the "another client took over" notice appear only for
+  servers without `Collaborative`. A `not_editor` refusal then means this
+  client no longer has the file open.
+- **Presence out.** While editing, this client publishes its selection
+  anchor and cursor as ygo RelativePosition encodings through
+  `SendPresence`: on change at most once per 100 ms (later moves are
+  coalesced into one throttled send), a keepalive every 10 s while the cursor
+  rests (the server forgets presence after 30 s), and a clear on leaving
+  edit mode. A reconnect republishes it.
+- **Presence in.** Other streams' cursors (`DocumentEvent.Presence`) are
+  kept per peer and resolved against this replica only when painting, so
+  they follow the text and never move this client's cursor, selection or
+  scroll. A peer's cursor paints as a cell in its color (server color index
+  0–7 mapped to the theme accents blue, violet, cyan, pink, gold, green, red,
+  muted), its selection as that accent mixed into the panel (true color; the
+  selection fill otherwise); this client's own cursor and selection paint
+  over them. `Removed` drops a peer, and one silent for 40 s is treated as
+  stale. The status line adds "· N others editing" with a colored mark and
+  the short client ID of each peer.
+- **Concurrent typing.** Remote updates keep the cursor, selection anchor
+  and view anchored by relative positions; an undo step's typing run joins
+  by cursor identity (kept on the same text through remote edits), so
+  undo still removes this client's whole run and nothing a peer typed.
+- **Rate limit.** An `unavailable` refusal with `RetryAfterMs` pauses sending
+  for exactly that long (a status in between does not resend early), then
+  resends from the refused op.
+- **Tests.** `editor_collab_test.go`: no gate when collaborative and the
+  legacy gate otherwise, presence throttling/keepalive/clear with a fake
+  clock (and the sent head resolving to the cursor), peer rendering,
+  movement with remote text, Removed and stale peers, RetryAfterMs, undo with
+  a concurrent peer. `editor_e2e_test.go`: two real-server clients type
+  interleaved on different lines, converge, see each other's cursor, one
+  undoes only its own run, autosave writes the merged text and leaving edit
+  mode clears the cursor. Captures: `TestEditorCaptures` "peers" (dark and
+  light).
+
 ### Git write actions — 2026-09-24
 
 `internal/tui/git_write.go` and `git_write_view.go` add the ADR 0020 writes

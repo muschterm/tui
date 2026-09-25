@@ -191,6 +191,32 @@ func (m *Model) docKeptRow(f *frame, x, y, w int, s *docSession, b *fileBuffer) 
 	m.docNoticeRow(f, x, y, w, "failed", label, buttons...)
 }
 
+// paintPeersList paints "· N others editing" and each peer's colored mark
+// and short client ID between x and right.
+func (m *Model) paintPeersList(f *frame, x, y, right int, s *docSession) {
+	peers := m.livePeers(s)
+	if len(peers) == 0 {
+		return
+	}
+	p := m.colors()
+	label := fmt.Sprintf(" · %d %s editing", len(peers), docPlural(len(peers), "other", "others"))
+	if x+ansi.StringWidth(label) > right {
+		return
+	}
+	f.text(x, y, ansi.StringWidth(label), label, p.muted, p.panel)
+	x += ansi.StringWidth(label)
+	for _, pk := range peers {
+		id := shortClient(pk.client)
+		w := 3 + ansi.StringWidth(id)
+		if x+w > right {
+			break
+		}
+		f.text(x+1, y, 1, "●", m.peerColor(pk.color), p.panel)
+		f.text(x+2, y, w-2, " "+id, p.muted, p.panel)
+		x += w
+	}
+}
+
 // renderDocBody paints a document buffer below its tab strip.
 func (m *Model) renderDocBody(f *frame, r shell.Rect, b *fileBuffer, s *docSession) {
 	p := m.colors()
@@ -228,6 +254,7 @@ func (m *Model) renderDocBody(f *frame, r shell.Rect, b *fileBuffer, s *docSessi
 	f.text(x+2, y, room, status, p.text, p.panel)
 	if sw := ansi.StringWidth(status); sw+3 < room {
 		f.text(x+2+sw, y, room-sw, " · "+docFormat(s.status), p.muted, p.panel)
+		m.paintPeersList(f, x+2+sw+3+ansi.StringWidth(docFormat(s.status)), y, x+2+room, s)
 	}
 	y++
 	if _, ok := m.newestLost(s, b); ok && y < bottom {
@@ -301,6 +328,28 @@ func (m *Model) paintDocRows(f *frame, r shell.Rect, gutter int, b *fileBuffer, 
 	marked := style(p.muted, p.panel)
 	selected := style(p.text, p.selected)
 	cursor := style(p.text, p.panel).Reverse(true)
+	// Other editors' cursors (a cell in their color) and selections (a
+	// tint); this client's own cursor and selection paint over them.
+	peers := m.livePeers(s)
+	peerCursor := make([]lipgloss.Style, len(peers))
+	peerSel := make([]lipgloss.Style, len(peers))
+	for i, pk := range peers {
+		peerCursor[i] = style(p.panel, m.peerColor(pk.color))
+		peerSel[i] = style(p.text, m.peerTint(pk.color))
+	}
+	peerAt := func(pos edPos) *lipgloss.Style {
+		for i := range peers {
+			if peers[i].head == pos {
+				return &peerCursor[i]
+			}
+		}
+		for i := range peers {
+			if peers[i].selection && !pos.less(peers[i].a) && pos.less(peers[i].z) {
+				return &peerSel[i]
+			}
+		}
+		return nil
+	}
 	line, within := t.rowLine(b.scroll, room)
 	for i := 0; i < r.H && line < len(t.lines); i++ {
 		y := r.Y + i
@@ -364,6 +413,8 @@ func (m *Model) paintDocRows(f *frame, r shell.Rect, gutter int, b *fileBuffer, 
 				st = &cursor
 			case inSel(pos):
 				st = &selected
+			case peerAt(pos) != nil:
+				st = peerAt(pos)
 			case c.marked:
 				st = &marked
 			}
@@ -387,6 +438,9 @@ func (m *Model) paintDocRows(f *frame, r shell.Rect, gutter int, b *fileBuffer, 
 				used++
 			case lastRow && inSel(edPos{line, len(src)}) && line < len(t.lines)-1:
 				put(&selected, " ")
+				used++
+			case (lastRow || end == len(src)) && peerAt(edPos{line, end}) != nil:
+				put(peerAt(edPos{line, end}), " ")
 				used++
 			}
 		}

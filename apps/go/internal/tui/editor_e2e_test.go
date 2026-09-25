@@ -180,30 +180,56 @@ func TestDocEditsReachDiskThroughRealServer(t *testing.T) {
 	h.until("autosave", 10*time.Second, func() bool { return readFile(t, path) == "big hello\nsecond line\n" })
 	h.until("Saved", 5*time.Second, func() bool { _, text := h.m.docStatusLine(h.session()); return text == "Saved" })
 
-	// A second client joins the same document: it sees the text and cannot
-	// type while client-a edits.
+	// A second client joins the same document and edits at the same time;
+	// both see each other's cursors, and each undoes only its own typing.
 	o := realDocModel(t, rs, "client-b", 200, 44)
 	o.cmd(o.m.openFilesBuffer("notes.txt"))
-	o.until("observer state", 5*time.Second, func() bool { s := o.session(); return s != nil && s.rep != nil })
-	if o.session().id != h.session().id {
-		t.Fatal("clients opened different documents")
+	o.until("second state", 5*time.Second, func() bool { s := o.session(); return s != nil && s.rep != nil })
+	if o.session().id != h.session().id || !o.session().status.Collaborative {
+		t.Fatalf("second client: same document %v collaborative %v", o.session().id == h.session().id, o.session().status.Collaborative)
 	}
-	o.until("gate", 5*time.Second, func() bool { return strings.Contains(o.screen(), protocol.DocumentSimultaneousUnavailable) })
 	h.typeText("!")
 	o.until("live update", 5*time.Second, func() bool { return strings.Contains(o.session().rep.txt.String(), "big !hello") })
-	o.m.setFocus("files-text")
-	o.key(tea.KeyEnter, 0)
-	if o.m.docEdit != "" {
-		t.Fatal("observer entered edit mode")
+	o.edit()
+	o.key(tea.KeyDown, 0)
+	o.key(tea.KeyEnd, 0)
+	for i, r := range "abc" {
+		h.typeText(string(rune('A' + i)))
+		o.typeText(string(r))
 	}
-	h.until("autosave 2", 10*time.Second, func() bool { return readFile(t, path) == "big !hello\nsecond line\n" })
+	converged := func() bool {
+		a, b := h.session().rep.txt.String(), o.session().rep.txt.String()
+		return a == b && a == "big !ABChello\nsecond lineabc\n"
+	}
+	for deadline := time.Now().Add(10 * time.Second); !converged(); h.settle() {
+		o.settle()
+		if time.Now().After(deadline) {
+			t.Fatalf("no convergence: a %q b %q", h.session().rep.txt.String(), o.session().rep.txt.String())
+		}
+	}
+	h.until("peer cursor", 5*time.Second, func() bool {
+		peers := h.m.livePeers(h.session())
+		return len(peers) == 1 && peers[0].client == "client-b" && peers[0].head == (edPos{1, len("second lineabc")})
+	})
+	if !strings.Contains(h.screen(), "1 other editing") {
+		t.Fatalf("no peers list:\n%s", h.screen())
+	}
+	// client-b undoes its own run; client-a's concurrent typing stays.
+	o.key('z', tea.ModCtrl)
+	h.until("undo own only", 10*time.Second, func() bool {
+		return h.session().rep.txt.String() == "big !ABChello\nsecond line\n"
+	})
+	h.until("autosave 2", 10*time.Second, func() bool { return readFile(t, path) == "big !ABChello\nsecond line\n" })
+	// Leaving edit mode clears client-b's cursor for client-a.
+	o.key(tea.KeyEscape, 0)
+	h.until("peer cleared", 5*time.Second, func() bool { return len(h.m.livePeers(h.session())) == 0 })
 
 	// Overlapping edits: client-a types on line 2 while the file's line 2
 	// changes on disk before autosave runs.
 	h.key(tea.KeyDown, 0)
 	h.key(tea.KeyEnd, 0)
 	h.typeText(" mine")
-	if err := os.WriteFile(path, []byte("big !hello\nsecond line theirs\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("big !ABChello\nsecond line theirs\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	h.until("paused", 10*time.Second, func() bool {
@@ -222,7 +248,7 @@ func TestDocEditsReachDiskThroughRealServer(t *testing.T) {
 	}
 	h.click("doc-review-keep")
 	h.choose("Keep mine")
-	h.until("resolved", 10*time.Second, func() bool { return readFile(t, path) == "big !hello\nsecond line mine\n" })
+	h.until("resolved", 10*time.Second, func() bool { return readFile(t, path) == "big !ABChello\nsecond line mine\n" })
 	h.until("saved after resolve", 10*time.Second, func() bool { _, text := h.m.docStatusLine(h.session()); return text == "Saved" })
 	// The server probed its agents without starting any runtime.
 	snap, err := rs.c.Snapshot(context.Background())

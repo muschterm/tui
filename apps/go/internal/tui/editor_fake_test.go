@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -37,6 +38,17 @@ type fakeDocServer struct {
 	versions  protocol.DocumentVersions
 	staleNext bool
 	applied   map[string]int // op → times acked
+	// presences records SendPresence calls (anchor, head; nil clears).
+	presences []fakePresence
+	// retryAfter refuses the next update as rate limited.
+	retryAfter  int
+	retryReason string
+	nextPeer    int
+}
+
+type fakePresence struct {
+	at           time.Time
+	anchor, head []byte
 }
 
 type heldReq struct {
@@ -48,6 +60,7 @@ type heldReq struct {
 
 type fakeDocConn struct {
 	srv      *fakeDocServer
+	peer     string
 	clientID string
 	replica  uint64
 	events   chan protocol.DocumentEvent
@@ -85,7 +98,8 @@ func (s *fakeDocServer) dial(_ context.Context, id, clientID string, replica uin
 	}
 	s.replicas[replica] = clientID
 	s.dials = append(s.dials, replica)
-	c := &fakeDocConn{srv: s, clientID: clientID, replica: replica, events: make(chan protocol.DocumentEvent, 1024)}
+	s.nextPeer++
+	c := &fakeDocConn{srv: s, peer: fmt.Sprint("p", s.nextPeer), clientID: clientID, replica: replica, events: make(chan protocol.DocumentEvent, 1024)}
 	s.conns = append(s.conns, c)
 	st := s.statusLocked()
 	c.events <- protocol.DocumentEvent{Type: protocol.DocumentEventState, Rev: s.rev, Update: s.d.EncodeState(), Status: &st}
@@ -95,6 +109,36 @@ func (s *fakeDocServer) dial(_ context.Context, id, clientID string, replica uin
 func (c *fakeDocConn) Events() <-chan protocol.DocumentEvent { return c.events }
 func (c *fakeDocConn) Err() error                            { return c.err }
 func (c *fakeDocConn) Sync([]byte) error                     { return nil }
+
+func (c *fakeDocConn) SendPresence(anchor, head []byte) error {
+	s := c.srv
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.presences = append(s.presences, fakePresence{time.Now(), anchor, head})
+	peer := protocol.DocumentPeer{Peer: c.peer, Client: c.clientID, Replica: c.replica, Color: 1, Anchor: anchor, Head: head, Removed: head == nil}
+	for _, o := range s.conns {
+		if o != c {
+			s.send(o, protocol.DocumentEvent{Type: protocol.DocumentEventPresence, Presence: []protocol.DocumentPeer{peer}})
+		}
+	}
+	return nil
+}
+
+// presenceCount returns how many presences were sent.
+func (s *fakeDocServer) presenceCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.presences)
+}
+
+// sendPeer delivers a presence event to every stream.
+func (s *fakeDocServer) sendPeer(p protocol.DocumentPeer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, o := range s.conns {
+		s.send(o, protocol.DocumentEvent{Type: protocol.DocumentEventPresence, Presence: []protocol.DocumentPeer{p}})
+	}
+}
 func (c *fakeDocConn) Close() error {
 	c.srv.mu.Lock()
 	defer c.srv.mu.Unlock()
@@ -185,6 +229,15 @@ func (s *fakeDocServer) updateLocked(c *fakeDocConn, op string, gen int64, u []b
 		s.busyNext = false
 		s.rejectLocked(c, op, protocol.DocumentRejectUnavailable, false)
 		return
+	case s.retryAfter > 0:
+		reason := protocol.DocumentRejectUnavailable
+		if s.retryReason != "" {
+			reason = s.retryReason
+		}
+		s.send(c, protocol.DocumentEvent{Type: protocol.DocumentEventRejected, Op: op, Rejected: &protocol.DocumentRejected{Reason: reason, RetryAfterMs: s.retryAfter}})
+		s.retryAfter = 0
+		return
+	case s.status.Collaborative:
 	case c.clientID != s.status.Editor:
 		s.rejectLocked(c, op, protocol.DocumentRejectNotEditor, true)
 		return

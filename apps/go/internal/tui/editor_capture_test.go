@@ -106,6 +106,18 @@ func TestEditorCaptures(t *testing.T) {
 				h.settle()
 				h.settle()
 			}},
+			{"peers", 144, 40, func(h *docHarness) {
+				h.srv.setStatus(func(st *protocol.DocumentStatus) { st.Collaborative = true })
+				h.settle()
+				h.edit()
+				h.key(tea.KeyDown, 0)
+				h.key(tea.KeyDown, 0)
+				h.key(tea.KeyEnd, 0)
+				s := h.session()
+				line := func(n int) int { return s.rep.txt.lineStart(n) }
+				peerAt(t, h, "p1", "client-bob", 2, line(5)+3, line(5)+11)
+				peerAt(t, h, "p2", "client-eve", 3, line(7)+14, line(7)+14)
+			}},
 			{"narrow", 44, 24, func(h *docHarness) {
 				h.m.activate(action{Kind: "column", Index: int(shell.RightRegion)})
 				h.settle()

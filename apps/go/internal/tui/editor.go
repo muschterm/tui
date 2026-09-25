@@ -37,9 +37,12 @@ type docEditor struct {
 	// goal is the display column vertical moves keep; -1 when unset.
 	goal     int
 	lastKind string
-	lastAt   int
-	lastTime time.Time
-	dragging bool
+	// moves counts cursor moves by the user (keys, pointer, select all);
+	// a typing run joins one undo step only while it is unchanged, however
+	// remote edits shift the cursor's coordinates.
+	moves, lastMoves int
+	lastTime         time.Time
+	dragging         bool
 	// now is injectable for tests.
 	now func() time.Time
 }
@@ -109,7 +112,8 @@ func (m *Model) startDocEdit(b *fileBuffer, s *docSession) tea.Cmd {
 		return m.showNoticeAs(noticeUnavailable, "The document is closed · reopen the file")
 	case s.status.State == protocol.DocumentStateReadOnly:
 		return m.showNoticeAs(noticeUnavailable, "Read-only · "+docReason(s.status.Reason, "the file cannot be edited"))
-	case s.status.Editor == m.clientID:
+	case s.status.Collaborative || s.status.Editor == m.clientID:
+		// Every opener edits a collaborative document; no role to request.
 		m.docEdit = s.id
 		m.docEnsureVisible(s, b)
 		m.markDirty()
@@ -197,6 +201,7 @@ func (m *Model) docKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 	case ctrl && code == 'a':
 		t := s.rep.txt
 		s.ed.anchor, s.ed.cur = edPos{}, edPos{len(t.lines) - 1, len(t.lines[len(t.lines)-1])}
+		s.ed.moves++
 		m.markDirty()
 		return nil, true
 	case ctrl && code == 's':
@@ -296,6 +301,7 @@ func (m *Model) docMove(s *docSession, b *fileBuffer, code rune, shift, word boo
 		e.anchor = cur
 	}
 	e.lastKind = ""
+	e.moves++
 	m.docEnsureVisible(s, b)
 	m.markDirty()
 	return true
@@ -369,7 +375,7 @@ func (m *Model) docReplace(s *docSession, b *fileBuffer, a, z edPos, text, kind 
 		return nil
 	}
 	now := e.clock()
-	join := kind != "other" && kind == e.lastKind && at == e.lastAt && now.Sub(e.lastTime) <= docUndoGap
+	join := kind != "other" && kind == e.lastKind && !e.hasSel() && e.moves == e.lastMoves && now.Sub(e.lastTime) <= docUndoGap
 	// The lines before the edit: if the replica fails, the intended text is
 	// rebuilt from them and kept as the recovery draft.
 	before := &edText{lines: slices.Clone(t.lines)}
@@ -384,10 +390,7 @@ func (m *Model) docReplace(s *docSession, b *fileBuffer, a, z edPos, text, kind 
 	e.cur = e.snap(t, t.posAt(end))
 	e.anchor, e.goal = e.cur, -1
 	e.lastKind, e.lastTime = kind, now
-	e.lastAt = at
-	if kind == "type" {
-		e.lastAt = end
-	}
+	e.lastMoves = e.moves
 	m.docEnsureVisible(s, b)
 	return m.queueLocal(s)
 }
@@ -475,6 +478,7 @@ func (m *Model) docUndo(s *docSession, b *fileBuffer, redo bool) tea.Cmd {
 	e := &s.ed
 	e.cur = e.snap(t, t.posAt(at))
 	e.anchor, e.goal, e.lastKind = e.cur, -1, ""
+	e.moves++
 	m.docEnsureVisible(s, b)
 	return m.queueLocal(s)
 }
@@ -602,6 +606,7 @@ func (m *Model) docMouse(msg tea.MouseMsg, f frame) (tea.Cmd, bool) {
 		m.termFocus = ""
 		pos := m.docPosAt(s, b, f.docText, p.X, p.Y)
 		s.ed.cur, s.ed.goal, s.ed.lastKind = pos, -1, ""
+		s.ed.moves++
 		if p.Mod&tea.ModShift == 0 {
 			s.ed.anchor = pos
 		}
@@ -630,6 +635,7 @@ func (m *Model) docMouse(msg tea.MouseMsg, f frame) (tea.Cmd, bool) {
 		}
 		x := min(max(p.X, f.docText.X), f.docText.X+f.docText.W-1)
 		s.ed.cur = m.docPosAt(s, b, f.docText, x, y)
+		s.ed.moves++
 		m.clampFilesBuffer(b)
 		m.markDirty()
 		return nil, true

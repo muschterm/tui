@@ -54,6 +54,7 @@ type docConn interface {
 	Events() <-chan protocol.DocumentEvent
 	Err() error
 	SendUpdate(op string, gen int64, update []byte) error
+	SendPresence(anchor, head []byte) error
 	Sync(sv []byte) error
 	Close() error
 }
@@ -109,8 +110,15 @@ type docSession struct {
 	pending   []docOp
 	nonce     string
 	opSeq     uint64
-	// resending: an unavailable refusal paused sending until a resend.
-	resending bool
+	// resending: an unavailable refusal paused sending until a resend;
+	// rateLimited: that refusal named a RetryAfterMs to wait out.
+	resending, rateLimited bool
+	// replicaConflicts counts replica_conflict dials in a row.
+	replicaConflicts int
+	// Presence (editor_presence.go): this client's last sent cursor and the
+	// other streams' cursors.
+	pres  docPresence
+	peers map[string]*docPeer
 	// lost holds refused texts kept for the user (newest last, bounded).
 	lost []docLost
 	// oldRep is the discarded replica whose unacknowledged edits are
@@ -183,12 +191,13 @@ func (s *docSession) viewText() *edText {
 
 // editable reports whether this client may type into the document now.
 func (s *docSession) editable(clientID string) bool {
-	return s != nil && s.rep != nil && s.gone == "" && s.status.Editor == clientID && s.status.State != protocol.DocumentStateReadOnly
+	return s != nil && s.rep != nil && s.gone == "" && (s.status.Collaborative || s.status.Editor == clientID) && s.status.State != protocol.DocumentStateReadOnly
 }
 
 // otherEditor reports that another client holds the editor role.
+// With simultaneous editing (Collaborative) nobody holds it.
 func (s *docSession) otherEditor(clientID string) bool {
-	return s.status.Editor != "" && s.status.Editor != clientID
+	return !s.status.Collaborative && s.status.Editor != "" && s.status.Editor != clientID
 }
 
 type (
@@ -429,6 +438,7 @@ func (m *Model) syncDocuments() tea.Cmd {
 		if s.gone == "" && s.conn == nil && !s.dialing && !s.retry && m.connected {
 			cmds = append(cmds, m.dialDoc(s))
 		}
+		cmds = append(cmds, m.syncPresence(s))
 	}
 	m.docInput()
 	return tea.Batch(cmds...)
@@ -478,6 +488,10 @@ func readDoc(id string, gen uint64, conn docConn) tea.Cmd {
 
 // closeDocStream closes s's stream; later messages from it are stale.
 func (m *Model) closeDocStream(s *docSession) {
+	// The server forgets presence with the stream; peers come again after
+	// the next state.
+	s.pres, s.peers = docPresence{}, nil
+	s.rateLimited = false
 	m.docSeq++
 	s.gen = m.docSeq
 	s.dialing, s.retry, s.connected, s.resending = false, false, false, false
@@ -528,12 +542,17 @@ func (m *Model) sendPending(s *docSession) tea.Cmd {
 }
 
 func (m *Model) scheduleDocResend(s *docSession) tea.Cmd {
+	return m.scheduleDocResendAfter(s, docResendWait)
+}
+
+// scheduleDocResendAfter pauses sending for wait, then resends.
+func (m *Model) scheduleDocResendAfter(s *docSession, wait time.Duration) tea.Cmd {
 	if s.resending {
 		return nil
 	}
 	s.resending = true
 	id, gen := s.id, s.gen
-	return tea.Tick(docResendWait, func(time.Time) tea.Msg { return docResendMsg{id: id, gen: gen} })
+	return tea.Tick(wait, func(time.Time) tea.Msg { return docResendMsg{id: id, gen: gen} })
 }
 
 // queueLocal records the replica's new updates as pending ops and sends them.
@@ -576,8 +595,20 @@ func (m *Model) acceptDocMsg(msg tea.Msg) (tea.Cmd, bool) {
 			switch {
 			case errors.Is(msg.err, client.ErrDocumentNotFound):
 				return m.docGone(s, "not_found", "The document is no longer open on the server"), true
+			case errors.As(msg.err, &pe) && pe.Code == protocol.DocumentRejectNotEditor:
+				// This client no longer has the document open (it closed
+				// it): end the session, keeping any draft as a copy.
+				return m.docGone(s, "closed", "This client no longer has the file open"), true
 			case errors.As(msg.err, &pe) && pe.Code == "replica_conflict":
-				m.docResync(s, "", false)
+				// The previous connection may still be closing: retry the same
+				// replica after about a second, then recover with a new one.
+				s.replicaConflicts++
+				if s.replicaConflicts > 1 {
+					s.replicaConflicts = 0
+					m.docResync(s, "", false)
+				} else {
+					s.backoff = docRetryMax / 10
+				}
 			}
 			return m.retryDoc(s), true
 		}
@@ -610,13 +641,23 @@ func (m *Model) acceptDocMsg(msg tea.Msg) (tea.Cmd, bool) {
 			// syncDocuments redials it.
 		}
 		return nil, true
+	case docPresenceMsg:
+		if s := m.docs[msg.id]; s != nil && s.gen == msg.gen {
+			if msg.keepalive {
+				s.pres.ticking = false
+			} else {
+				s.pres.due = false
+			}
+		}
+		return nil, true
 	case docResendMsg:
 		if s := m.docs[msg.id]; s != nil && s.gen == msg.gen && s.resending {
 			s.resending = false
-			if s.status.State == protocol.DocumentStateFailed {
+			if s.status.State == protocol.DocumentStateFailed && !s.rateLimited {
 				// Storage is still failing: keep waiting for a status.
 				return m.scheduleDocResend(s), true
 			}
+			s.rateLimited = false
 			for i := range s.pending {
 				s.pending[i].sent = false
 			}
@@ -660,7 +701,7 @@ func (m *Model) applyDocEvent(s *docSession, ev protocol.DocumentEvent) tea.Cmd 
 			return m.showNoticeAs(noticeError, "Document out of sync · reloading it")
 		}
 		s.rev = max(s.rev, ev.Rev)
-		s.connected = true
+		s.connected, s.replicaConflicts = true, 0
 		for i := range s.pending {
 			s.pending[i].sent = false
 		}
@@ -691,9 +732,9 @@ func (m *Model) applyDocEvent(s *docSession, ev protocol.DocumentEvent) tea.Cmd 
 			return nil
 		}
 		if rej.Resync {
-			return m.docResync(s, docRejectCopy(rej), false)
+			return m.docResync(s, docRejectCopy(rej, s.status.Collaborative), false)
 		}
-		if rej.Reason == protocol.DocumentRejectUnavailable && ev.Op != "" {
+		if (rej.Reason == protocol.DocumentRejectUnavailable || rej.RetryAfterMs > 0) && ev.Op != "" {
 			// Not applied and the replica is still valid: pause sending and
 			// resend everything from the refused op on, in order.
 			refused := false
@@ -703,19 +744,35 @@ func (m *Model) applyDocEvent(s *docSession, ev protocol.DocumentEvent) tea.Cmd 
 					s.pending[i].sent = false
 				}
 			}
+			if rej.RetryAfterMs > 0 {
+				// A rate limit: resend no earlier than the server asks,
+				// whatever the status says meanwhile.
+				s.rateLimited = true
+				if s.resending {
+					return nil
+				}
+				return m.scheduleDocResendAfter(s, time.Duration(rej.RetryAfterMs)*time.Millisecond)
+			}
 			return m.scheduleDocResend(s)
+		}
+		if ev.Op == "" {
+			// A refused presence (or sync) changes no text: the next one or
+			// the reconnect settles it.
+			return nil
 		}
 		return m.showNoticeAs(noticeError, "Document request refused · "+safe(singleLine(rej.Message)))
 	case protocol.DocumentEventStatus:
 		if ev.Status != nil {
 			cmd := m.acceptDocStatus(s, *ev.Status, true)
-			if s.resending && ev.Status.State != protocol.DocumentStateFailed {
+			if s.resending && !s.rateLimited && ev.Status.State != protocol.DocumentStateFailed {
 				// Storage recovered: resend now rather than at the tick.
 				s.resending = false
 				return tea.Batch(cmd, m.sendPending(s))
 			}
 			return cmd
 		}
+	case protocol.DocumentEventPresence:
+		m.acceptPresence(s, ev.Presence)
 	case protocol.DocumentEventClosed:
 		reason := "The document was discarded"
 		if ev.Reason != "" {
@@ -728,7 +785,7 @@ func (m *Model) applyDocEvent(s *docSession, ev protocol.DocumentEvent) tea.Cmd 
 
 // acceptDocStatus takes a newer status and reacts to editor changes.
 func (m *Model) acceptDocStatus(s *docSession, st protocol.DocumentStatus, live bool) tea.Cmd {
-	lost := s.status.Editor == m.clientID && st.Editor != m.clientID
+	lost := !st.Collaborative && s.status.Editor == m.clientID && st.Editor != m.clientID
 	s.status = st
 	s.live = s.live || live
 	if lost {
@@ -889,7 +946,7 @@ func (m *Model) reapplyDraft(s *docSession, state []byte) tea.Cmd {
 	if len(edits) == 0 {
 		return nil
 	}
-	if s.status.Editor != m.clientID {
+	if !s.status.Collaborative && s.status.Editor != m.clientID {
 		// Nobody holds the role: keep the text rather than guess.
 		return keep(s.draftReason)
 	}
@@ -937,9 +994,12 @@ func mergedDraft(old *docReplica, state []byte) (_ string, err error) {
 }
 
 // docRejectCopy explains a refused update in user terms.
-func docRejectCopy(r *protocol.DocumentRejected) string {
+func docRejectCopy(r *protocol.DocumentRejected, collaborative bool) string {
 	switch r.Reason {
 	case protocol.DocumentRejectNotEditor, protocol.DocumentRejectStaleGeneration:
+		if collaborative {
+			return "this client no longer has the file open"
+		}
 		return "another client took over editing"
 	case "too_large":
 		return "the change was too large"
