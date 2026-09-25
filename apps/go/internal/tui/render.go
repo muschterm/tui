@@ -782,7 +782,7 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	active, _ := v.Host.Active()
 	cx := x
 	tabRows := 1
-	visible, overflow := visibleTabs(v.Host.Tabs, active.ID, w-4)
+	visible, overflow := visibleTabs(m.displayTabs(v.Host.Tabs), active.ID, w-4)
 	for _, slot := range visible {
 		tab := slot.tab
 		f.tab(m, cx, y, slot.width, tab.Title, tab.Kind, "tab:"+tab.ID, "close:"+tab.ID,
@@ -795,12 +795,16 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 	}
 	f.iconButton(m, x+w-4, y+tabRows/2, 4, " "+m.icon("add"), "chooser", action{Kind: "chooser"}, p.blue, p.panel)
 	f.hits[len(f.hits)-1].Label = "Add surface"
-	f.detail = shell.Rect{X: x + 1, Y: y + tabRows + 2, W: max(1, w-2), H: max(0, r.H-tabRows-4)}
-	if tight {
-		f.detail.Y, f.detail.H = y+tabRows+1, max(0, r.H-tabRows-1)
-	}
+	f.detail = surfaceBodyRect(r)
 	if f.detail.H == 0 {
 		f.detail = shell.Rect{}
+		return
+	}
+	if rec, ok := m.liveTerminal(active.ID); ok && active.Kind == "terminal" {
+		// A live terminal paints its own grid; it has no scrolled detail.
+		grid := f.detail
+		f.detail = shell.Rect{}
+		m.renderTerminalPane(f, grid, rec)
 		return
 	}
 	f.hits = append(f.hits, hit{Rect: f.detail, Action: action{}, Label: "Surface · wheel / arrows to scroll", Key: "right-body"})
@@ -838,7 +842,7 @@ func (m *Model) renderBottom(f *frame, r shell.Rect) {
 	v := m.viewState()
 	x, w := r.X+1, r.W-2
 	active, ok := v.Bottom.Active()
-	visible, overflow := visibleTabs(v.Bottom.Tabs, active.ID, w-4)
+	visible, overflow := visibleTabs(m.displayTabs(v.Bottom.Tabs), active.ID, w-4)
 	cx := x
 	for _, slot := range visible {
 		tab := slot.tab
@@ -856,7 +860,11 @@ func (m *Model) renderBottom(f *frame, r shell.Rect) {
 		f.text(r.X+2, r.Y+2, max(1, r.W-4), "No terminal sessions · "+m.icon("add")+" opens one", p.muted, p.panel)
 		return
 	}
-	f.bottomBody = shell.Rect{X: r.X + 2, Y: r.Y + 2, W: max(1, r.W-4), H: max(0, r.H-2)}
+	if rec, live := m.liveTerminal(active.ID); live {
+		m.renderTerminalPane(f, bottomBodyRect(r), rec)
+		return
+	}
+	f.bottomBody = bottomBodyRect(r)
 	// One blank cell keeps right-aligned values off the scrollbar.
 	lines := m.surfaceRows(m.bottomTerminalBlocks(active.ID), max(1, f.bottomBody.W-1))
 	f.bottomMax = max(0, len(lines)-f.bottomBody.H)
@@ -996,7 +1004,7 @@ func menuPosition(items []menuItem, index int) (int, int) {
 // which keep red ink.
 func menuItemDestructive(item menuItem) bool {
 	switch item.Action.Kind {
-	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove":
+	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove", "git-discard-confirm", "git-commit-ack":
 		return true
 	}
 	return false

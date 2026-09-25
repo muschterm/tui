@@ -19,6 +19,8 @@ type Snapshot struct {
 	// Agents lists every configured agent connection with its last probed
 	// state. The fixture agent is always present.
 	Agents []Agent `json:"agents,omitempty"`
+	// GitOps holds the latest Git write per repository (git_write.go).
+	GitOps []GitOp `json:"git_ops,omitempty"`
 }
 
 // Agent is one configured agent connection. Kind is "fixture" or "acp". For
@@ -253,10 +255,32 @@ type Prompt struct {
 	Attachments []Attachment
 }
 
-// Terminal is a fixture terminal session owned by a thread.
+// Terminal is a server-owned embedded terminal session belonging to a thread.
+// State is one of the Terminal* lifecycle constants in terminal.go. Controller
+// is the ClientID allowed to send input and resize, valid only together with
+// ControlGen; see terminal.go for the stream protocol. Output is retained only
+// for legacy fixture records and is empty for real sessions, whose screen is
+// delivered by the terminal stream, never by snapshots.
 type Terminal struct {
 	ID, ThreadID, State, Controller, Output string
 	Revision                                int64
+	// ControlGen increments on every control transfer; input and resize must
+	// carry the current value.
+	ControlGen int64 `json:"ControlGen,omitempty"`
+	// Dir is the working directory the shell started in and Shell its
+	// executable; Title is the sanitized OSC title. Cols, Rows and Title are
+	// coalesced from the live session and may lag the stream briefly.
+	Dir   string `json:"Dir,omitempty"`
+	Shell string `json:"Shell,omitempty"`
+	Title string `json:"Title,omitempty"`
+	Cols  int    `json:"Cols,omitempty"`
+	Rows  int    `json:"Rows,omitempty"`
+	// Exit is set once the process is confirmed reaped; EndReason says why
+	// an ended terminal ended (TerminalEnd* constants).
+	Exit      *TerminalExit `json:"Exit,omitempty"`
+	EndReason string        `json:"EndReason,omitempty"`
+	// Error explains close_uncertain.
+	Error string `json:"Error,omitempty"`
 }
 
 // Command is a client request to change server state. ID identifies it across
@@ -279,6 +303,11 @@ type Command struct {
 	// RequestAction declines or cancels a question request (request.answer)
 	// instead of answering it; answers must then be empty.
 	RequestAction string `json:"RequestAction,omitempty"`
+	// TerminalSize is terminal.open's optional initial PTY size; omitted uses
+	// 80×24. The controller resizes through the terminal stream afterwards.
+	TerminalSize *TerminalSize `json:"TerminalSize,omitempty"`
+	// Git is the payload of the git.* write commands (git_write.go).
+	Git *GitWrite `json:"Git,omitempty"`
 }
 
 // Receipt records the outcome of an accepted or rejected Command.
@@ -286,6 +315,8 @@ type Receipt struct {
 	ID, State string
 	Revision  int64
 	TargetID  string
+	// Git is the outcome of a git.* command; State then mirrors Git.State.
+	Git *GitResult `json:"Git,omitempty"`
 }
 
 // Error is a structured protocol failure with a stable Code.
@@ -316,8 +347,10 @@ type ShutdownOutcome struct {
 }
 
 // WriterWait reports a thread waiting for its checkout's writer lease.
-// Position 1 is next in line.
+// Position 1 is next in line. While a Git write holds the lease,
+// HolderThreadID is empty and HolderGitCommandID names that command.
 type WriterWait struct {
-	HolderThreadID string `json:"holder_thread_id"`
-	Position       int    `json:"position"`
+	HolderThreadID     string `json:"holder_thread_id"`
+	Position           int    `json:"position"`
+	HolderGitCommandID string `json:"holder_git_command_id,omitempty"`
 }

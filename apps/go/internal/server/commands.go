@@ -375,22 +375,10 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 		}
 		return t.ID, nil
 	case "terminal.open":
-		if len(s.Terminals) >= 64 {
-			return "", failure("capacity", "terminal fixture limit reached")
-		}
-		id := "terminal-" + c.ID
-		s.Terminals = append(s.Terminals, protocol.Terminal{ID: id, ThreadID: t.ID, State: "running", Controller: c.ClientID, Revision: 1, Output: "Synthetic terminal session · no shell or PTY\n$ fixture status\nready"})
-		return id, nil
-	case "terminal.close":
-		for i := range s.Terminals {
-			v := &s.Terminals[i]
-			if v.ID == c.TargetID && v.ThreadID == t.ID {
-				v.State = "ended"
-				v.Revision++
-				return v.ID, nil
-			}
-		}
-		return "", failure("not_found", "terminal missing")
+		// The engine starts shells (openTerminal); a pure transition cannot.
+		return "", failure("terminal_unavailable", "terminals are opened by the server engine")
+	case "terminal.close", "terminal.take-control":
+		return applyTerminalCommand(s, t, c)
 	default:
 		return "", failure("unsupported_command", fmt.Sprintf("unsupported command %q", c.Kind))
 	}

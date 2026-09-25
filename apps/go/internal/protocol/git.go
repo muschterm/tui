@@ -25,28 +25,83 @@ const (
 // (whatever was last fetched), never from the network. Operation is "", merge,
 // rebase, cherry-pick, revert or bisect. Truncated reports that entries were
 // capped.
+//
+// The remaining fields support Git writes (see git_write.go in this package):
+// HeadOid is the full HEAD commit hash, empty when unborn. StagedFingerprint
+// pins the complete staged set against HEAD and is what git.commit must send
+// back. StagedTruncated reports that the staged set was not fully listed
+// (entry cap or byte cap); the fingerprint then starts with "truncated" and
+// git.commit refuses it with status_truncated. HeadOnUpstream reports that
+// the HEAD commit is already reachable from the branch upstream or from any
+// remote-tracking ref (local refs only, never the network), so amending it
+// rewrites published history; it is also true when HeadOnUpstreamUnknown
+// reports that reachability could not be determined. Identity is the
+// committer identity Git would use.
 type GitStatus struct {
-	Workspace WorkspaceInfo    `json:"workspace"`
-	Branch    string           `json:"branch,omitempty"`
-	Upstream  string           `json:"upstream,omitempty"`
-	Ahead     int              `json:"ahead,omitempty"`
-	Behind    int              `json:"behind,omitempty"`
-	Operation string           `json:"operation,omitempty"`
-	Entries   []GitStatusEntry `json:"entries"`
-	Truncated bool             `json:"truncated,omitempty"`
+	Workspace         WorkspaceInfo    `json:"workspace"`
+	Branch            string           `json:"branch,omitempty"`
+	Upstream          string           `json:"upstream,omitempty"`
+	Ahead             int              `json:"ahead,omitempty"`
+	Behind            int              `json:"behind,omitempty"`
+	Operation         string           `json:"operation,omitempty"`
+	Entries           []GitStatusEntry `json:"entries"`
+	Truncated         bool             `json:"truncated,omitempty"`
+	HeadOid           string           `json:"head_oid,omitempty"`
+	StagedFingerprint string           `json:"staged_fingerprint,omitempty"`
+	HeadOnUpstream    bool             `json:"head_on_upstream,omitempty"`
+	// Additive (2026-09-24 review).
+	HeadOnUpstreamUnknown bool         `json:"head_on_upstream_unknown,omitempty"`
+	StagedTruncated       bool         `json:"staged_truncated,omitempty"`
+	Identity              *GitIdentity `json:"identity,omitempty"`
+}
+
+// GitIdentity is the author/committer identity resolved by `git var`, with
+// the config scope (system, global, local, worktree, command) that supplied
+// user.name and user.email when they come from config. Missing reports that
+// Git cannot form an identity (for example user.useConfigOnly without
+// user.email); git.commit then fails with identity_missing.
+type GitIdentity struct {
+	Name       string `json:"name,omitempty"`
+	Email      string `json:"email,omitempty"`
+	NameScope  string `json:"name_scope,omitempty"`
+	EmailScope string `json:"email_scope,omitempty"`
+	Missing    bool   `json:"missing,omitempty"`
 }
 
 // GitStatusEntry is one file in one group. Index and Worktree are the
 // porcelain v2 X and Y status letters ("." for unchanged, "?" for untracked).
 // OrigPath is the rename/copy source for staged renames. Paths are relative to
 // the checkout root with forward slashes.
+//
+// Write support: ModeHead/ModeIndex/ModeWorktree and HeadOid/IndexOid are the
+// porcelain v2 mH/mI/mW and hH/hI fields (empty for untracked and conflicted
+// entries). WorktreeStat is an opaque token for unstaged and untracked
+// entries: the node type (reg, lnk, dir, other) plus lstat size, mtime,
+// ctime, inode and mode; "absent" for a deleted file; "blocked" when a parent
+// is a file or symlink; "unavailable" when it cannot be examined. Pin is an
+// opaque digest of everything this entry shows (group, path, status letters,
+// modes, object IDs and the worktree token); stage, unstage and discard
+// commands send it back and the server refuses with stale_entry when the
+// entry no longer matches. Pin is empty for an entry that cannot be acted on
+// (a path that is not valid UTF-8 cannot round-trip through JSON).
 type GitStatusEntry struct {
-	Path      string `json:"path"`
-	OrigPath  string `json:"orig_path,omitempty"`
-	Index     string `json:"index"`
-	Worktree  string `json:"worktree"`
-	Group     string `json:"group"`
-	Submodule bool   `json:"submodule,omitempty"`
+	Path         string `json:"path"`
+	OrigPath     string `json:"orig_path,omitempty"`
+	Index        string `json:"index"`
+	Worktree     string `json:"worktree"`
+	Group        string `json:"group"`
+	Submodule    bool   `json:"submodule,omitempty"`
+	ModeHead     string `json:"mode_head,omitempty"`
+	ModeIndex    string `json:"mode_index,omitempty"`
+	ModeWorktree string `json:"mode_worktree,omitempty"`
+	HeadOid      string `json:"head_oid,omitempty"`
+	IndexOid     string `json:"index_oid,omitempty"`
+	WorktreeStat string `json:"worktree_stat,omitempty"`
+	Pin          string `json:"pin,omitempty"`
+	// IntentToAdd marks an unstaged entry added with `git add -N`: the index
+	// holds no content, so discarding it empties the file and the content
+	// cannot be recovered from Git.
+	IntentToAdd bool `json:"intent_to_add,omitempty"`
 }
 
 // GitDiff is a bounded patch for one status entry. Bytes is len(Text) before

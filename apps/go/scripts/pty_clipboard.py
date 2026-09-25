@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from pty_smoke import Terminal
+from harness_env import isolated_env
 
 
 def install_clipboard_wrappers(directory):
@@ -266,7 +267,7 @@ def main():
         finally:
             if terminal is not None:
                 terminal.close()
-            env = dict(os.environ, TUI_GO_HOME=str(home))
+            env = isolated_env(home)
             subprocess.run([str(binary), 'server', 'stop'], env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             report['clipboard_operations'] = operations(log)

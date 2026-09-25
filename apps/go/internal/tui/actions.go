@@ -141,6 +141,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	if strings.HasPrefix(a.Kind, "git-") {
 		return m.gitAction(a)
 	}
+	if strings.HasPrefix(a.Kind, "terminal-") {
+		return m.terminalAction(a)
+	}
 	if handled, cmd := m.activateSidebarSettings(a); handled {
 		m.configureInputs()
 		return cmd
@@ -232,7 +235,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		// empty panel opens its first session at once instead of a header
 		// and button.
 		if len(v.Bottom.Tabs) == 0 && m.bottomShown() {
-			return m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open", Value: "bottom"})
+			return m.openTerminal(true)
 		}
 	case "maximize":
 		if m.singleColumn() {
@@ -285,7 +288,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		m.showChooser()
 	case "open":
 		if a.Value == "terminal" {
-			cmd = m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open"})
+			cmd = m.openTerminal(false)
 			if cmd != nil {
 				m.selectColumn(shell.RightRegion)
 			}
@@ -317,7 +320,7 @@ func (m *Model) activate(a action) tea.Cmd {
 			m.selectColumn(shell.CenterRegion)
 		}
 	case "bottom-new":
-		return m.command(protocol.Command{Kind: "terminal.open"}, action{Kind: "terminal-open", Value: "bottom"})
+		return m.openTerminal(true)
 	case "bottom-tab":
 		if v.Bottom.Select(a.ID) {
 			v.BottomScroll = 0

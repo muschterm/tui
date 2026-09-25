@@ -9,14 +9,31 @@ server reads of status (grouped conflicted/staged/unstaged/untracked entries,
 upstream ahead/behind from local refs, in-progress operation), bounded
 per-entry diffs, the 50 most recent commits and bounded commit patches,
 presented in the right host and the read-only viewer with refresh on
-visibility, target change, turn end and explicit Refresh. It performs no Git
+visibility, target change, turn end and explicit Refresh. Reads perform no Git
 mutation and no network access.
 
-Remaining: commit graph lanes and graph actions, branch and staged-versus-HEAD
-comparison views beyond per-entry diffs, file/hunk/line staging, commits,
-branch switching, soft reset, pull/fetch/push, rebase and conflict resolution
-(manual and agent-assisted), context menus, turn comparisons, live-buffer
-coordination, and real-terminal/PTY validation of the surface.
+The server, protocol and Go client also implement whole-file stage, unstage
+and discard, and commit including amend ([ADR 0020](../adr/0020-git-write-actions.md);
+wire contract in `apps/go/internal/protocol/git_write.go`). They are durable
+two-phase commands: refusals such as stale pins or a busy checkout record
+nothing; otherwise a running receipt is journaled before Git starts and
+becomes `outcome_unknown` if the server stops before the outcome is recorded.
+Writes run with the user's full Git configuration (hooks, local filters,
+signing) but never an editor, prompt, pager, lazy fetch or automatic
+maintenance, and without a controlling terminal. They are refused while any
+thread holds an overlapping checkout lease, and hold the lease themselves while
+running. Stage and discard act only on regular files, symlinks or truly absent
+paths (never a directory or a path below a file or symlink), and a commit is
+refused when status could not list the whole staged set. The TUI does not expose
+them yet; verified with real Git in `git_write_test.go`, not in a terminal.
+
+Remaining: TUI actions for these writes (including discard confirmation and
+the published-amend warning), commit graph lanes and graph actions, branch and
+staged-versus-HEAD comparison views beyond per-entry diffs, hunk/line staging,
+multi-select, conflicted-path staging, submodule changes, branch switching,
+soft reset, pull/fetch/push, rebase and conflict resolution (manual and
+agent-assisted), context menus, turn comparisons, live-buffer coordination,
+and real-terminal/PTY validation of the surface.
 
 ## Accepted scope
 

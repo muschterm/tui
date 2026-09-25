@@ -28,10 +28,16 @@ import termios
 import time
 import tty
 
+from harness_env import isolated_env
+
 out, steps, cmd = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3:]
+if not os.environ.get('TUI_GO_HOME'):
+    sys.exit('foot_capture: set TUI_GO_HOME to a temporary application home')
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp(cmd[0], cmd)
+    # The command and any server or shell it starts get a temporary HOME and
+    # no history file (see harness_env).
+    os.execvpe(cmd[0], cmd, isolated_env(os.environ['TUI_GO_HOME']))
 
 
 def winch(*_):

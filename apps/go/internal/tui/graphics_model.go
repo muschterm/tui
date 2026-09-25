@@ -141,6 +141,7 @@ func (m *Model) graphicsCleanup(next tea.Cmd) tea.Cmd {
 // quit closes the registry (no further transmits) and deletes every id that
 // may have been transmitted before Quit.
 func (m *Model) quit() tea.Cmd {
+	m.closeTerminalStreams()
 	if seq := m.imgs().Close(); seq != "" {
 		return tea.Sequence(tea.Raw(seq), tea.Quit)
 	}

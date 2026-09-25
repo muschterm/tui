@@ -205,7 +205,7 @@ func TestAuthenticationCatchupRestartAndViews(t *testing.T) {
 }
 
 func TestTerminalCloseAndPausedQueueSettings(t *testing.T) {
-	e := testEngine(t)
+	e, _, _ := terminalEngine(t)
 	c := protocol.Command{Version: 1, ID: "terminal", Kind: "terminal.open", ThreadID: "thread-shell", ClientID: "owner"}
 	r, err := e.command(c)
 	if err != nil {
@@ -218,7 +218,8 @@ func TestTerminalCloseAndPausedQueueSettings(t *testing.T) {
 	if _, err = e.command(closeCmd); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.snap.Terminals) != 1 || e.snap.Terminals[0].State != "ended" {
+	waitTerminal(t, e, r.TargetID, func(v protocol.Terminal) bool { return v.State == protocol.TerminalStateEnded })
+	if len(e.snap.Terminals) != 1 {
 		t.Fatal("close did not end existing session")
 	}
 	c.ID = "new-terminal"

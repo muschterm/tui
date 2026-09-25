@@ -10,6 +10,7 @@ package term
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -22,6 +23,12 @@ const (
 	MaxScrollback     = 100000
 	MaxInput          = 64 << 10 // bytes accepted by one Write call
 	MaxTitle          = 256      // runes retained from an OSC title
+	// MaxClusterBytes bounds one cell's grapheme cluster. It exceeds every
+	// RGI emoji sequence and ordinary script cluster, so those are stored
+	// exactly; a longer cluster keeps its first whole runes up to the bound
+	// and the rest of it is dropped before it reaches the grid or scrollback
+	// (see clusterLimiter). Output cells are truncated the same way.
+	MaxClusterBytes = 128
 
 	// TermName is the TERM value given to children. The emulator implements
 	// the xterm control set it advertises (DA1 VT220-class replies, 256
@@ -37,7 +44,22 @@ var (
 	ErrInputTooLarge = errors.New("term: input exceeds the per-call limit")
 	ErrInvalidDir    = errors.New("term: working directory must be an existing absolute directory")
 	ErrInvalidShell  = errors.New("term: shell must be an absolute path to an executable file")
+	// ErrBusy reports input the child did not accept before the write
+	// deadline (it is not reading). The session is still running; see
+	// BusyError for how much was written.
+	ErrBusy = errors.New("term: child is not reading input")
 )
+
+// BusyError is returned when a write times out. Written bytes reached the
+// child; the rest were not sent. errors.Is(err, ErrBusy) reports true.
+type BusyError struct{ Written, Total int }
+
+func (e *BusyError) Error() string {
+	return fmt.Sprintf("%v: %d of %d bytes written", ErrBusy, e.Written, e.Total)
+}
+
+// Is makes BusyError match ErrBusy.
+func (e *BusyError) Is(target error) bool { return target == ErrBusy }
 
 // Config describes a session to start.
 type Config struct {
@@ -127,6 +149,19 @@ type ExitStatus struct {
 	Signal string
 	// Killed reports that Close escalated to SIGKILL.
 	Killed bool
+	// Descendants counts other processes found in the shell's session
+	// (background jobs, including ones in their own process groups) when the
+	// session ended. On Close they are hung up and, if still present after
+	// the grace period, killed; DescendantsKilled reports that escalation.
+	// DescendantsRemaining counts processes still present afterwards. After a
+	// natural exit they are only counted, not signalled (like nohup).
+	Descendants          int
+	DescendantsKilled    bool
+	DescendantsRemaining int
+	// DescendantsUnknown reports that this platform cannot enumerate the
+	// session, so only the shell's own process group was signalled and the
+	// counts above are not meaningful.
+	DescendantsUnknown bool
 }
 
 // SanitizeTitle removes control characters and caps the length.

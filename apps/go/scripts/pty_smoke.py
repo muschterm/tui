@@ -17,6 +17,7 @@ import termios
 import time
 import urllib.request
 import unicodedata
+from harness_env import isolated_env
 
 KEYS = {2: b'\x1bOQ', 3: b'\x1bOR', 4: b'\x1bOS', 5: b'\x1b[15~',
         6: b'\x1b[17~', 7: b'\x1b[18~', 8: b'\x1b[19~'}
@@ -29,12 +30,16 @@ class Terminal:
         self.output = bytearray()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            os.environ.update(TUI_GO_HOME=str(home), TERM='xterm-256color', PS1='PTY_READY> ')
+            # Isolated from the real home: the shell, the TUI and any server
+            # it starts get a temporary HOME and no history file.
+            env = isolated_env(home, TERM='xterm-256color', PS1='PTY_READY> ')
             for key, value in (environment or {}).items():
                 if value is None:
-                    os.environ.pop(key, None)
+                    env.pop(key, None)
                 else:
-                    os.environ[key] = value
+                    env[key] = value
+            os.environ.clear()
+            os.environ.update(env)
             os.execv('/bin/bash', ['bash', '--noprofile', '--norc', '-i'])
         self.resize(columns, rows)
         self.pump(.3)
@@ -189,7 +194,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix='tui-pty-home-', dir='/tmp') as directory:
         home = Path(directory)
-        env = dict(os.environ, TUI_GO_HOME=directory)
+        env = isolated_env(directory)
         terminals = []
 
         def cli(*words):
@@ -237,11 +242,11 @@ def main():
             check(not view('pty-a')['Light'], 'SGR pointer activates command menu item')
             a.send(b'\x1b[<0;118;11M\x1b[<32;113;11M\x1b[<0;113;11m', 1.2)
             check(view('pty-a')['Layout']['RightWidth'] == 47, 'SGR divider drag updates remembered right width')
-            a.command(24)  # Open a synthetic Terminal, not a real child shell.
+            a.command(24)  # Open a Terminal: a real shell in the isolated user HOME.
             a.pump(1.1)
             terminals_before = get('snapshot')['terminals']
             terminal_id = view('pty-a')['Threads'][av['Active']]['Host']['ActiveID']
-            check(any(t['ID'] == terminal_id and t['State'] == 'running' for t in terminals_before), 'Terminal menu opens server-owned fixture session')
+            check(any(t['ID'] == terminal_id and t['State'] == 'running' for t in terminals_before), 'Terminal menu opens a server-owned shell session')
             a.key(3)
             check(get('snapshot')['terminals'] == terminals_before, 'F3 hides terminal without closing its session')
             a.key(3)
@@ -249,7 +254,7 @@ def main():
             a.key(4)
             a.send(b'\x1b[B' * (28 + len(get('snapshot')['threads']) + 1) + b'\x1b[3~', .6)
             a.pump(1.1)
-            check(any(t['ID'] == terminal_id and t['State'] == 'ended' for t in get('snapshot')['terminals']), 'Terminal close command ends selected fixture session')
+            check(any(t['ID'] == terminal_id and t['State'] == 'ended' for t in get('snapshot')['terminals']), 'Terminal close command ends the selected shell session')
             before = view('pty-a')['Layout']
             a.resize(48, 24)
             a.pump(.5)

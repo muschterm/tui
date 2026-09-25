@@ -22,6 +22,8 @@ var icons = map[string]struct{ glyph, plain string }{
 	"terminal": {"\uea85", ">_"}, "agents": {"\uea7e", "A"},
 	"plan": {"\ueb67", "P"}, "activity": {"\ueb31", "~"},
 	"close": {"\uea76", "x"}, "add": {"\uea60", "+"},
+	// cod-remove and cod-discard: the Git surface's Unstage and Discard row actions.
+	"unstage": {"\ueb3b", "-"}, "discard": {"\ueae2", "<"},
 	// The Font Awesome folder pair shares one 923×808 box and the pen square
 	// is 916×916 with the same center, so the header actions align even in
 	// wide Nerd Font variants whose glyphs spill past the cell; the earlier

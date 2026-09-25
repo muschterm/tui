@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import urllib.request
 from pty_smoke import Terminal
+from harness_env import isolated_env
 
 
 def main():
@@ -26,7 +27,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix='tui-path-home-', dir='/tmp') as directory:
         home = Path(directory)
-        env = dict(os.environ, TUI_GO_HOME=directory)
+        env = isolated_env(directory)
         start = home / 'projects'
         project = start / 'Sample project'
         (project / 'src').mkdir(parents=True)

@@ -14,6 +14,7 @@ import tempfile
 import urllib.request
 
 from pty_smoke import Terminal
+from harness_env import isolated_env
 
 
 VERSION = b'\x1b[>q'
@@ -55,7 +56,7 @@ def main():
     report = {'harness': 'OS PTY + native binary + synthetic terminal responses', 'cases': []}
     with tempfile.TemporaryDirectory(prefix='tui-color-home-', dir='/tmp') as directory:
         home = Path(directory)
-        env = dict(os.environ, TUI_GO_HOME=directory)
+        env = isolated_env(directory)
         try:
             subprocess.run([str(binary), 'server', 'start'], env=env, check=True, capture_output=True)
             for name, overrides, version, reply in cases:

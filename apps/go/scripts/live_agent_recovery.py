@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from harness_env import isolated_env
 
 
 def main():
@@ -62,9 +63,11 @@ def main():
                            + '"protocol_flags":[x for x in sys.argv[1:] if x in ["app-server","--input-format","--output-format","--resume"]]})+"\\n")\n'
                            + f'os.execv({str(runtime)!r}, [{str(runtime)!r}]+sys.argv[1:])\n')
         wrapper.chmod(0o700)
-        environment = dict(os.environ, TUI_GO_HOME=str(home),
-                           TUI_GO_AGENT_CLAUDE_COMMAND='/nonexistent/live-check-disabled',
-                           TUI_GO_AGENT_CODEX_COMMAND='/nonexistent/live-check-disabled')
+        # Live provider CLIs need the user's credentials, so HOME stays real;
+        # history and shell startup files are still disabled.
+        environment = isolated_env(home, keep_home=True,
+                                   TUI_GO_AGENT_CLAUDE_COMMAND='/nonexistent/live-check-disabled',
+                                   TUI_GO_AGENT_CODEX_COMMAND='/nonexistent/live-check-disabled')
         environment['TUI_GO_AGENT_' + args.agent.upper() + '_COMMAND'] = str(adapter) if adapter else 'builtin:' + args.agent
         environment['CLAUDE_CODE_EXECUTABLE' if args.agent == 'claude' else 'CODEX_PATH'] = str(wrapper)
         # Disable adapter debug-wire logging, without altering auth/config.

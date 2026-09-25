@@ -492,3 +492,43 @@ func purgeProject(tx *sql.Tx, snap protocol.Snapshot, projectID string) error {
 	}
 	return pruneViews(tx, liveThreads(snap), deleted)
 }
+
+// SaveReceipt stores snap and replaces the receipt of the already recorded
+// command c in one transaction. It is the second phase of a two-phase
+// command (Save records the running receipt first). A command row removed
+// meanwhile, for example by deleting its thread, is not recreated.
+func (s *Store) SaveReceipt(snap protocol.Snapshot, c protocol.Command, r protocol.Receipt) error {
+	b, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	cb, _ := json.Marshal(c)
+	rb, _ := json.Marshal(r)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO state(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", b); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("UPDATE commands SET receipt=? WHERE id=? AND command=?", rb, c.ID, cb); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ResolveRunningReceipts rewrites every receipt still in state "running",
+// left by a server that stopped between the phases of a two-phase command,
+// to state, with code and message on its Git result (protocol.GitResult's
+// lowercase JSON keys). It returns the count.
+func (s *Store) ResolveRunningReceipts(state, code, message string) (int64, error) {
+	res, err := s.db.Exec(`UPDATE commands SET receipt=CASE WHEN json_type(receipt,'$.Git')='object'
+		THEN json_set(receipt,'$.State',?1,'$.Git.state',?1,'$.Git.code',?2,'$.Git.message',?3)
+		ELSE json_set(receipt,'$.State',?1) END
+		WHERE json_valid(receipt) AND json_extract(receipt,'$.State')='running'`, state, code, message)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

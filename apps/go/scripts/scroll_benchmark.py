@@ -20,6 +20,7 @@ import tempfile
 import termios
 import time
 import urllib.request
+from harness_env import isolated_env
 
 
 ENTER = b'\x1b[?1049h'
@@ -49,7 +50,7 @@ def main():
     failure = None
     with tempfile.TemporaryDirectory(prefix='tui-scroll-home-', dir='/tmp') as directory:
         home = Path(directory)
-        env = dict(os.environ, TUI_GO_HOME=directory, TERM='xterm-256color')
+        env = isolated_env(directory, TERM='xterm-256color')
 
         def get(path):
             discovery = json.loads((home / 'discovery.json').read_text())

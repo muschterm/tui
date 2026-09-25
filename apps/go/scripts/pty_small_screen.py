@@ -9,6 +9,7 @@ import tempfile
 import urllib.request
 
 from pty_smoke import Terminal
+from harness_env import isolated_env
 
 
 def main():
@@ -30,7 +31,7 @@ def main():
         for width in (47, 40):
             with tempfile.TemporaryDirectory(prefix='tui-small-home-', dir='/tmp') as directory:
                 home = Path(directory)
-                env = dict(os.environ, TUI_GO_HOME=directory)
+                env = isolated_env(directory)
                 identity = f'small-{width}'
                 term = None
 

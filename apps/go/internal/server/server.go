@@ -68,6 +68,10 @@ type engine struct {
 	waitSince map[string]uint64
 	waitSeq   uint64
 	claiming  map[string]string
+	// terminals holds embedded terminal sessions; see terminal.go.
+	terminals terminalState
+	// git tracks running Git writes and their writer leases; see git_write.go.
+	git gitWriteState
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -116,6 +120,12 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	}
 	if c.ID == "" || len(c.ID) > 128 {
 		return protocol.Receipt{}, failure("invalid", "bounded command identity required")
+	}
+	if c.Kind == "terminal.open" {
+		return e.openTerminal(ctx, c)
+	}
+	if strings.HasPrefix(c.Kind, "git.") {
+		return e.gitWriteCommand(ctx, c)
 	}
 	e.mu.Lock()
 	if r, err := e.store.Lookup(c); err != nil {
@@ -187,10 +197,16 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 		}
 	}
 	defer e.mu.Unlock()
+	if err := e.gitCommandGuardLocked(captured); err != nil {
+		return protocol.Receipt{}, err
+	}
 	next := clone(e.snap)
 	target, err := e.applyCommand(&next, captured, resolved)
 	if err != nil {
 		return protocol.Receipt{}, err
+	}
+	if c.Kind == "thread.delete" || c.Kind == "project.remove" {
+		pruneGitOps(&next)
 	}
 	next.Revision++
 	// Commands that do not grow state stay available to an over-limit home.
@@ -208,6 +224,7 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	e.lastFlush, e.dirty = time.Now(), false
 	e.publish()
 	e.afterCommit(c, target)
+	e.afterTerminalCommitLocked(c, target)
 	return r, nil
 }
 
@@ -530,9 +547,10 @@ func Serve(ctx context.Context, home string) error {
 		recoverThreads(&snap)
 		demoteConcurrentWriters(&snap)
 		compactPromptDetails(&snap)
-		for i := range snap.Terminals {
-			snap.Terminals[i].State = "ended"
-			snap.Terminals[i].Revision++
+		endLoadedTerminals(&snap)
+		recoverGitOps(&snap)
+		if err = resolveInterruptedGitReceipts(st); err != nil {
+			return err
 		}
 		snap.Revision++
 	}
@@ -553,7 +571,7 @@ func Serve(ctx context.Context, home string) error {
 	if !slices.Contains(snap.Capabilities, "thread-lifecycle") {
 		snap.Capabilities = append(snap.Capabilities, "thread-lifecycle")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids"} {
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
@@ -598,12 +616,14 @@ func Serve(ctx context.Context, home string) error {
 	// Every agent child process is killed before this function returns, even on
 	// a failing path, so no adapter outlives the server that owns it.
 	defer e.stopAgents()
+	defer func() { _ = e.stopTerminals() }()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/workspace", e.workspace)
 	mux.HandleFunc("GET /v1/git/status", e.gitStatus)
 	mux.HandleFunc("GET /v1/git/diff", e.gitDiff)
 	mux.HandleFunc("GET /v1/git/log", e.gitLog)
 	mux.HandleFunc("GET /v1/git/show", e.gitShow)
+	mux.HandleFunc("GET /v1/terminals/{id}/stream", e.terminalStream)
 	mux.HandleFunc("GET /v1/browse", e.browse)
 	mux.HandleFunc("GET /v1/preview", e.previewFile)
 	mux.HandleFunc("POST /v1/artifacts", e.uploadArtifact)
@@ -788,7 +808,13 @@ loop:
 	}()
 	// Owned agent work is cancelled and its processes ended before the final
 	// record is written, so the snapshot cannot claim work that no longer runs.
+	// Terminal sessions close concurrently with agents; both are bounded.
+	terminalsDone := make(chan struct{})
+	var terminalsErr error
+	go func() { terminalsErr = e.stopTerminals(); close(terminalsDone) }()
 	e.stopAgents()
+	e.stopGitWrites()
+	<-terminalsDone
 	stopErr := <-httpDone
 	e.mu.Lock()
 	final := clone(e.snap)
@@ -808,14 +834,12 @@ loop:
 			}
 		}
 	}
-	for i := range final.Terminals {
-		final.Terminals[i].State = "ended"
-	}
+	endStoppedTerminals(&final)
 	final.Revision++
 	saveErr := st.Save(final, nil, nil)
 	e.mu.Unlock()
 	closeErr := st.Close()
-	outcomeErr := errors.Join(runErr, shutdownStage("save final state", saveErr), shutdownStage("drain HTTP requests", stopErr), shutdownStage("close storage", closeErr))
+	outcomeErr := errors.Join(runErr, shutdownStage("save final state", saveErr), shutdownStage("drain HTTP requests", stopErr), shutdownStage("terminals", terminalsErr), shutdownStage("close storage", closeErr))
 	outcome := protocol.ShutdownOutcome{InstanceID: discovery.InstanceID, Success: outcomeErr == nil}
 	if outcomeErr != nil {
 		outcome.Error = outcomeErr.Error()

@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,10 +13,12 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
@@ -334,13 +338,116 @@ func readGitStatus(ctx context.Context, dir string) (protocol.GitStatus, error) 
 		return status, gitError(err)
 	}
 	parseGitStatus(out, truncated, gitStatusMaxItems, &status)
+	annotateGitStatus(g.dir, &status)
 	status.Operation = g.operation(ctx)
+	if status.HeadOid != "" {
+		// Unknown counts as published so an amend still asks first.
+		published, unknown := g.headOnUpstream(ctx, status.Upstream != "")
+		status.HeadOnUpstream, status.HeadOnUpstreamUnknown = published || unknown, unknown
+	}
+	status.Identity = g.identity(ctx)
 	return status, nil
+}
+
+// annotateGitStatus adds the worktree tokens and pins that Git writes
+// revalidate against (git_write.go).
+func annotateGitStatus(top string, status *protocol.GitStatus) {
+	for i := range status.Entries {
+		e := &status.Entries[i]
+		if e.Group == protocol.GitGroupUnstaged || e.Group == protocol.GitGroupUntracked {
+			e.WorktreeStat = worktreeStat(top, strings.TrimSuffix(e.Path, "/"))
+		}
+		e.Pin = gitEntryPin(*e)
+		// Porcelain v2 reports an intent-to-add entry as ".A", or ".R" when
+		// it pairs with a deleted path; its index holds no content.
+		e.IntentToAdd = e.Group == protocol.GitGroupUnstaged && e.Index == "." && (e.Worktree == "A" || e.Worktree == "R")
+	}
+}
+
+// gitEntryPin digests everything a status entry shows. A path that is not
+// valid UTF-8 cannot round-trip through JSON and so cannot be pinned.
+func gitEntryPin(e protocol.GitStatusEntry) string {
+	if !utf8.ValidString(e.Path) || !utf8.ValidString(e.OrigPath) {
+		return ""
+	}
+	// Each group pins only its own side, so an unrelated change to the other
+	// side (or rename detection that depends on status scope) keeps it valid.
+	switch e.Group {
+	case protocol.GitGroupStaged:
+		e.Worktree = ""
+	case protocol.GitGroupUnstaged:
+		e.Index = ""
+	}
+	h := sha256.New()
+	for _, f := range []string{"pin-v1", e.Group, e.Path, e.OrigPath, e.Index, e.Worktree, strconv.FormatBool(e.Submodule), e.ModeHead, e.ModeIndex, e.ModeWorktree, e.HeadOid, e.IndexOid, e.WorktreeStat} {
+		h.Write([]byte(f))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// headOnUpstream reports whether HEAD is reachable from the configured
+// upstream or any remote-tracking ref, using local refs only; unknown is set
+// when that could not be determined.
+func (g *gitReader) headOnUpstream(ctx context.Context, hasUpstream bool) (published, unknown bool) {
+	exitCode := func(err error) int {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return exit.ExitCode()
+		}
+		return -1
+	}
+	if hasUpstream {
+		// An upstream that no longer resolves (gone) is simply not a target.
+		_, _, err := g.read(ctx, 4096, "rev-parse", "--verify", "--quiet", "@{upstream}^{commit}")
+		switch {
+		case err == nil:
+			_, _, err = g.read(ctx, 4096, "merge-base", "--is-ancestor", "HEAD", "@{upstream}")
+			if err == nil {
+				return true, false
+			}
+			if exitCode(err) != 1 {
+				return false, true
+			}
+		case exitCode(err) != 1:
+			return false, true
+		}
+	}
+	out, _, err := g.read(ctx, 4096, "for-each-ref", "--count=1", "--format=%(refname)", "--contains", "HEAD", "refs/remotes/")
+	if err != nil {
+		return false, true
+	}
+	return len(bytes.TrimSpace(out)) > 0, false
+}
+
+// identity resolves the committer identity as `git commit` would, and the
+// config scopes that supplied it.
+func (g *gitReader) identity(ctx context.Context) *protocol.GitIdentity {
+	id := &protocol.GitIdentity{}
+	out, _, err := g.read(ctx, 4096, "var", "GIT_COMMITTER_IDENT")
+	ident := strings.TrimSpace(string(out))
+	open, end := strings.LastIndexByte(ident, '<'), strings.LastIndexByte(ident, '>')
+	if err != nil || open < 0 || end < open {
+		id.Missing = true
+	} else {
+		id.Name, id.Email = strings.TrimSpace(ident[:open]), ident[open+1:end]
+	}
+	scope := func(key string) string {
+		out, _, err := g.read(ctx, 4096, "config", "--show-scope", "--get", key)
+		if err != nil {
+			return ""
+		}
+		s, _, _ := strings.Cut(string(out), "\t")
+		return s
+	}
+	id.NameScope, id.EmailScope = scope("user.name"), scope("user.email")
+	return id
 }
 
 // parseGitStatus parses `status --porcelain=v2 -z [--branch]`. When the
 // output was truncated the final partial record is dropped. maxItems <= 0
-// means unlimited.
+// means unlimited. Every staged record contributes to StagedFingerprint even
+// past maxItems; the fingerprint stays empty when the output was truncated.
 func parseGitStatus(out []byte, truncated bool, maxItems int, status *protocol.GitStatus) {
 	records := strings.Split(string(out), "\x00")
 	if truncated {
@@ -348,17 +455,26 @@ func parseGitStatus(out []byte, truncated bool, maxItems int, status *protocol.G
 	}
 	// The final element is either empty (NUL terminator) or a partial record.
 	records = records[:len(records)-1]
-	add := func(e protocol.GitStatusEntry) bool {
+	var staged []string
+	stagedDropped := false
+	add := func(e protocol.GitStatusEntry) {
+		if e.Group == protocol.GitGroupStaged {
+			staged = append(staged, strings.Join([]string{e.Index, e.ModeHead, e.ModeIndex, e.HeadOid, e.IndexOid, e.Path, e.OrigPath}, "\x00"))
+		}
 		if maxItems > 0 && len(status.Entries) >= maxItems {
 			status.Truncated = true
-			return false
+			stagedDropped = stagedDropped || e.Group == protocol.GitGroupStaged
+			return
 		}
 		status.Entries = append(status.Entries, e)
-		return true
 	}
 	for i := 0; i < len(records); i++ {
 		rec := records[i]
 		switch {
+		case strings.HasPrefix(rec, "# branch.oid "):
+			if oid := strings.TrimPrefix(rec, "# branch.oid "); oid != "(initial)" {
+				status.HeadOid = oid
+			}
 		case strings.HasPrefix(rec, "# branch.head "):
 			if head := strings.TrimPrefix(rec, "# branch.head "); head != "(detached)" {
 				status.Branch = head
@@ -381,7 +497,8 @@ func parseGitStatus(out []byte, truncated bool, maxItems int, status *protocol.G
 			if len(f) != n || len(f[1]) != 2 {
 				continue
 			}
-			e := protocol.GitStatusEntry{Path: f[n-1], Index: f[1][:1], Worktree: f[1][1:], Submodule: strings.HasPrefix(f[2], "S")}
+			e := protocol.GitStatusEntry{Path: f[n-1], Index: f[1][:1], Worktree: f[1][1:], Submodule: strings.HasPrefix(f[2], "S"),
+				ModeHead: f[3], ModeIndex: f[4], ModeWorktree: f[5], HeadOid: f[6], IndexOid: f[7]}
 			orig := ""
 			if rec[0] == '2' {
 				if i+1 >= len(records) {
@@ -391,32 +508,53 @@ func parseGitStatus(out []byte, truncated bool, maxItems int, status *protocol.G
 				orig = records[i]
 			}
 			if e.Index != "." {
-				staged := e
-				staged.Group, staged.OrigPath = protocol.GitGroupStaged, orig
-				if !add(staged) {
-					return
-				}
+				se := e
+				se.Group, se.OrigPath, se.ModeWorktree = protocol.GitGroupStaged, orig, ""
+				add(se)
 			}
 			if e.Worktree != "." {
 				e.Group = protocol.GitGroupUnstaged
-				if !add(e) {
-					return
-				}
+				e.ModeHead, e.HeadOid = "", ""
+				add(e)
 			}
 		case strings.HasPrefix(rec, "u "):
 			f := strings.SplitN(rec, " ", 11)
 			if len(f) != 11 || len(f[1]) != 2 {
 				continue
 			}
-			if !add(protocol.GitStatusEntry{Path: f[10], Index: f[1][:1], Worktree: f[1][1:], Group: protocol.GitGroupConflicted, Submodule: strings.HasPrefix(f[2], "S")}) {
-				return
-			}
+			add(protocol.GitStatusEntry{Path: f[10], Index: f[1][:1], Worktree: f[1][1:], Group: protocol.GitGroupConflicted, Submodule: strings.HasPrefix(f[2], "S")})
 		case strings.HasPrefix(rec, "? "):
-			if !add(protocol.GitStatusEntry{Path: rec[2:], Index: "?", Worktree: "?", Group: protocol.GitGroupUntracked}) {
-				return
-			}
+			add(protocol.GitStatusEntry{Path: rec[2:], Index: "?", Worktree: "?", Group: protocol.GitGroupUntracked})
 		}
 	}
+	// A staged set the client could not see in full cannot be pinned for a
+	// commit; the marker makes git.commit refuse with status_truncated.
+	switch {
+	case truncated:
+		status.StagedTruncated, status.StagedFingerprint = true, gitTruncatedFingerprint
+	case stagedDropped:
+		status.StagedTruncated = true
+		status.StagedFingerprint = gitTruncatedFingerprint + ":" + stagedFingerprint(status.HeadOid, staged)
+	default:
+		status.StagedFingerprint = stagedFingerprint(status.HeadOid, staged)
+	}
+}
+
+// gitTruncatedFingerprint prefixes the fingerprint of a truncated staged set.
+const gitTruncatedFingerprint = "truncated"
+
+// stagedFingerprint pins HEAD and the complete staged set.
+func stagedFingerprint(head string, staged []string) string {
+	if head == "" {
+		head = protocol.GitUnbornHead
+	}
+	slices.Sort(staged)
+	h := sha256.New()
+	h.Write([]byte("staged-v1\x00" + head + "\x00"))
+	for _, s := range staged {
+		h.Write([]byte(s + "\x00\x00"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // operation detects an in-progress operation from per-worktree git-dir

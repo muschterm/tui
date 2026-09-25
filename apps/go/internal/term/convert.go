@@ -25,7 +25,7 @@ func convertCell(c *uv.Cell) Cell {
 	if c == nil {
 		return Cell{Text: " ", Width: 1}
 	}
-	out := Cell{Text: c.Content, Width: c.Width, FG: convertColor(c.Style.Fg), BG: convertColor(c.Style.Bg)}
+	out := Cell{Text: capCluster(c.Content), Width: c.Width, FG: convertColor(c.Style.Fg), BG: convertColor(c.Style.Bg)}
 	if out.Width <= 0 || out.Text == "" {
 		out.Text, out.Width = " ", 1
 	}
@@ -68,4 +68,13 @@ func convertLine(n int, at func(x int) *uv.Cell) []Cell {
 		}
 	}
 	return row
+}
+
+// capCluster truncates a grapheme cluster to MaxClusterBytes, keeping the
+// base and as many following whole runes as fit.
+func capCluster(s string) string {
+	if len(s) <= MaxClusterBytes {
+		return s
+	}
+	return s[:capLen(s)]
 }

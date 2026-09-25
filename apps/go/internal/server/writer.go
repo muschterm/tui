@@ -3,6 +3,7 @@ package server
 import (
 	"cmp"
 	"slices"
+	"strings"
 
 	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
@@ -33,8 +34,13 @@ import (
 // sequence and so yields to earlier waiters. Nothing has to register a waiter,
 // so rejected commands, agent re-probes and restarts cannot strand one.
 //
-// Known limits: the lease key is the registered project path, so nested
-// projects in one working tree (/repo and /repo/sub) are not coordinated; a
+// A running Git write (git_write.go) also holds the lease, as a non-thread
+// holder keyed by its repository toplevel and matched by path overlap, and a
+// Git write is refused outright while a thread holds an overlapping lease.
+//
+// Known limits: between threads the lease key is the registered project path,
+// so nested projects in one working tree (/repo and /repo/sub) are not
+// coordinated with each other; a
 // fixture Resume that continues its turn in place is refused (checkout_busy)
 // rather than queued.
 
@@ -57,6 +63,11 @@ func (e *engine) writerHolder(s *protocol.Snapshot, key, except string) string {
 		if id != except && claimed == key {
 			return id
 		}
+	}
+	// A running Git write holds every checkout overlapping its repository
+	// toplevel, so a nested project in the same working tree waits too.
+	if id := e.gitWriteHolderLocked(key); id != "" {
+		return gitHolderPrefix + id
 	}
 	return ""
 }
@@ -173,6 +184,9 @@ func (e *engine) rebalanceWritersLocked() bool {
 		if writerEligible(t) {
 			if holder := e.writerHolder(s, t.Checkout, t.ID); holder != "" {
 				wait = &protocol.WriterWait{HolderThreadID: holder}
+				if id, ok := strings.CutPrefix(holder, gitHolderPrefix); ok {
+					wait = &protocol.WriterWait{HolderGitCommandID: id}
+				}
 				for _, c := range e.candidates(s, t.Checkout) {
 					wait.Position++
 					if c.ID == t.ID {

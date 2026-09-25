@@ -13,9 +13,10 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
-// git_surface.go is the read-only Git surface (docs/design/go-slice.md ›
-// Read-only Git surface). It observes the selected checkout through the
-// server's GET /v1/git/* reads and never offers a mutation. Every read runs
+// git_surface.go is the Git surface (docs/design/go-slice.md › Git
+// surface). It observes the selected checkout through the server's
+// GET /v1/git/* reads; writes (git_write.go) are separate explicit commands
+// offered only with the server's git-writes capability. Every read runs
 // as a tea.Cmd; results carry their target key and generation and are
 // dropped unless they still describe the displayed target. Loaded results
 // stay per target so switching back paints immediately, then refreshes.
@@ -100,6 +101,10 @@ func (m *Model) gitVisible() bool {
 // visible. There is no timer or polling.
 func (m *Model) nextGitRefresh() tea.Cmd {
 	key, _ := m.gitTarget()
+	if key != "" {
+		m.syncGitDraft(key)
+	}
+	opsDone := m.gitOpsChanged(key)
 	active := activeTurn(m.thread()) && !m.creatingThread()
 	ended := m.gitTurnKey == key && m.gitTurnActive && !active
 	m.gitTurnKey, m.gitTurnActive = key, active
@@ -111,7 +116,7 @@ func (m *Model) nextGitRefresh() tea.Cmd {
 		// Not marked shown: the first connected update reads it.
 		return nil
 	}
-	if key == m.gitShown && !ended {
+	if key == m.gitShown && !ended && !opsDone {
 		return nil
 	}
 	m.gitShown = key
@@ -179,6 +184,7 @@ func (m *Model) acceptGitStatus(msg gitStatusMsg) {
 	}
 	s := msg.status
 	g.status, g.statusErr = &s, ""
+	m.gitStatusArrived(msg.key, g)
 }
 
 func (m *Model) acceptGitLog(msg gitLogMsg) {
@@ -208,7 +214,7 @@ func (m *Model) gitAction(a action) tea.Cmd {
 	case "git-open", "git-commit":
 		return m.openGitViewer(a)
 	}
-	return nil
+	return m.gitWriteAction(a)
 }
 
 // gitRow is one activatable Git surface row: a status entry (mark and path)
@@ -222,6 +228,17 @@ type gitRow struct {
 	help          string
 	action        action
 	key           string
+	// Status rows with write controls: two reserved end slots (nil slots
+	// stay blank) so path truncation never depends on their visibility.
+	slots    bool
+	controls [2]*gitControl
+	// Composer and write-status rows (git_write_view.go): the part, the
+	// message line and editor height, plain text and toggle/disabled state.
+	compose     string
+	line, lines int
+	text        string
+	on          bool
+	disabled    bool
 }
 
 var gitSections = []struct{ group, title, label string }{
@@ -386,6 +403,13 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 		}
 		return b
 	}
+	writes := m.gitWritesEnabled()
+	block := ""
+	if writes {
+		block, _ = m.gitWriteBlock(key, g)
+		b = append(b, rule...)
+		b = append(b, m.gitWriteBlocks(key, g)...)
+	}
 	groups := map[string][]protocol.GitStatusEntry{}
 	for _, e := range s.Entries {
 		groups[e.Group] = append(groups[e.Group], e)
@@ -408,12 +432,20 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 		for _, e := range entries {
 			mark, ink := m.gitEntryMark(e)
 			path := gitEntryPath(e)
-			b = append(b, surfaceBlock{kind: surfaceGitBlock, git: &gitRow{
+			row := &gitRow{
 				mark: mark, markInk: ink, path: path,
 				help:   "Open diff · " + path + " · " + section.label,
 				action: action{Kind: "git-open", Value: e.Group, ID: e.Path},
 				key:    gitEntryKey(e),
-			}})
+			}
+			if writes {
+				row.slots = true
+				row.controls = m.gitEntryControls(e, block)
+				if k := gitViewerKeys(e.Group); k != "" && gitEntryWritable(e) {
+					row.help += " · " + k
+				}
+			}
+			b = append(b, surfaceBlock{kind: surfaceGitBlock, git: row})
 		}
 	}
 	if s.Truncated {
@@ -476,6 +508,20 @@ func (m *Model) gitCommitBlocks(g *gitView) []surfaceBlock {
 
 // gitRowText is a row's plain text for surfaceText.
 func gitRowText(r *gitRow) string {
+	switch r.compose {
+	case "":
+	case "top", "bottom":
+		return ""
+	case "amend":
+		if r.on {
+			return r.text + ": On"
+		}
+		return r.text + ": Off"
+	case "actions":
+		return "[" + r.text + "]"
+	default:
+		return r.text
+	}
 	if r.hash != "" {
 		line := r.hash
 		if len(r.refs) > 0 {
@@ -493,8 +539,17 @@ func gitRowText(r *gitRow) string {
 // paintGitRow paints one activatable row with full-row square-fill hover and
 // focus feedback; the focus mark takes the blank cell before the row.
 func (m *Model) paintGitRow(f *frame, x, y, width int, r *gitRow) {
+	if r.compose != "" {
+		m.paintGitCompose(f, x, y, width, r)
+		return
+	}
 	p := m.colors()
-	v := m.componentStyle(squareFill, m.controlState(false, r.key), p.text, p.panel)
+	state := m.controlState(false, r.key)
+	for _, c := range r.controls {
+		// Hovering a row's own control keeps the row's hover fill.
+		state.Hovered = state.Hovered || c != nil && m.hover == c.key
+	}
+	v := m.componentStyle(squareFill, state, p.text, p.panel)
 	f.styledButton(x, y, width, "", r.key, r.action, v)
 	f.hits[len(f.hits)-1].Label = r.help
 	bg := v.background
@@ -505,6 +560,10 @@ func (m *Model) paintGitRow(f *frame, x, y, width int, r *gitRow) {
 	if r.hash == "" {
 		f.text(cx, y, 1, r.mark, r.markInk, bg)
 		room := end - (cx + 2)
+		if r.slots && room > 2*gitSlotWidth+4 {
+			room -= 2 * gitSlotWidth
+			m.paintGitControls(f, x+width-2*gitSlotWidth, y, r, bg)
+		}
 		f.componentText(cx+2, y, max(0, room), truncatePathLeft(r.path, room), v)
 		return
 	}
@@ -577,8 +636,10 @@ func (m *Model) moveGitFocus(delta int) tea.Cmd {
 	rows := m.surfaceRows(m.surfaceBlocks(active), max(1, f.detail.W-1))
 	var index []int
 	current := -1
+	seen := map[string]bool{}
 	for i, r := range rows {
-		if r.git != nil {
+		if r.git != nil && r.git.key != "" && !seen[r.git.key] {
+			seen[r.git.key] = true
 			if r.git.key == m.focus {
 				current = len(index)
 			}

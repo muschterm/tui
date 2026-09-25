@@ -77,3 +77,61 @@ func (c *Client) GitShow(ctx context.Context, target GitTarget, commit string) (
 	err := c.git().request(ctx, "GET", "/v1/git/show?"+q.Encode(), nil, &out)
 	return out, err
 }
+
+// gitWriteTimeout exceeds the server's 5 minute budget for a Git write and
+// its hooks, so the server's own outcome arrives first.
+const gitWriteTimeout = 6 * time.Minute
+
+// GitWrite submits a git.* command built by one of the Git*Command helpers
+// and waits for its outcome. Assign cmd.ID once and reuse the same command
+// on retry: the server never runs Git twice for one ID, and a retry returns
+// the recorded receipt (waiting if the first attempt is still running).
+//
+// A refusal before Git runs (stale pins, busy checkout, invalid input) is
+// returned as a *protocol.Error and nothing is recorded, so correct the input
+// and send a new command with a new ID. Otherwise the receipt's Git field
+// carries the result: State succeeded (possibly with a warning Code), failed
+// or outcome_unknown. See protocol/git_write.go for every code.
+func (c *Client) GitWrite(ctx context.Context, cmd protocol.Command) (protocol.Receipt, error) {
+	g := *c
+	g.HTTP = &http.Client{Transport: c.HTTP.Transport, Timeout: gitWriteTimeout}
+	return g.Command(ctx, cmd)
+}
+
+func gitCommand(id, kind string, target GitTarget, w protocol.GitWrite) protocol.Command {
+	return protocol.Command{Version: protocol.Version, ID: id, Kind: kind, ThreadID: target.ThreadID, ProjectID: target.ProjectID, Git: &w}
+}
+
+func gitPin(e protocol.GitStatusEntry) []protocol.GitPathPin {
+	return []protocol.GitPathPin{{Path: e.Path, Group: e.Group, Pin: e.Pin}}
+}
+
+// GitStageCommand stages one unstaged or untracked status entry.
+func GitStageCommand(id string, target GitTarget, entry protocol.GitStatusEntry) protocol.Command {
+	return gitCommand(id, protocol.GitKindStage, target, protocol.GitWrite{Paths: gitPin(entry)})
+}
+
+// GitUnstageCommand unstages one staged status entry (both sides of a rename).
+func GitUnstageCommand(id string, target GitTarget, entry protocol.GitStatusEntry) protocol.Command {
+	return gitCommand(id, protocol.GitKindUnstage, target, protocol.GitWrite{Paths: gitPin(entry)})
+}
+
+// GitDiscardCommand permanently discards one unstaged or untracked entry.
+// Build it only after the user confirmed exactly this entry.
+func GitDiscardCommand(id string, target GitTarget, entry protocol.GitStatusEntry) protocol.Command {
+	return gitCommand(id, protocol.GitKindDiscard, target, protocol.GitWrite{Paths: gitPin(entry), Confirmed: true})
+}
+
+// GitCommitCommand commits the staged set shown in status with message.
+// amend replaces status's HEAD commit; acknowledgePublished must be true when
+// status.HeadOnUpstream was shown and the user accepted rewriting it.
+func GitCommitCommand(id string, target GitTarget, status protocol.GitStatus, message string, amend, acknowledgePublished bool) protocol.Command {
+	head := status.HeadOid
+	if head == "" {
+		head = protocol.GitUnbornHead
+	}
+	return gitCommand(id, protocol.GitKindCommit, target, protocol.GitWrite{
+		Message: message, Amend: amend, ExpectedHead: head,
+		StagedFingerprint: status.StagedFingerprint, AcknowledgePublished: acknowledgePublished,
+	})
+}

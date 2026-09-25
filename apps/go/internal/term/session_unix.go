@@ -15,6 +15,7 @@ import (
 	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -24,7 +25,10 @@ const (
 	readChunk     = 4 << 10         // PTY bytes parsed per emulator lock
 	replyQueue    = 64              // pending emulator replies; excess is dropped
 	hangupGrace   = 2 * time.Second // SIGHUP to SIGKILL escalation
+	killGrace     = time.Second     // waiting for killed processes to vanish
+	sessionPoll   = 50 * time.Millisecond
 	drainGrace    = 200 * time.Millisecond
+	heldFlush     = 20 * time.Millisecond // bound on holding a cluster split across reads
 	writeTimeout  = 5 * time.Second
 	fallbackShell = "/bin/sh"
 )
@@ -35,20 +39,27 @@ type Session struct {
 	cmd  *exec.Cmd
 	ptmx *os.File
 
-	mu        sync.Mutex // guards emu and the fields below
-	emu       *vt.Emulator
-	seq       uint64
-	title     string
-	cursorOn  bool
-	exit      ExitStatus
-	exited    bool
-	reaped    bool
-	killed    bool
-	wmu       sync.Mutex // serializes PTY writes (input and replies)
-	changed   chan struct{}
-	replies   chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
+	mu       sync.Mutex // guards emu and the fields below
+	emu      *vt.Emulator
+	seq      uint64
+	title    string
+	cursorOn bool
+	modes    inputModes // child-selected input modes; see keys.go
+	exit     ExitStatus
+	exited   bool
+	reaped   bool
+	killed   bool
+	// closing is set by Close before the exit is finalized; finalizing is
+	// set by wait when the shell exited by itself first. Exactly one wins.
+	closing    bool
+	finalizing bool
+	closeStat  ExitStatus // descendant outcome recorded by terminate
+	termDone   chan struct{}
+	limiter    clusterLimiter // guarded by mu (used only by readLoop)
+	wmu        sync.Mutex     // serializes PTY writes (input and replies)
+	changed    chan struct{}
+	replies    chan []byte
+	done       chan struct{}
 }
 
 // Start launches the shell on a new PTY in its own session and process group.
@@ -103,11 +114,14 @@ func Start(ctx context.Context, cfg Config) (*Session, error) {
 		changed:  make(chan struct{}, 1),
 		replies:  make(chan []byte, replyQueue),
 		done:     make(chan struct{}),
+		termDone: make(chan struct{}),
 	}
 	s.emu.SetScrollbackSize(sb)
 	s.emu.SetCallbacks(vt.Callbacks{
 		Title:            func(t string) { s.title = SanitizeTitle(t) },
 		CursorVisibility: func(v bool) { s.cursorOn = v },
+		EnableMode:       func(m ansi.Mode) { s.modes.set(m, true) },
+		DisableMode:      func(m ansi.Mode) { s.modes.set(m, false) },
 	})
 
 	readerDone := make(chan struct{})
@@ -201,18 +215,41 @@ func (s *Session) notify() {
 func (s *Session) readLoop(done chan<- struct{}) {
 	defer close(done)
 	buf := make([]byte, readChunk)
+	deadline := false
+	release := func() {
+		s.mu.Lock()
+		s.limiter.flush(s.emu)
+		s.seq++
+		s.mu.Unlock()
+		s.notify()
+	}
 	for {
 		n, err := s.ptmx.Read(buf)
+		held := false
 		if n > 0 {
 			s.mu.Lock()
-			_, _ = s.emu.Write(buf[:n])
+			// A full read means more output is waiting: the limiter may hold
+			// a trailing cluster so it is not split at the read boundary.
+			s.limiter.write(s.emu, buf[:n], n == len(buf))
+			held = s.limiter.held()
 			s.seq++
 			s.mu.Unlock()
 			s.notify()
 		}
-		if err != nil {
+		if err != nil && errors.Is(err, os.ErrDeadlineExceeded) {
+			// No more output arrived: show the held cluster now.
+			release()
+			held = false
+		} else if err != nil {
+			release()
 			return
 		}
+		if held {
+			_ = s.ptmx.SetReadDeadline(time.Now().Add(heldFlush))
+		} else if deadline {
+			_ = s.ptmx.SetReadDeadline(time.Time{})
+		}
+		deadline = held
 	}
 }
 
@@ -239,16 +276,15 @@ func (s *Session) drainReplies(done chan<- struct{}) {
 func (s *Session) writeReplies(done chan<- struct{}) {
 	defer close(done)
 	for p := range s.replies {
-		_ = s.writePTY(p) // failures are dropped: replies are advisory
+		_, _ = s.writePTY(p) // failures are dropped: replies are advisory
 	}
 }
 
-func (s *Session) writePTY(p []byte) error {
+func (s *Session) writePTY(p []byte) (int, error) {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_ = s.ptmx.SetWriteDeadline(time.Now().Add(writeTimeout))
-	_, err := s.ptmx.Write(p)
-	return err
+	return s.ptmx.Write(p)
 }
 
 // wait reaps the child, then tears down the PTY and goroutines before Done.
@@ -273,7 +309,25 @@ func (s *Session) wait(readerDone, drainDone, writerDone <-chan struct{}) {
 	<-drainDone
 	<-writerDone
 	s.mu.Lock()
+	closing := s.closing
+	s.finalizing = !closing
+	s.mu.Unlock()
+	if closing {
+		// Close owns the session's other processes; the exit is confirmed
+		// only once they are gone or accounted for.
+		<-s.termDone
+	} else {
+		// A shell that exited by itself leaves its jobs alone (as nohup
+		// would); they are only counted.
+		n, ok := sessionMembers(s.cmd.Process.Pid)
+		st.Descendants, st.DescendantsRemaining, st.DescendantsUnknown = len(n), len(n), !ok
+	}
+	s.mu.Lock()
 	st.Killed = s.killed
+	if closing {
+		st.Descendants, st.DescendantsKilled = s.closeStat.Descendants, s.closeStat.DescendantsKilled
+		st.DescendantsRemaining, st.DescendantsUnknown = s.closeStat.DescendantsRemaining, s.closeStat.DescendantsUnknown
+	}
 	s.exit, s.exited = st, true
 	s.seq++
 	s.mu.Unlock()
@@ -296,18 +350,30 @@ func (s *Session) Write(p []byte) error {
 	if len(p) > MaxInput {
 		return ErrInputTooLarge
 	}
+	return s.write(p)
+}
+
+func (s *Session) write(p []byte) error {
 	select {
 	case <-s.done:
 		return ErrClosed
 	default:
 	}
-	if err := s.writePTY(p); err != nil {
-		if errors.Is(err, os.ErrClosed) {
-			return ErrClosed
-		}
-		return fmt.Errorf("term: write: %w", err)
+	n, err := s.writePTY(p)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, os.ErrClosed):
+		return ErrClosed
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return &BusyError{Written: n, Total: len(p)}
 	}
-	return nil
+	select {
+	case <-s.done:
+		return ErrClosed
+	default:
+	}
+	return fmt.Errorf("term: write: %w", err)
 }
 
 // Resize changes the PTY and emulator size together; values are clamped.
@@ -385,14 +451,20 @@ func (s *Session) ExitStatus() (ExitStatus, bool) {
 	return s.exit, s.exited
 }
 
-// Close hangs up the child's process group, escalates to SIGKILL after a
-// grace period, and returns once the child is reaped and goroutines stopped.
+// Close ends the session: it hangs up the shell's process group and every
+// other process group in its session (background jobs), escalates to SIGKILL
+// after a grace period, and returns once the shell is reaped, the session's
+// processes are gone or accounted for in ExitStatus, and goroutines stopped.
 // Returning nil means confirmed exit; a ctx error means close was accepted
-// (signals sent) but exit was not yet confirmed. Close is idempotent.
+// (signals sent) but exit was not yet confirmed. Close is idempotent. After
+// the shell has exited by itself Close only waits for Done.
 func (s *Session) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() {
+	s.mu.Lock()
+	if !s.closing && !s.finalizing {
+		s.closing = true
 		go s.terminate()
-	})
+	}
+	s.mu.Unlock()
 	select {
 	case <-s.done:
 		return nil
@@ -401,19 +473,62 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 }
 
+// terminate signals the shell's session and records the outcome for wait.
+// The session ID is the shell's PID (Setsid); while any member lives the
+// kernel does not reuse that number, so enumerating it after the shell is
+// reaped still finds only this session's processes.
 func (s *Session) terminate() {
-	pgid := s.cmd.Process.Pid // Setsid: the child leads its own group
-	if !s.signalGroup(pgid, unix.SIGHUP, false) {
-		return
+	defer close(s.termDone)
+	sid := s.cmd.Process.Pid
+	var st ExitStatus
+	s.signalGroup(sid, unix.SIGHUP, false)
+	members, ok := sessionMembers(sid)
+	st.DescendantsUnknown = !ok
+	st.Descendants = len(members)
+	signalMembers(members, unix.SIGHUP)
+	if !s.awaitSession(sid, hangupGrace, &st) {
+		s.signalGroup(sid, unix.SIGKILL, true)
+		members, _ = sessionMembers(sid)
+		signalMembers(members, unix.SIGKILL)
+		st.DescendantsKilled = len(members) > 0
+		s.awaitSession(sid, killGrace, &st)
 	}
-	t := time.NewTimer(hangupGrace)
-	defer t.Stop()
-	select {
-	case <-s.done:
-		return
-	case <-t.C:
+	members, _ = sessionMembers(sid)
+	st.DescendantsRemaining = len(members)
+	s.mu.Lock()
+	s.closeStat = st
+	s.mu.Unlock()
+}
+
+// awaitSession waits until the shell is reaped and no other session member
+// remains, or d elapses.
+func (s *Session) awaitSession(sid int, d time.Duration, st *ExitStatus) bool {
+	deadline := time.Now().Add(d)
+	for {
+		s.mu.Lock()
+		reaped := s.reaped
+		s.mu.Unlock()
+		members, _ := sessionMembers(sid)
+		st.Descendants = max(st.Descendants, len(members))
+		if reaped && len(members) == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(sessionPoll)
 	}
-	s.signalGroup(pgid, unix.SIGKILL, true)
+}
+
+func signalMembers(members map[int]int, sig unix.Signal) {
+	groups := map[int]bool{}
+	for pid, pgid := range members {
+		if pgid > 0 && !groups[pgid] {
+			groups[pgid] = true
+			_ = unix.Kill(-pgid, sig)
+		}
+		_ = unix.Kill(pid, sig)
+	}
 }
 
 // signalGroup signals the child's process group unless the leader has been

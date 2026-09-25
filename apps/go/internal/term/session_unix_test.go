@@ -22,11 +22,18 @@ func requireSh(t *testing.T) {
 	}
 }
 
+// testEnv isolates test shells from the developer's home: a temporary HOME,
+// no history file and no startup files named by ENV or BASH_ENV.
+func testEnv(t *testing.T) []string {
+	t.Helper()
+	return []string{"HOME=" + t.TempDir(), "HISTFILE=/dev/null", "PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8"}
+}
+
 // startScript runs script under /bin/sh -c and registers cleanup.
 func startScript(t *testing.T, script string, mod func(*Config)) *Session {
 	t.Helper()
 	requireSh(t)
-	cfg := Config{Shell: "/bin/sh", Dir: t.TempDir(), Cols: 40, Rows: 10, args: []string{"-c", script}}
+	cfg := Config{Shell: "/bin/sh", Dir: t.TempDir(), Env: testEnv(t), Cols: 40, Rows: 10, args: []string{"-c", script}}
 	if mod != nil {
 		mod(&cfg)
 	}
@@ -359,14 +366,14 @@ func TestNoGoroutineLeaks(t *testing.T) {
 	requireSh(t)
 	before := runtime.NumGoroutine()
 	for range 3 {
-		s, err := Start(context.Background(), Config{Shell: "/bin/sh", Dir: t.TempDir(), args: []string{"-c", "printf '\033[6n'; sleep 100"}})
+		s, err := Start(context.Background(), Config{Shell: "/bin/sh", Dir: t.TempDir(), Env: testEnv(t), args: []string{"-c", "printf '\033[6n'; sleep 100"}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := s.Close(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		s2, err := Start(context.Background(), Config{Shell: "/bin/sh", Dir: t.TempDir(), args: []string{"-c", "exit 0"}})
+		s2, err := Start(context.Background(), Config{Shell: "/bin/sh", Dir: t.TempDir(), Env: testEnv(t), args: []string{"-c", "exit 0"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -391,5 +398,72 @@ func TestUnreadRepliesDoNotBlock(t *testing.T) {
 	defer cancel()
 	if err := s.Close(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// readKeyScript puts the PTY in raw mode, optionally enables modes, prints
+// READY and then prints the hex of the next n input bytes as "got:<hex>".
+func readKeyScript(modes string, n int) string {
+	return `stty raw -echo; printf '` + modes + `READY'; r=$(dd bs=1 count=` + strconv.Itoa(n) + ` 2>/dev/null | od -An -tx1 | tr -d ' \n'); printf '\r\ngot:%s.' "$r"; sleep 5`
+}
+
+func sendAndRead(t *testing.T, modes string, n int, send func(*Session) error) string {
+	t.Helper()
+	if _, err := os.Stat("/usr/bin/od"); err != nil {
+		if _, err := os.Stat("/bin/od"); err != nil {
+			t.Skip("od unavailable")
+		}
+	}
+	s := startScript(t, readKeyScript(modes, n), nil)
+	waitFor(t, s, "READY", func(scr Screen) bool { return strings.Contains(screenText(scr), "READY") })
+	if err := send(s); err != nil {
+		t.Fatal(err)
+	}
+	scr := waitFor(t, s, "got", func(scr Screen) bool {
+		return strings.Contains(screenText(scr), ".") && strings.Contains(screenText(scr), "got:")
+	})
+	text := screenText(scr)
+	i := strings.Index(text, "got:")
+	return strings.TrimSuffix(strings.Fields(text[i+4:])[0], ".")
+}
+
+func TestSendKeyFollowsCursorKeyMode(t *testing.T) {
+	up := func(s *Session) error { return s.SendKey(Key{Code: "up"}) }
+	if got := sendAndRead(t, `\033[?1h`, 3, up); got != "1b4f41" {
+		t.Fatalf("DECCKM on: Up sent %s, want ESC O A", got)
+	}
+	if got := sendAndRead(t, ``, 3, up); got != "1b5b41" {
+		t.Fatalf("DECCKM off: Up sent %s, want ESC [ A", got)
+	}
+	if got := sendAndRead(t, `\033[?1h\033[?1l`, 3, up); got != "1b5b41" {
+		t.Fatalf("DECCKM reset: Up sent %s, want ESC [ A", got)
+	}
+}
+
+func TestSendKeyControlAndAlt(t *testing.T) {
+	if got := sendAndRead(t, ``, 1, func(s *Session) error { return s.SendKey(Key{Code: "c", Mods: ModCtrl}) }); got != "03" {
+		t.Fatalf("Ctrl+C sent %s, want 03", got)
+	}
+	if got := sendAndRead(t, ``, 2, func(s *Session) error { return s.SendKey(Key{Code: "x", Text: "x", Mods: ModAlt}) }); got != "1b78" {
+		t.Fatalf("Alt+X sent %s, want 1b78", got)
+	}
+	s := startScript(t, `sleep 5`, nil)
+	if err := s.SendKey(Key{Code: "a", Text: "\x1b"}); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("control text error = %v", err)
+	}
+}
+
+func TestPasteBracketsOnlyWhenEnabled(t *testing.T) {
+	paste := func(s *Session) error { return s.Paste("a\nb") }
+	// ESC[200~ a CR b ESC[201~
+	if got := sendAndRead(t, `\033[?2004h`, 15, paste); got != "1b5b3230307e610d621b5b3230317e" {
+		t.Fatalf("bracketed paste sent %s", got)
+	}
+	if got := sendAndRead(t, ``, 3, paste); got != "610d62" {
+		t.Fatalf("plain paste sent %s", got)
+	}
+	s := startScript(t, `sleep 5`, nil)
+	if err := s.Paste(strings.Repeat("x", MaxInput+1)); !errors.Is(err, ErrInputTooLarge) {
+		t.Fatalf("oversized paste error = %v", err)
 	}
 }

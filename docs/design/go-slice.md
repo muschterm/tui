@@ -1,6 +1,6 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner. Live HTTP checks are recorded separately from terminal validation. Children, general questions and terminal sessions remain fixtures; collaborative files, Git workflows and embedded shells remain incomplete. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-22. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner. Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells (2026-09-24); collaborative files and Git workflows remain incomplete. This does not change the accepted product scope or settle later integration decisions.
 
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
@@ -68,12 +68,14 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 | Delete in a tab menu row | Close that surface |
 | Ctrl+Q / Ctrl+C without a selection | Detach TUI |
 | Ctrl+Z | Suspend |
+| Enter / click on a terminal grid | Type into that terminal (this client must control it) |
+| Ctrl+] while typing into a terminal | Leave terminal input; every other key goes to the shell meanwhile |
 | Alt+Left / Alt+Right | Resize right panel |
 | Alt+Up / Alt+Down | Resize bottom panel |
 | Ctrl+C / Ctrl+Shift+C | Copy selected text to the local system clipboard; SSH uses OSC 52 with unconfirmed terminal acceptance |
 | Ctrl+V / Ctrl+Shift+V / forwarded Super+V / Shift+Insert | Paste into the focused prompt through the guarded local clipboard reader; SSH/herdr use the outer terminal's Paste |
 
-Pointer paths include visible controls, divider dragging, wheel scrolling and text selection. Terminal bracketed paste is supported. Forwarded paste shortcuts use the same guarded reader as context-menu Paste; the widget's separate asynchronous paste command remains disabled to preserve grapheme handling and stale-target checks. Herdr panes use OSC 52 for Copy even without SSH environment markers, allowing herdr to route the clipboard to its client; host-local Paste is unavailable there because the viewer can be on another machine. Complex emoji pointer positioning and shortcut remapping remain prototype limitations. Clipboard and enhanced key delivery depend on the host terminal; their presence in the prototype is not evidence of every terminal/SSH/tmux path. The command menu exposes left-pane resizing as well. The shell supplies opened-surface tabs, singleton non-terminal surfaces, repeatable fixture terminals, attention, inspectors and fixed composer-adjacent activity. Fixture usage remains unavailable; ACP context usage appears only when reported. Rich graphics are not claimed.
+Pointer paths include visible controls, divider dragging, wheel scrolling and text selection. Terminal bracketed paste is supported. Forwarded paste shortcuts use the same guarded reader as context-menu Paste; the widget's separate asynchronous paste command remains disabled to preserve grapheme handling and stale-target checks. Herdr panes use OSC 52 for Copy even without SSH environment markers, allowing herdr to route the clipboard to its client; host-local Paste is unavailable there because the viewer can be on another machine. Complex emoji pointer positioning and shortcut remapping remain prototype limitations. Clipboard and enhanced key delivery depend on the host terminal; their presence in the prototype is not evidence of every terminal/SSH/tmux path. The command menu exposes left-pane resizing as well. The shell supplies opened-surface tabs, singleton non-terminal surfaces, repeatable embedded terminals, attention, inspectors and fixed composer-adjacent activity. Fixture usage remains unavailable; ACP context usage appears only when reported. Rich graphics are not claimed.
 
 Controls use Nerd Font Codicons by default; configure a patched font in your terminal. Settings › Appearance › Symbols switches this client to the ASCII fallback and back without restarting; `TUI_GO_ICONS=ascii ./bin/tui-go` is the environment default for a client that has not saved a choice (2026-09-22). Pane glyphs reflect visible open/closed state. Tabs contain an icon and name; hovering a tab or focusing its icon reveals the close action. Only the icon slot closes it. The overflow control appears only when some tabs are hidden, with one row per surface and Delete as a keyboard close path.
 
@@ -163,13 +165,13 @@ Shutdown closes HTTP admission, releases unfinished input and drains accepted ha
 
 Prompt submission captures the supplied settings and attachment content in its queued item. Queue text/settings edits preserve existing attachment captures. Fixture settings admit only the fixture model and permissions, low/medium/high effort, unavailable context and standard speed. Synthetic dispatch copies captured settings into its fixture effective state; it does not enforce a real model or permission mode. Request resolution reports fixture confirmation, not provider receipt or asynchronous-answer integration.
 
-Current bounds: 768 KiB command bodies; 16,384-byte prompts; 32 queued prompts per thread; eight attachments with at most 64 KiB content each; 4 MiB command-result snapshots; 128 KiB view bodies; 4,096-byte individual answers; 64 retained terminal fixtures; 32 children per thread, with older full child detail archived into activity; 128 activity items per thread, with a truncation notice. These are implementation limits, not approved product budgets. Commands/receipts, named views, migration backups and shutdown outcome records do not yet have retention policies; prolonged fixture use can grow storage.
+Current bounds: 768 KiB command bodies; 16,384-byte prompts; 32 queued prompts per thread; eight attachments with at most 64 KiB content each; 4 MiB command-result snapshots; 128 KiB view bodies; 4,096-byte individual answers; 64 live and 64 retained ended terminal records; 32 children per thread, with older full child detail archived into activity; 128 activity items per thread, with a truncation notice. These are implementation limits, not approved product budgets. Commands/receipts, named views, migration backups and shutdown outcome records do not yet have retention policies; prolonged fixture use can grow storage.
 
 ## Dependencies and implementation assumptions
 
 [go.mod](../../apps/go/go.mod) pins Go 1.27.1, Bubble Tea 2.0.9, Bubbles 2.2.1, Lip Gloss 2.0.6, modernc SQLite 1.59.0 and coder/websocket 1.8.15, with checked-in module sums. Tea/Bubbles/Lip Gloss supply input/rendering, composer widgets and styling but add terminal compatibility work. These maintained releases were verified through the public Go module proxy and their downloaded versioned source on 2026-09-19. The existing transitive `uniseg` 0.4.7 dependency is now direct for grapheme-safe editing; `x/ansi` 0.11.8 provides cell-aware clipping/sanitization, and `x/sys` 0.48.0 supplies Unix locks and terminal queries. Their cost is a pinned Unicode/terminal implementation surface that still needs compatibility checks. Pure-Go SQLite avoids a cgo deployment dependency at the cost of a larger dependency/binary footprint. WebSocket support supplies transport framing and connection handling; application authentication, versioning and catch-up remain this repository's responsibility. The POSIX lock/process implementation currently targets macOS/Linux; Windows remains outstanding. cobra 1.10.2 (with pflag 1.0.9 and the Windows-only mousetrap 1.1.0) supplies subcommand parsing, per-command help and shell completion for the command line; staticcheck 0.8.1 and govulncheck 1.8.0 are pinned as go.mod `tool` dependencies for `make lint` and `make vuln`, so they are reproducible without entering the binary. See [ADR 0012](../adr/0012-go-cli-framework.md).
 
-The fixture runner is intentionally bounded to synthetic work. Workspace file context capture is limited to the source-backed UTF-8 attachment path described below. The fixture runner performs no workspace file writes, Git mutations, real agent jobs or interactive terminal subprocesses; selected ACP agents can perform their own direct operations. Application persistence is real. A displayed terminal's controller field is fixture state, not a verified PTY controller contract. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
+The fixture runner is intentionally bounded to synthetic work. Workspace file context capture is limited to the source-backed UTF-8 attachment path described below. The fixture runner performs no workspace file writes, Git mutations, real agent jobs or interactive terminal subprocesses; selected ACP agents can perform their own direct operations. Application persistence is real. Embedded terminals are real PTY shells with an enforced input/resize controller ([ADR 0019](../adr/0019-embedded-terminal-sessions.md)); they are not part of the fixture runner. Similarly, populated question/approval/child views exercise presentation and state transitions without proving adapter feature parity.
 
 ## Evidence and next slice
 
@@ -183,7 +185,7 @@ demo lifecycle, after which unfinished work still requires explicit Resume.
 
 Backend validation on 2026-09-19: `GOCACHE=/tmp/tui-go-build go test -race ./internal/server ./internal/storage ./internal/lifecycle` passed with loopback-listener permission. Checks cover authentication, lock contention, detached fixture progress, initial WebSocket catch-up, deduplication and stale revisions, restart Resume gating, view CAS and migration backup, and confirmed graceful stop. Storage/lifecycle tests were rerun after adding backup-directory syncing and passed. This evidence is limited to the tested Go fixture implementation.
 
-The ACP work proposed in the [original validation report](../research/go-slice-validation-2026-09-19.md#next-implementation-slice) now has a first implementation, described below. Use interactive review to refine geometry, focus and controls alongside that slice. Resolve native shared-document convergence/own-edit undo and autosave reconciliation before expanding the editor; validate pinned ACP capabilities, continued-work answers and full available child history before claiming integrations; connect server-owned PTYs to a bounded emulator before calling terminal surfaces functional. Rust and Bun reference applications remain required later work.
+The ACP work proposed in the [original validation report](../research/go-slice-validation-2026-09-19.md#next-implementation-slice) now has a first implementation, described below. Use interactive review to refine geometry, focus and controls alongside that slice. Resolve native shared-document convergence/own-edit undo and autosave reconciliation before expanding the editor; validate pinned ACP capabilities, continued-work answers and full available child history before claiming integrations; server-owned PTYs now feed a bounded emulator and the TUI terminal surfaces (see [embedded terminals](#embedded-terminals--2026-09-24)); their fidelity is bounded by pre-v1 x/vt. Rust and Bun reference applications remain required later work.
 
 A final view-save failure exports a private JSON recovery file under the application home and reports its path; automatic import is deferred. Pending commands retain their identity for explicit Retry. Queued edits preserve the original composer draft; use Commands → Rebase queued edit after conflict before explicitly saving against a newer queue revision.
 
@@ -923,7 +925,11 @@ capability advertising artifact support, and graphics inside multiplexers.
 path, at most one running/waiting thread and a FIFO wait order over the
 threads with queued work blocked behind it; see its header comment and the
 [workspace contract binding](workspaces.md#writer-coordination) for the exact
-rules. The lease covers the claim-to-dispatch window, and a deleted thread's
+rules. Between threads the lease key is the registered checkout path, so
+nested projects' turns are not coordinated with each other; Git writes
+(ADR 0020) are: a running Git write holds the lease keyed by the repository
+toplevel and keys are compared by path overlap in both directions. The lease
+covers the claim-to-dispatch window, and a deleted thread's
 claim keeps it until that dispatch returns, so a deleted holder's adapter
 cannot overlap the next writer. Recovery gates idle threads with queued,
 never-started prompts behind explicit Resume. A fixture Resume that would
@@ -964,16 +970,20 @@ interactive terminal review covered this scheduler. This does not make concurren
 writes from outside the application (an external editor, shell, or unrelated
 process touching the same checkout) safe; see the caution above.
 
-### Read-only Git surface — 2026-09-24
+### Git surface — 2026-09-24
 
 The right-host Git surface (`internal/tui/git_surface.go`,
 `git_viewer.go`) replaces the former "Git integration unavailable"
 placeholder with read-only observations from `GET /v1/git/{status,diff,log,show}`
-(`internal/client/git.go`). It offers no staging, commit, branch or other
-mutating control, not even a disabled one.
+(`internal/client/git.go`). Write actions (stage, unstage, discard, commit
+and amend; [ADR 0020](../adr/0020-git-write-actions.md)) appear only when the
+server advertises the `git-writes` capability and are described under
+[Git write actions](#git-write-actions--2026-09-24); without it the surface
+offers no mutating control, not even a disabled one. Branch, remote, merge and
+rebase actions remain absent.
 
 - **Header and checkout.** The GIT heading carries a glyph-only Refresh icon
-  (Nerd Font `cod-refresh`, plain `R`; help "Refresh Git status · read-only";
+  (Nerd Font `cod-refresh`, plain `R`; help "Refresh Git status · read-only" — the refresh itself never writes;
   reachable by Tab/Enter). The Checkout/Branch/HEAD pairs keep their existing
   vocabulary; once the surface's status read returns, its workspace supplies
   them. `Upstream` shows the tracking ref with `↑n ↓n` from local refs (or
@@ -1037,3 +1047,161 @@ render captures (`TUI_GO_CAPTURE_DIR`), optionally from real reads supplied as
 JSON in `TUI_GO_GIT_JSON`; the 2026-09-24 review used reads of this
 repository at 144×40 and 44×40/44×30 in dark and light. Not yet verified in a
 real terminal (foot) or with `make pty`.
+
+### Git write actions — 2026-09-24
+
+`internal/tui/git_write.go` and `git_write_view.go` add the ADR 0020 writes
+to the Git surface. Every write is one durable `git.*` command built once by
+the `client.Git*Command` helpers and sent as a `tea.Cmd` through
+`client.GitWrite`; the TUI keeps the command, so **Retry** after a lost reply
+(a transport error, shown as "No reply from the server · …") resends the same
+ID and the server never runs Git twice. A refusal (`protocol.Error`, nothing
+recorded) drops the command: the next attempt is a new command.
+
+- **Row actions.** STAGED, CHANGES and UNTRACKED rows reserve two three-cell
+  icon slots at their right end whenever writes are available, so path
+  truncation never changes when the glyphs appear. The glyph-only controls
+  (no fill; hover/focus embolden and lift muted ink; only the glyph and its
+  spill cell are interactive) show while the row or a control is hovered or
+  focused: CHANGES/UNTRACKED Stage (`cod-add`, plain `+`) then Discard
+  (`cod-discard`, plain `<`) or, for untracked files, Delete (`cod-trash`,
+  plain `x`); STAGED Unstage (`cod-remove`, plain `-`) in the right slot.
+  Conflicted rows, submodules and entries without a Pin have no controls.
+  With a row focused, `s` stages, `u` unstages and `d` opens the discard
+  confirmation; Enter still opens the diff. The diff viewer takes the same
+  keys for its entry (its pairs add `Keys`); `d` closes the viewer first so
+  the confirmation receives the keys. Keyboard and pointer activate the same
+  action. **Stage all / Unstage all are omitted**: the API accepts exactly one
+  path per command, and sequential per-path commands would imply an atomicity
+  they do not have.
+- **Discard confirmation** reuses the centered menu dialog of thread Delete:
+  a note "Discard changes to \<path\>?" or "Delete untracked file \<path\>?
+  This cannot be undone.", Cancel (default focus) and a red Discard/Delete.
+  The command carries the Pin shown when the dialog opened; when a status
+  refresh shows a different Pin or no entry, the destructive item is replaced
+  by the muted note "File changed since shown · review".
+- **Commit composer** sits between the checkout facts and the status groups
+  (stable position while staging changes the groups), in a rounded outline
+  with a stable input interior: a 2–6 row message editor (Enter commits,
+  Shift+Enter/Ctrl+J newline, paste inserts and never commits), the identity
+  line "Name \<email\>" (muted) or "Git identity missing · set
+  user.name/user.email" (gold, Commit disabled), the Amend toggle row (panel
+  toggle construct; disabled on an unborn branch) and the Commit/Amend action.
+  Turning Amend on with an empty message prefills HEAD's full message (via
+  `GET /v1/git/show`, sanitized) as an editable draft. With Amend on and
+  `HeadOnUpstream`, the gold line "Last commit is already on the upstream"
+  appears (or "Could not check whether the last commit is on the upstream"
+when `HeadOnUpstreamUnknown`) and Commit opens a second confirmation ("Amend published commit")
+  that sets `AcknowledgePublished`. Commit is disabled (muted, no hover, the
+  reason at its left and in help) with nothing staged and no amend, a blank
+  message, a merge/rebase/cherry-pick/revert in progress, conflicts, missing
+  identity, a staged set status could not list in full (`StagedTruncated`:
+  "Too many staged changes to review here · commit from a terminal"), a busy
+  checkout or a running write. Drafts (message and Amend) are client-local per Git target,
+  survive failures, refreshes and thread switches, and clear on success.
+- **Busy and progress.** A running/waiting turn in an overlapping checkout
+  shows "Agent turn running in this checkout · Git writes wait" and makes
+  every write control inert, with the reason in help. The client check is
+  advisory (it approximates the repository toplevel from `Snapshot.GitOps`);
+  the server's `checkout_busy` is authoritative. A running write — this
+  client's or another's, from `Snapshot.GitOps` — shows "Staging…",
+  "Unstaging…", "Discarding…" or "Committing…" and disables writes; when a
+  GitOp in the repository finishes, the surface rereads status once.
+- **Results.** Success is a transient notice ("Staged/Unstaged \<path\>",
+  "Discarded changes to \<path\>", "Deleted \<path\>", "Committed/Amended
+  \<short\> \<subject\>") and a status/log refresh. Warnings
+  (`staged_newer_content`, `hooks_changed_content`) stay as a gold line until
+  the next action. Failures stay as a red line at the source with
+  code-specific copy (`gitErrorCopy`, one distinct line per code in
+  `protocol/git_write.go`); when Git or hooks produced output, **View output**
+  opens it in the read-only viewer, sanitized with `safe()`, marked when
+  truncated at 64 KiB. `outcome_unknown` reads "Result unknown · refresh and
+  check" with Refresh. Refusals are notices; stale and state refusals
+  (`stale_*`, `nothing_staged`, `conflicted`, `checkout_busy`, …) also reread
+  status.
+
+Tests: `internal/tui/git_write_test.go` (fake `GitWrite`): slot geometry with
+controls hidden/shown, keyboard/pointer parity, no controls on
+conflicted/submodule rows, the discard dialog (default Cancel, untracked copy,
+Pin change disables, confirm sends the shown Pin), composer keys and paste,
+disabled states without hover, identity missing, amend prefill (sanitized)
+and the published confirmation, lease/GitOps progress and refresh, every
+error code's copy, hook output sanitization, Retry reusing the command ID,
+and drafts across targets. `TestGitWriteCaptures` writes render captures
+(rows, discard, composer, published, failure, narrow; dark and light). Not yet
+verified against a live server in a real terminal.
+
+### Embedded terminals — 2026-09-24
+
+Phase 3 of [ADR 0019](../adr/0019-embedded-terminal-sessions.md): right-host
+Terminal tabs, the centre-bottom panel and the compact Terminal column show
+real server-owned shells. The TUI gates on the `embedded-terminals`
+capability; the fixture snapshot no longer advertises `fixture-terminal`.
+Records without a control generation (legacy fixture terminals in old homes)
+keep rendering their recorded output and open no stream.
+
+- **Open.** `terminal.open` carries this client's ID and the grid size of the
+  pane the terminal will appear in (the right host's body, or the bottom
+  panel's body below its tab row), so the shell starts at its shown size. A
+  right-host terminal opened while the host cannot fit beside the
+  conversation is revealed like other opened surfaces.
+- **Streams.** One stream per terminal visible in this client (active right
+  tab, active bottom tab, compact Terminal column), opened and closed from
+  Update through commands; every message carries a stream generation and
+  stale ones are dropped. Hidden terminals close their stream and keep the last
+  screen for instant re-show. Unexpected ends reconnect with backoff from
+  250 ms to 5 s; `ended` stops. Detach closes every stream. Writes go through
+  one ordered writer goroutine per stream (256 queued); Update never blocks on
+  stream I/O.
+- **Painting.** The latest screen is painted cell for cell: runs at the
+  server's widths, clusters kept whole, a wide grapheme clipped by the edge
+  blanked, palette and RGB colours downsampled by the client's colour profile
+  (256/16/`NO_COLOR`), defaults following the theme's ink and panel, and
+  bold/faint/italic/underline/reverse/strike (blink ignored). Any control,
+  bidi or invalid rune in cell text is replaced before painting. Each row is
+  built fresh and compacted, so retained SGR is bounded. The row above the grid
+  is a status line: Connecting…/Reconnecting…, Closing…, `Close not confirmed ·
+  <error>` with **Retry close**, `Ended · exit N`/killed/signal/server
+  stopped/server restarted (the final screen stays, dimmed), **Observing** with
+  **Take control**, `Ctrl+] to leave` while typing, a history position, and a
+  muted `size W×H` note only when the grid differs from the pane. The tab shows
+  the sanitized title: `Terminal 1 · vim`.
+- **Input.** Enter on a focused terminal pane, or a click in its grid, enters
+  input focus when this client controls the running terminal; otherwise a
+  coalesced notice explains (`Another client controls this terminal · Take
+  control`). While typing, every key goes to the shell as a semantic `key`
+  request and outer bracketed pastes as `paste` requests; the server encodes
+  them for the child's modes (application cursor/keypad keys, bracketed paste).
+  App shortcuts (F-keys, Ctrl+Q, Ctrl+C, Ctrl+V, Tab) are suspended; **Ctrl+]**
+  (unused elsewhere) leaves, as does clicking outside the grid. Super/Hyper
+  chords, F13+ and media keys are not sent. Local clipboard shortcuts are not
+  read into terminals; use the outer terminal's paste. Mouse events are not
+  forwarded to the child (child mouse modes are unavailable in this slice).
+- **Control and resize.** Take control sends `terminal.take-control`; losing
+  control leaves input focus with a notice. Only the controller resizes, 100 ms
+  after its pane grid changes (window resize, panel drag, maximize, compact
+  column), and again after gaining control. Observers keep the controller's
+  size, anchored top-left with the size note.
+- **History.** The wheel over a grid, or Up/Down/PgUp/PgDn/Home/End on a
+  focused (not typing) pane, scrolls main-screen history fetched in 500-line
+  pages; typing or End returns to the live screen. Full-screen (alternate
+  screen) programs have no history and show a notice.
+- **Lifecycle.** Tab close and bottom-tab close still send `terminal.close`
+  and remove the tab on acceptance; closing the last bottom tab hides the
+  panel. `closing`, `close_uncertain` and ended states are therefore mostly
+  seen by other clients observing the same terminal. A `rejected` event is
+  never taken as proof that the session ended; the record and `ended` event
+  decide.
+
+Validation: `internal/term/keys_test.go` and PTY tests (DECCKM Up is `ESC O A`
+only when enabled, bracketed paste only with mode 2004, Ctrl+C is 0x03, Alt+X
+is `ESC x`), `TestTerminalKeyAndPasteRequests` over the stream,
+`internal/tui/terminal_view_test.go` with a fake stream, and
+`scripts/pty_terminal.py` in `make pty` (real bash in a temporary `HOME` with
+`HISTFILE=/dev/null`: F5 opens it, a click focuses it, typed
+`echo hello-$((6*7))` prints `hello-42`, Ctrl+] leaves, hide/show keeps it,
+tab close ends it). A foot review (about 144×49, dark and light) covered a live
+`ls --color` bottom panel, `less -R` in a revealed right-host terminal,
+observer with Take control and the ended state; captures are not retained in
+the repository because shell titles show the local user and host.
+

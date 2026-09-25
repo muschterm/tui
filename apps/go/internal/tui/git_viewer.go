@@ -26,6 +26,11 @@ type gitViewerContent struct {
 	binary, truncated bool
 	bytes             int
 	loaded            bool
+	// key and entry pin what the viewer shows for writes (s/u/d); changed
+	// marks a later status showing another Pin for it.
+	key             string
+	entry           protocol.GitStatusEntry
+	pinned, changed bool
 }
 
 type gitViewerMsg struct {
@@ -42,7 +47,7 @@ func (m *Model) openGitViewer(a action) tea.Cmd {
 	if !m.connected || api == nil {
 		return m.showNoticeAs(noticeUnavailable, "Connect to the server to read Git changes")
 	}
-	_, target := m.gitTarget()
+	key, target := m.gitTarget()
 	origin := m.focus
 	if origin == "" || strings.HasPrefix(origin, "menu:") || strings.HasPrefix(origin, "viewer-") {
 		origin = "right-body"
@@ -61,7 +66,10 @@ func (m *Model) openGitViewer(a action) tea.Cmd {
 			}
 		}
 	} else {
-		content.path, content.group = a.ID, a.Value
+		content.path, content.group, content.key = a.ID, a.Value, key
+		if e, ok := m.gitViews[key].entry(a.Value, a.ID); ok && gitEntryWritable(e) {
+			content.entry, content.pinned = e, true
+		}
 		att.Name = safe(singleLine(a.ID)) + " · " + gitGroupLabel(a.Value)
 	}
 	m.menu = nil
@@ -162,6 +170,14 @@ func (m *Model) gitViewerPairs() [][2]string {
 		pairs = append(pairs, g.pairs...)
 	} else {
 		pairs = append(pairs, [2]string{"Path", safe(singleLine(g.path))}, [2]string{"Group", gitGroupLabel(g.group)})
+		switch {
+		case g.changed:
+			pairs = append(pairs, [2]string{"Status", gitViewerChangedCopy})
+		case g.pinned && m.gitWritesEnabled():
+			if k := gitViewerKeys(g.group); k != "" {
+				pairs = append(pairs, [2]string{"Keys", k})
+			}
+		}
 	}
 	if g.loaded {
 		pairs = append(pairs, [2]string{"Size", attachmentSize(g.bytes)})

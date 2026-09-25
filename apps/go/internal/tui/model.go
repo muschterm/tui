@@ -136,6 +136,8 @@ type frame struct {
 	wrapRows map[int]bool
 	// composer is the prompt outline, including any attachment strip.
 	composer shell.Rect
+	// terms are the embedded terminal grids laid out in this frame.
+	terms []termPane
 }
 
 type snapshotMsg protocol.Snapshot
@@ -264,6 +266,7 @@ type Model struct {
 	gitShown      string
 	gitTurnKey    string
 	gitTurnActive bool
+	gitW          gitWriteUI
 	// Kitty graphics (graphics_model.go): per-connection capability, owned
 	// image ids and the composer's thumbnail loads.
 	graphics            graphicsProbe
@@ -274,6 +277,13 @@ type Model struct {
 	keyboard            string
 	activityPhase       int
 	activityTickPending bool
+	// Embedded terminals (terminal_session.go): per-terminal stream and
+	// screen state, the stream generation counter, the terminal receiving
+	// keys (empty when none) and an injectable dialer for tests.
+	terms     map[string]*termView
+	termSeq   uint64
+	termFocus string
+	termDial  terminalDialer
 }
 
 func newInput(placeholder string) textarea.Model {
@@ -573,6 +583,12 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	m.answer.Blur()
 	m.projectInput.Blur()
 	m.threadSearch.Blur()
+	if m.gitW.ready {
+		m.gitW.message.Blur()
+	}
+	if key == gitMessageKey {
+		return m.gitMsg().Focus()
+	}
 	if key == "prompt" {
 		return m.prompt.Focus()
 	}
@@ -599,7 +615,7 @@ func identity() string {
 func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	capability := "fixture-agent"
 	if strings.HasPrefix(c.Kind, "terminal.") {
-		capability = "fixture-terminal"
+		capability = terminalCapability
 	}
 	if strings.HasPrefix(c.Kind, "queue.") || c.Kind == "prompt.send" {
 		capability = "prompt-queue"
@@ -711,8 +727,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, handled := m.graphicsUpdate(msg); handled {
 		return m, tea.Batch(cmd, m.syncThumbnails())
 	}
+	if cmd, handled := m.acceptTerminalMsg(msg); handled {
+		return m, tea.Batch(cmd, m.syncTerminals())
+	}
 	_, cmd := m.update(msg)
-	return m, tea.Batch(cmd, m.syncThumbnails())
+	return m, tea.Batch(cmd, m.syncThumbnails(), m.syncTerminals())
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -754,6 +773,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.acceptGitLog(msg)
 	case gitViewerMsg:
 		m.acceptGitViewer(msg)
+	case gitWriteMsg:
+		cmd = m.acceptGitWrite(msg)
+	case gitHeadMsg:
+		cmd = m.acceptGitHead(msg)
 	case viewerImageMsg:
 		cmd = m.acceptViewerImage(msg)
 	case thumbnailMsg:
@@ -989,6 +1012,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					v.RightVisible = true
 					if m.state.Active == msg.command.ThreadID {
 						m.state.Layout.Right = true
+						// As for other opened surfaces: present the new tab even
+						// when the host cannot fit beside the conversation.
+						if m.state.Layout.Compute(m.width, m.height-1, m.footerHeight()).Right.W == 0 {
+							m.state.Layout.RevealRight()
+						}
 					}
 				}
 			}
@@ -1032,7 +1060,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		cmd = m.key(msg)
 	case tea.PasteMsg:
-		if m.terminalTooSmall() || m.viewer != nil || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
+		if c, handled := m.terminalPaste(msg.Content); handled {
+			cmd = c
+		} else if m.terminalTooSmall() || m.viewer != nil || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
 			// Nothing behind a modal, the resize notice or settings accepts input.
 			cmd = m.showNoticeAs(noticeUnavailable, "Paste ignored · no visible input")
 		} else if m.projectMode != "" {
@@ -1045,6 +1075,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.answerView.Reset()
 			cmd = updateInput(&m.answer, tea.PasteMsg{Content: safe(msg.Content)})
 			m.storeAnswer(m.answer.Value())
+		} else if m.focus == gitMessageKey {
+			cmd = m.gitMessagePaste(msg.Content)
 		} else if m.focus == "prompt" {
 			m.promptView.Reset()
 			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(msg.Content)})
@@ -1076,8 +1108,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
+	if cmd, handled := m.terminalKey(k); handled {
+		return cmd
+	}
 	s := k.String()
 	if m.viewer != nil && m.contextMenu == nil {
+		if cmd, handled := m.gitViewerWriteKey(s); handled {
+			return cmd
+		}
 		if cmd, handled := m.viewerKey(k); handled {
 			return cmd
 		}
@@ -1244,6 +1282,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if f.bottomBody.W > 0 {
 			keys = append(keys, "bottom-body")
 		}
+		for _, pane := range f.terms {
+			keys = append(keys, "terminal:"+pane.id)
+		}
 		if f.navigation.W > 0 {
 			keys = append(keys, "navigation")
 		}
@@ -1303,6 +1344,12 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		m.markDirty()
 		return c
 	}
+	if m.focus == gitMessageKey {
+		return m.gitMessageKeyPress(k)
+	}
+	if cmd, handled := m.gitRowKey(s); handled {
+		return cmd
+	}
 	if m.focus == "answer" {
 		m.answerView.Reset()
 		if s == "shift+enter" || s == "ctrl+j" {
@@ -1324,6 +1371,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 				return m.activate(h.Action)
 			}
 		}
+	}
+	if cmd, handled := m.terminalHistoryKey(s); handled {
+		return cmd
 	}
 	if gitFocusKey(m.focus) && (s == "up" || s == "down") {
 		if s == "up" {
@@ -1377,6 +1427,13 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 			m.mentionIndex = max(0, min(len(m.mentionEntries())-1, m.mentionIndex+d))
 			return nil
 		}
+		if len(m.menu) == 0 {
+			for _, pane := range f.terms {
+				if pane.grid.Contains(p.X, p.Y) {
+					return m.terminalScroll(pane.id, -d)
+				}
+			}
+		}
 		target := m.wheelTarget(f, p.X, p.Y)
 		if target == "menu" {
 			m.menuIndex = m.menuStep(m.menuIndex, d, false)
@@ -1394,6 +1451,10 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		if p.Button != tea.MouseLeft {
 			return nil
+		}
+		// Clicking anywhere outside the typing terminal's grid leaves it.
+		if m.termFocus != "" && !slices.ContainsFunc(f.terms, func(t termPane) bool { return t.id == m.termFocus && t.grid.Contains(p.X, p.Y) }) {
+			m.termFocus = ""
 		}
 		if handled, cmd := m.dismissMenuOutside(p.X, p.Y); handled {
 			return cmd

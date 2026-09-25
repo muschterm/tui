@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 
 from pty_smoke import Terminal
+from harness_env import isolated_env
 
 
 def main():
@@ -48,7 +49,9 @@ def main():
         project = home / 'ACP validation'
         project.mkdir()
         subprocess.run(['git', 'init', '-q', str(project)], check=True)
-        environment = dict(os.environ, TUI_GO_HOME=directory)
+        # Live provider CLIs need the user's credentials, so HOME stays real;
+        # history and shell startup files are still disabled.
+        environment = isolated_env(directory, keep_home=True)
         if args.unavailable_only:
             environment['TUI_GO_AGENT_CODEX_COMMAND'] = '/nonexistent/tui-validation-codex-acp'
             environment['TUI_GO_AGENT_CLAUDE_COMMAND'] = '/nonexistent/tui-validation-claude-acp'

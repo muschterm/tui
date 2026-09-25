@@ -167,3 +167,31 @@ func TestMigrationBackupPreservesOriginalSchemaAndContents(t *testing.T) {
 		t.Fatal("schema version not updated")
 	}
 }
+
+func TestResolveRunningReceiptsUsesGitResultKeys(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	c := protocol.Command{Version: 1, ID: "g", Kind: protocol.GitKindCommit, Git: &protocol.GitWrite{Message: "m"}}
+	r := protocol.Receipt{ID: "g", State: protocol.GitStateRunning, Git: &protocol.GitResult{Op: "commit", State: protocol.GitStateRunning}}
+	if err := st.Save(protocol.Snapshot{Version: 1}, &c, &r); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.ResolveRunningReceipts(protocol.GitStateOutcomeUnknown, "interrupted", "msg"); err != nil || n != 1 {
+		t.Fatalf("resolve: %d %v", n, err)
+	}
+	var raw string
+	if err := st.db.QueryRow("SELECT CAST(receipt AS TEXT) FROM commands WHERE id='g'").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal([]byte(raw), &generic); err != nil {
+		t.Fatal(err)
+	}
+	g := generic["Git"].(map[string]any)
+	if generic["State"] != "outcome_unknown" || g["state"] != "outcome_unknown" || g["code"] != "interrupted" || g["message"] != "msg" || g["State"] != nil || g["Code"] != nil {
+		t.Fatalf("raw receipt: %s", raw)
+	}
+}

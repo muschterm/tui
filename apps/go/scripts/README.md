@@ -2,7 +2,7 @@
 
 These Python 3 scripts are validation tooling for the Go reference, not part of
 the application or its Go module. `make check` does not run them; `make pty`
-runs the seven harnesses in sequence against `bin/tui-go`, and each accepts
+runs the eight harnesses in sequence against `bin/tui-go`, and each accepts
 `--binary` and `--artifacts`. They drive the real binary through an OS
 pseudo-terminal with an isolated `TUI_GO_HOME`, so no user server or home is
 touched. They verify byte-level input and output handling, not GUI terminal,
@@ -17,6 +17,7 @@ SSH or tmux compatibility.
 | `pty_steering.py` | Queued-message steering against the fixture turn |
 | `pty_path_completion.py` | Project folder typeahead and inline `@` file mentions |
 | `pty_colors.py` | Color negotiation with synthetic terminal replies |
+| `pty_terminal.py` | Embedded terminal: F5 opens a real shell in the bottom panel, click enters input focus, typed `echo hello-$((6*7))` prints `hello-42`, Ctrl+] leaves, hide/show keeps the session, tab close ends it; the child shell gets a temporary `HOME` and `HISTFILE=/dev/null` |
 | `pty_clipboard.py` | Right-click Copy/Paste, forwarded paste shortcuts, cursor insertion and selected-range replacement through isolated clipboard utility stand-ins; never accesses the real OS clipboard |
 | `pty_acp.py` | Opt-in real ACP prompt, menus and cancel/resume; requires live login and consumes account quota |
 | `live_agent_recovery.py` | Opt-in live HTTP Claude native question / Codex prompt, exact answer retry, Stop/Resume and restart; selects an installed official runtime explicitly |

@@ -36,3 +36,9 @@ func (*Session) ExitStatus() (ExitStatus, bool) { return ExitStatus{}, false }
 
 // Close reports ErrUnavailable.
 func (*Session) Close(context.Context) error { return ErrUnavailable }
+
+// SendKey reports ErrUnavailable.
+func (*Session) SendKey(Key) error { return ErrUnavailable }
+
+// Paste reports ErrUnavailable.
+func (*Session) Paste(string) error { return ErrUnavailable }

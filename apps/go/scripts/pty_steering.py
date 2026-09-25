@@ -10,6 +10,7 @@ import urllib.request
 import uuid
 
 from pty_smoke import Terminal
+from harness_env import isolated_env
 
 
 def main():
@@ -28,7 +29,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix='tui-steer-home-', dir='/tmp') as directory:
         home = Path(directory)
-        environment = dict(os.environ, TUI_GO_HOME=directory)
+        environment = isolated_env(directory)
         terminals = []
 
         def cli(*words):
