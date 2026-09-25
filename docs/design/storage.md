@@ -1,6 +1,6 @@
 # Storage and recovery
 
-Status: accepted application-home, SQLite, collaboration and explicit-resume direction; retention and implementation details remain open. Recorded **2026-09-19**. The [first Go slice](go-slice.md) now uses application-home SQLite for fixture state, command receipts and revisioned client views. Its persistence, migration backup and restart checks have run. Prompt attachment artifacts are implemented for the prototype ([ADR 0017](../adr/0017-attachment-artifacts.md)); collaborative buffers, tool-output artifacts and provider recovery remain unimplemented.
+Status: accepted application-home, SQLite, collaboration and explicit-resume direction; retention and some implementation details remain open. Recorded **2026-09-19**. The [Go slice](go-slice.md) uses application-home SQLite for fixture state, command receipts and revisioned client views. Its persistence, migration backup and restart checks have run. Prompt attachment artifacts are implemented for the prototype ([ADR 0017](../adr/0017-attachment-artifacts.md)), as are collaborative shared documents ([ADR 0022](../adr/0022-shared-documents-go.md)) and Git operation backups/conflict copies ([ADR 0023](../adr/0023-merge-rebase-operations.md)), described below; tool-output artifacts and provider recovery remain unimplemented.
 
 ## Location and authority
 

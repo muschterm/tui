@@ -2,7 +2,7 @@
 
 This repository defines how to build polished, reusable terminal user interfaces in Go, Rust, and Bun. The initial example has left navigation, a central working area with an optional bottom panel, and a right sidebar for surfaces such as files and Git. Projects, threads, and agent integrations are example application concepts, not assumptions every TUI must inherit.
 
-The project has a documented design blueprint and a first Go server/shell slice with synthetic activity; provider, collaborative-editor, Git and real embedded-terminal integrations remain incomplete. Read [README.md](README.md), [the design brief](docs/design/brief.md), and [the interview record](docs/design/interview.md) before making architectural changes. Do not turn an unanswered interview question or a research recommendation into an accepted decision.
+The project has a documented design blueprint and a first Go server/shell slice. It now includes checkout writer scheduling, real embedded terminals, a read-only Files surface, a read-only and write-capable Git surface (staging, commits, branch/remote actions, merge/rebase with conflict resolution), and collaborative shared documents; provider question/approval parity, explicit worktrees, hunk staging, interactive rebase, and the Rust and Bun reference apps remain incomplete, and most of the above is verified by unit/integration tests and fixtures rather than a real-terminal/SSH/tmux matrix. Read [README.md](README.md), [the design brief](docs/design/brief.md), and [the interview record](docs/design/interview.md) before making architectural changes. Do not turn an unanswered interview question or a research recommendation into an accepted decision.
 
 ## Instruction organization
 
