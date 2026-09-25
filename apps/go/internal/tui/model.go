@@ -138,6 +138,9 @@ type frame struct {
 	composer shell.Rect
 	// terms are the embedded terminal grids laid out in this frame.
 	terms []termPane
+	// Files surface tree and buffer text areas and their scroll limits.
+	filesTree, filesText                      shell.Rect
+	filesTreeMax, filesTextMax, filesTextHMax int
 }
 
 type snapshotMsg protocol.Snapshot
@@ -267,6 +270,13 @@ type Model struct {
 	gitTurnKey    string
 	gitTurnActive bool
 	gitW          gitWriteUI
+	// Read-only Files surface (files_surface.go): per-target views, the read
+	// generation, the target last shown and whether the disk poll is ticking.
+	filesReads   filesAPI
+	filesViews   map[string]*filesView
+	filesSeq     uint64
+	filesShown   string
+	filesTicking bool
 	// Kitty graphics (graphics_model.go): per-connection capability, owned
 	// image ids and the composer's thumbnail loads.
 	graphics            graphicsProbe
@@ -767,6 +777,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptSendCapture(msg)
 	case viewerLoadMsg:
 		cmd = m.acceptViewerLoad(msg)
+	case filesListMsg:
+		m.acceptFilesList(msg)
+	case filesReadMsg:
+		m.acceptFilesRead(msg)
+	case filesStatMsg:
+		m.acceptFilesStat(msg)
+	case filesTickMsg:
+		cmd = m.filesTick()
 	case gitStatusMsg:
 		m.acceptGitStatus(msg)
 	case gitLogMsg:
@@ -1104,7 +1122,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if len(m.menu) > 0 {
 		m.menuOffset = m.menuStart(m.menuVisibleItems())
 	}
-	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery(), m.nextGitRefresh())
+	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery(), m.nextGitRefresh(), m.nextFilesRefresh())
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
@@ -1274,6 +1292,12 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if f.detail.W > 0 {
 			keys = append(keys, "right-body")
 		}
+		if f.filesTree.W > 0 {
+			keys = append(keys, "files-tree")
+		}
+		if f.filesText.W > 0 {
+			keys = append(keys, "files-text")
+		}
 		if f.answer.W > 0 {
 			keys = append(keys, "answer")
 		} else if f.request.W > 0 {
@@ -1300,7 +1324,8 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		f := m.measure()
 		var keys []string
 		for _, h := range f.hits {
-			if !slices.Contains(keys, h.Key) {
+			// Tree rows share the tree's one Tab stop.
+			if !slices.Contains(keys, h.Key) && !strings.HasPrefix(h.Key, "files-row:") {
 				keys = append(keys, h.Key)
 			}
 		}
@@ -1348,6 +1373,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return m.gitMessageKeyPress(k)
 	}
 	if cmd, handled := m.gitRowKey(s); handled {
+		return cmd
+	}
+	if cmd, handled := m.filesKey(s); handled {
 		return cmd
 	}
 	if m.focus == "answer" {
@@ -1425,6 +1453,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		if r := m.mentionRect(f); r.Contains(p.X, p.Y) {
 			m.mentionIndex = max(0, min(len(m.mentionEntries())-1, m.mentionIndex+d))
+			return nil
+		}
+		if len(m.menu) == 0 && m.filesWheel(f, p.X, p.Y, d) {
 			return nil
 		}
 		if len(m.menu) == 0 {

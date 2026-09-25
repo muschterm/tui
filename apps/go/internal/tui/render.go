@@ -807,6 +807,13 @@ func (m *Model) renderSurface(f *frame, r shell.Rect) {
 		m.renderTerminalPane(f, grid, rec)
 		return
 	}
+	if active.Kind == "files" {
+		// Files paints its own tree or buffer with their own scrolling.
+		body := f.detail
+		f.detail = shell.Rect{}
+		m.renderFilesSurface(f, body)
+		return
+	}
 	f.hits = append(f.hits, hit{Rect: f.detail, Action: action{}, Label: "Surface · wheel / arrows to scroll", Key: "right-body"})
 	// One blank cell keeps right-aligned values off the scrollbar.
 	rows := m.surfaceRows(m.surfaceBlocks(active), max(1, f.detail.W-1))

@@ -164,7 +164,7 @@ func TestGitStatusGroupsAndDiffs(t *testing.T) {
 	writeFile(t, root, "../outside.txt", "secret\n")
 	for _, bad := range []struct{ path, group, code string }{
 		{"../outside.txt", "untracked", "invalid"}, {"/etc/passwd", "untracked", "invalid"}, {"dir/../mod.txt", "unstaged", "invalid"},
-		{".git/config", "untracked", "invalid"}, {"dir/.GIT/x", "untracked", "invalid"}, {"", "unstaged", "invalid"}, {"./mod.txt", "unstaged", "invalid"},
+		{".git/config", "untracked", "invalid"}, {"dir/.GIT/x", "untracked", "invalid"}, {"", "untracked", "invalid"}, {"", "conflicted", "invalid"}, {"./mod.txt", "unstaged", "invalid"},
 		{"mod.txt", "bogus", "invalid"}, {"clean.txt", "unstaged", "not_found"}, {"mod.txt", "staged", "not_found"},
 		{"missing.txt", "untracked", "not_found"}, {"dir", "untracked", "not_found"}, {"*.txt", "unstaged", "not_found"},
 	} {
@@ -393,7 +393,7 @@ func TestGitRoutesRequireAuthentication(t *testing.T) {
 	home := t.TempDir()
 	c, stop := startTestServer(t, home)
 	defer stop()
-	for _, route := range []string{"status", "diff", "log", "show"} {
+	for _, route := range []string{"status", "diff", "log", "show", "branches", "compare"} {
 		resp, err := http.Get(c.Discovery.URL + "/v1/git/" + route + "?project_id=x")
 		if err != nil {
 			t.Fatal(err)

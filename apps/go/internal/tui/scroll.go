@@ -25,6 +25,15 @@ func (m *Model) scrollTo(target string, offset int, f frame) {
 		current, limit = &v.RequestScroll, f.requestMax
 	case "bottom":
 		current, limit = &v.BottomScroll, f.bottomMax
+	case "files-tree":
+		if v := m.currentFilesView(); v != nil {
+			v.scroll = min(f.filesTreeMax, max(0, offset))
+		}
+	case "files-text":
+		if v := m.currentFilesView(); v != nil && v.buffer() != nil {
+			b := v.buffer()
+			b.scroll = min(f.filesTextMax, max(0, offset))
+		}
 	case "navigation":
 		m.navScroll = min(f.navMax, max(0, offset))
 	case "closed-navigation":

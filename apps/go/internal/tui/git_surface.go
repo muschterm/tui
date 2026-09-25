@@ -29,8 +29,10 @@ const gitLogLimit = 50
 type gitAPI interface {
 	GitStatus(ctx context.Context, target client.GitTarget) (protocol.GitStatus, error)
 	GitDiff(ctx context.Context, target client.GitTarget, path, group string) (protocol.GitDiff, error)
-	GitLog(ctx context.Context, target client.GitTarget, limit int) (protocol.GitLog, error)
+	GitLog(ctx context.Context, target client.GitTarget, limit int, scope string) (protocol.GitLog, error)
 	GitShow(ctx context.Context, target client.GitTarget, commit string) (protocol.GitShow, error)
+	GitBranches(ctx context.Context, target client.GitTarget) (protocol.GitBranches, error)
+	GitCompare(ctx context.Context, target client.GitTarget, base, head string) (protocol.GitCompare, error)
 }
 
 var _ gitAPI = (*client.Client)(nil)
@@ -55,9 +57,34 @@ type gitView struct {
 	statusErr, logErr   string
 	gen                 uint64
 	statusLoad, logLoad bool
+	// graph is the lane layout of log, computed once when it arrives.
+	graph *gitGraph
+	// scope is the requested log scope ("" means head); logScope is the
+	// scope of the displayed log.
+	scope, logScope string
+	// Branch list: read only while the BRANCHES section is expanded.
+	branches               *protocol.GitBranches
+	branchErr              string
+	branchLoad, branchOpen bool
+	branchGen              uint64
 }
 
-func (g *gitView) loading() bool { return g.statusLoad || g.logLoad }
+func (g *gitView) loading() bool { return g.statusLoad || g.logLoad || g.branchLoad }
+
+// wantScope is the requested log scope; shownScope is the displayed log's.
+// Both default to head.
+func (g *gitView) wantScope() string  { return gitScopeOrHead(g.scope) }
+func (g *gitView) shownScope() string { return gitScopeOrHead(g.logScope) }
+
+// scopePending reports a scope change whose log has not arrived yet.
+func (g *gitView) scopePending() bool { return g.logLoad && g.wantScope() != g.shownScope() }
+
+func gitScopeOrHead(s string) string {
+	if s == protocol.GitLogScopeAll {
+		return s
+	}
+	return protocol.GitLogScopeHead
+}
 
 type gitStatusMsg struct {
 	key    string
@@ -66,11 +93,15 @@ type gitStatusMsg struct {
 	err    error
 }
 
+// gitLogMsg carries a log read or, when branches is set, a branch-list read.
 type gitLogMsg struct {
-	key string
-	gen uint64
-	log protocol.GitLog
-	err error
+	key      string
+	gen      uint64
+	log      protocol.GitLog
+	branches *protocol.GitBranches
+	// branchRead marks a branch-list result, accepted against branchGen.
+	branchRead bool
+	err        error
 }
 
 // gitTarget is the displayed checkout: the draft's project or the active
@@ -142,6 +173,10 @@ func (m *Model) refreshGit() tea.Cmd {
 	m.gitSeq++
 	gen := m.gitSeq
 	g.gen, g.statusLoad, g.logLoad = gen, true, true
+	scope := ""
+	if m.gitHistoryEnabled() {
+		scope = g.wantScope()
+	}
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -155,8 +190,11 @@ func (m *Model) refreshGit() tea.Cmd {
 	log := func() tea.Msg {
 		deadline, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		l, err := api.GitLog(deadline, target, gitLogLimit)
+		l, err := api.GitLog(deadline, target, gitLogLimit, scope)
 		return gitLogMsg{key: key, gen: gen, log: l, err: err}
+	}
+	if g.branchOpen && m.gitHistoryEnabled() {
+		return tea.Batch(status, log, m.readGitBranches(key, target, g))
 	}
 	return tea.Batch(status, log)
 }
@@ -188,6 +226,10 @@ func (m *Model) acceptGitStatus(msg gitStatusMsg) {
 }
 
 func (m *Model) acceptGitLog(msg gitLogMsg) {
+	if msg.branchRead {
+		m.acceptGitBranches(msg)
+		return
+	}
 	g := m.acceptGitView(msg.key, msg.gen)
 	if g == nil {
 		return
@@ -195,10 +237,14 @@ func (m *Model) acceptGitLog(msg gitLogMsg) {
 	g.logLoad = false
 	if msg.err != nil {
 		g.logErr = safe(singleLine(msg.err.Error()))
+		// A failed scope change reverts to the displayed scope.
+		g.scope = g.shownScope()
 		return
 	}
 	l := msg.log
 	g.log, g.logErr = &l, ""
+	g.logScope = l.Scope
+	g.graph = layoutGitGraph(l.Commits)
 }
 
 // gitAction handles the surface's own controls.
@@ -213,6 +259,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 		return m.refreshGit()
 	case "git-open", "git-commit":
 		return m.openGitViewer(a)
+	}
+	if cmd, ok := m.gitBranchesAction(a); ok {
+		return cmd
 	}
 	return m.gitWriteAction(a)
 }
@@ -239,6 +288,15 @@ type gitRow struct {
 	text        string
 	on          bool
 	disabled    bool
+	// kind is "" for status and commit rows, or scope, section or branch
+	// (git_branches_view.go). Sections use text and when (count); a
+	// disclosure section shows its open state from on.
+	kind       string
+	disclosure bool
+	branch     protocol.GitBranch
+	// graph and graphRow place a commit row's cells in the cached layout.
+	graph    *gitGraph
+	graphRow int
 }
 
 var gitSections = []struct{ group, title, label string }{
@@ -428,7 +486,14 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 			b = append(b, gap)
 		}
 		first = false
-		b = append(b, heading(section.title, strconv.Itoa(len(entries))), gap)
+		switch history := m.gitHistoryEnabled(); {
+		case history && section.group == protocol.GitGroupStaged:
+			b = append(b, gitSectionBlock(section.title, strconv.Itoa(len(entries)), "git:section:staged", "Open all staged changes · Staged vs HEAD", action{Kind: "git-whole", Value: section.group}, false, false), gap)
+		case history && section.group == protocol.GitGroupUnstaged:
+			b = append(b, gitSectionBlock(section.title, strconv.Itoa(len(entries)), "git:section:unstaged", "Open all unstaged changes", action{Kind: "git-whole", Value: section.group}, false, false), gap)
+		default:
+			b = append(b, heading(section.title, strconv.Itoa(len(entries))), gap)
+		}
 		for _, e := range entries {
 			mark, ink := m.gitEntryMark(e)
 			path := gitEntryPath(e)
@@ -453,6 +518,8 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	}
 	b = append(b, rule...)
 	b = append(b, m.gitCommitBlocks(g)...)
+	b = append(b, rule...)
+	b = append(b, m.gitBranchBlocks(g)...)
 	return b
 }
 
@@ -473,7 +540,11 @@ func (m *Model) gitCommitBlocks(g *gitView) []surfaceBlock {
 	if l != nil {
 		count = strconv.Itoa(len(l.Commits))
 	}
-	b := []surfaceBlock{{kind: surfaceHeadingBlock, label: "Recent commits", value: count}, {kind: surfaceGapBlock}}
+	b := []surfaceBlock{{kind: surfaceHeadingBlock, label: "Recent commits", value: count}}
+	if m.gitHistoryEnabled() {
+		b = append(b, m.gitScopeBlock(g))
+	}
+	b = append(b, surfaceBlock{kind: surfaceGapBlock})
 	switch {
 	case l == nil && g.logErr != "":
 		return append(b, statusBlock(m, "Commits", "failed", true), surfaceBlock{kind: surfaceTextBlock, value: g.logErr, ink: p.muted})
@@ -485,8 +556,14 @@ func (m *Model) gitCommitBlocks(g *gitView) []surfaceBlock {
 	if len(l.Commits) == 0 {
 		return append(b, surfaceBlock{kind: surfaceTextBlock, value: "No commits yet", ink: p.muted})
 	}
+	if l.UpstreamOmitted {
+		b = append(b, surfaceBlock{kind: surfaceTextBlock, value: "Upstream not shown · unsupported ref name", ink: p.muted})
+	}
+	if g.scopePending() {
+		b = append(b, statusBlock(m, "Reading commits…", "pending", false))
+	}
 	now := gitNow()
-	for _, c := range l.Commits {
+	for i, c := range l.Commits {
 		var refs []string
 		for _, r := range c.Refs {
 			refs = append(refs, safe(singleLine(gitRefLabel(r))))
@@ -498,6 +575,7 @@ func (m *Model) gitCommitBlocks(g *gitView) []surfaceBlock {
 			help:   "Open commit · " + safe(singleLine(c.Short)) + " " + subject,
 			action: action{Kind: "git-commit", ID: c.Hash, Value: c.Short},
 			key:    "git:commit:" + c.Hash,
+			graph:  g.graph, graphRow: i,
 		}})
 	}
 	if l.Truncated {
@@ -508,6 +586,9 @@ func (m *Model) gitCommitBlocks(g *gitView) []surfaceBlock {
 
 // gitRowText is a row's plain text for surfaceText.
 func gitRowText(r *gitRow) string {
+	if r.kind != "" {
+		return gitExtraRowText(r)
+	}
 	switch r.compose {
 	case "":
 	case "top", "bottom":
@@ -524,6 +605,9 @@ func gitRowText(r *gitRow) string {
 	}
 	if r.hash != "" {
 		line := r.hash
+		if r.graph != nil && r.graphRow < len(r.graph.rows) {
+			line = gitGraphText(&gitGraph{rows: r.graph.rows[r.graphRow : r.graphRow+1], lanes: r.graph.lanes, col: r.graph.col[r.graphRow : r.graphRow+1]}, 60, false)[0] + " " + line
+		}
 		if len(r.refs) > 0 {
 			line += " (" + strings.Join(r.refs, ", ") + ")"
 		}
@@ -541,6 +625,10 @@ func gitRowText(r *gitRow) string {
 func (m *Model) paintGitRow(f *frame, x, y, width int, r *gitRow) {
 	if r.compose != "" {
 		m.paintGitCompose(f, x, y, width, r)
+		return
+	}
+	if r.kind != "" {
+		m.paintGitExtraRow(f, x, y, width, r)
 		return
 	}
 	p := m.colors()
@@ -567,7 +655,12 @@ func (m *Model) paintGitRow(f *frame, x, y, width int, r *gitRow) {
 		f.componentText(cx+2, y, max(0, room), truncatePathLeft(r.path, room), v)
 		return
 	}
-	// Commit: hash, subject, refs, then the age right-aligned when it fits.
+	// Commit: graph, hash, subject, refs, then the age right-aligned when
+	// it fits.
+	if gw := gitGraphWidth(r.graph, width); gw > 0 && end-cx > gw+8 {
+		m.paintGitGraph(f, cx, y, width, r, bg)
+		cx += gw + 1
+	}
 	hw := min(ansi.StringWidth(r.hash), end-cx)
 	f.text(cx, y, hw, r.hash, p.muted, bg)
 	cx += hw + 1

@@ -571,7 +571,10 @@ func Serve(ctx context.Context, home string) error {
 	if !slices.Contains(snap.Capabilities, "thread-lifecycle") {
 		snap.Capabilities = append(snap.Capabilities, "thread-lifecycle")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes"} {
+	if filesSupported && !slices.Contains(snap.Capabilities, "files-read") {
+		snap.Capabilities = append(snap.Capabilities, "files-read")
+	}
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
@@ -623,7 +626,12 @@ func Serve(ctx context.Context, home string) error {
 	mux.HandleFunc("GET /v1/git/diff", e.gitDiff)
 	mux.HandleFunc("GET /v1/git/log", e.gitLog)
 	mux.HandleFunc("GET /v1/git/show", e.gitShow)
+	mux.HandleFunc("GET /v1/git/branches", e.gitBranches)
+	mux.HandleFunc("GET /v1/git/compare", e.gitCompare)
 	mux.HandleFunc("GET /v1/terminals/{id}/stream", e.terminalStream)
+	mux.HandleFunc("GET /v1/files/list", e.filesList)
+	mux.HandleFunc("GET /v1/files/read", e.filesRead)
+	mux.HandleFunc("GET /v1/files/stat", e.filesStat)
 	mux.HandleFunc("GET /v1/browse", e.browse)
 	mux.HandleFunc("GET /v1/preview", e.previewFile)
 	mux.HandleFunc("POST /v1/artifacts", e.uploadArtifact)

@@ -25,6 +25,8 @@ type fakeGit struct {
 	log    protocol.GitLog
 	diff   protocol.GitDiff
 	show   protocol.GitShow
+	branch protocol.GitBranches
+	cmp    protocol.GitCompare
 	err    error
 	calls  []string
 }
@@ -57,9 +59,23 @@ func (g *fakeGit) GitDiff(_ context.Context, t client.GitTarget, path, group str
 	g.record("diff:" + targetName(t) + ":" + group + ":" + path)
 	return g.diff, g.err
 }
-func (g *fakeGit) GitLog(_ context.Context, t client.GitTarget, limit int) (protocol.GitLog, error) {
+func (g *fakeGit) GitLog(_ context.Context, t client.GitTarget, limit int, scope string) (protocol.GitLog, error) {
 	g.record("log:" + targetName(t))
-	return g.log, g.err
+	g.record("scope:" + scope)
+	l := g.log
+	l.Scope = scope
+	if l.Scope == "" {
+		l.Scope = protocol.GitLogScopeHead
+	}
+	return l, g.err
+}
+func (g *fakeGit) GitBranches(_ context.Context, t client.GitTarget) (protocol.GitBranches, error) {
+	g.record("branches:" + targetName(t))
+	return g.branch, g.err
+}
+func (g *fakeGit) GitCompare(_ context.Context, t client.GitTarget, base, head string) (protocol.GitCompare, error) {
+	g.record("compare:" + targetName(t) + ":" + base + ":" + head)
+	return g.cmp, g.err
 }
 func (g *fakeGit) GitShow(_ context.Context, t client.GitTarget, commit string) (protocol.GitShow, error) {
 	g.record("show:" + targetName(t) + ":" + commit)
@@ -105,6 +121,7 @@ func gitModel(t *testing.T, width, height int) (*Model, *fakeGit) {
 	m := testModel()
 	m.connected = true
 	m.gitReads = api
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-history")
 	m.snapshot.Threads[activeThreadIndex(m)].State = "idle"
 	m.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	m.openSurface("git", "")
@@ -418,10 +435,16 @@ func TestGitKeyboardFocusAndHover(t *testing.T) {
 		t.Fatal("entry row not activatable")
 	}
 	m.setFocus("git:conflicted:conflict.go")
+	// The STAGED heading (whole staged diff) is a focus stop between rows.
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.focus != "git:section:staged" {
+		t.Fatalf("down moved focus to %q", m.focus)
+	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.focus != "git:staged:added.go" {
 		t.Fatalf("down moved focus to %q", m.focus)
 	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.focus != "git:conflicted:conflict.go" {
 		t.Fatalf("up moved focus to %q", m.focus)
@@ -482,7 +505,7 @@ func TestGitSurfaceCaptures(t *testing.T) {
 		for _, tc := range []struct {
 			name string
 			w, h int
-		}{{"wide", 144, 40}, {"narrow", 44, 40}, {"diff", 144, 40}, {"commit", 144, 40}, {"compact-diff", 44, 30}, {"commits", 144, 40}} {
+		}{{"wide", 144, 40}, {"narrow", 44, 40}, {"diff", 144, 40}, {"commit", 144, 40}, {"compact-diff", 44, 30}, {"commits", 144, 40}, {"graph", 144, 40}, {"graph-plain", 144, 40}, {"graph-narrow", 44, 40}, {"compare", 144, 40}} {
 			m, api := gitModel(t, tc.w, tc.h)
 			if real.Status != nil {
 				api.status, api.log = *real.Status, *real.Log
@@ -503,6 +526,29 @@ func TestGitSurfaceCaptures(t *testing.T) {
 			switch tc.name {
 			case "commits":
 				m.viewState().DetailScroll = 1 << 20
+			case "graph", "graph-plain", "graph-narrow":
+				if real.Log == nil {
+					api.log = protocol.GitLog{Workspace: protocol.WorkspaceInfo{State: "branch"}, Commits: graphCommits("m:d,c* d:o c:b o:a,b,x b:q x:q a:r q:r y:z r:z z")}
+					for i := range api.log.Commits {
+						api.log.Commits[i].Time = gitTestNow.Add(-time.Duration(i) * time.Hour).Format(time.RFC3339)
+						api.log.Commits[i].Subject = "Commit " + api.log.Commits[i].Hash
+					}
+					api.log.Commits[0].Refs = []string{"HEAD", "refs/heads/main"}
+				}
+				api.branch = protocol.GitBranches{Branches: []protocol.GitBranch{{Name: "main", Ref: "refs/heads/main", Head: true, Upstream: "origin/main", Ahead: 1}, {Name: "side", Ref: "refs/heads/side"}, {Name: "origin/main", Ref: "refs/remotes/origin/main", Remote: true}}}
+				gitSettle(t, m, m.activate(action{Kind: "git-refresh"}))
+				gitSettle(t, m, m.activate(action{Kind: "git-branches"}))
+				m.plainIcons = tc.name == "graph-plain"
+				if tc.name == "graph-narrow" {
+					m.selectColumn(shell.RightRegion)
+				}
+				m.viewState().DetailScroll = 1 << 20
+				m.markDirty()
+			case "compare":
+				api.cmp = protocol.GitCompare{Base: "refs/remotes/origin/main", Head: "HEAD", BaseOid: strings.Repeat("a", 40), HeadOid: strings.Repeat("b", 40), MergeBase: strings.Repeat("c", 40), Ahead: 1, Behind: 1,
+					AheadCommits: []protocol.GitCommit{{Short: "bbbbbbb", Subject: "Local work"}}, BehindCommits: []protocol.GitCommit{{Short: "aaaaaaa", Subject: "Upstream work"}},
+					Text: "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old\n+new\n", Bytes: 60, FetchedAt: gitTestNow.Format(time.RFC3339)}
+				gitSettle(t, m, m.activate(action{Kind: "git-compare", ID: "refs/remotes/origin/main", Value: "origin/main"}))
 			case "diff", "compact-diff":
 				api.diff = protocol.GitDiff{Path: "gone.go", Group: "unstaged", Bytes: 90, Text: "diff --git a/gone.go b/gone.go\nindex 1..2 100644\n--- a/gone.go\n+++ b/gone.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"}
 				if real.Diff != nil {

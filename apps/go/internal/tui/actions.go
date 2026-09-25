@@ -138,6 +138,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	if a.Kind == "attachment-view" {
 		return m.openAttachmentViewer(a)
 	}
+	if strings.HasPrefix(a.Kind, "files-") {
+		return m.filesAction(a)
+	}
 	if strings.HasPrefix(a.Kind, "git-") {
 		return m.gitAction(a)
 	}

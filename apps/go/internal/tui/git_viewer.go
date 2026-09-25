@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,13 +33,18 @@ type gitViewerContent struct {
 	key             string
 	entry           protocol.GitStatusEntry
 	pinned, changed bool
+	// whole is a whole-group diff (path empty); compare holds the ref
+	// compared against HEAD.
+	whole   bool
+	compare string
 }
 
 type gitViewerMsg struct {
-	id   uint64
-	diff *protocol.GitDiff
-	show *protocol.GitShow
-	err  error
+	id      uint64
+	diff    *protocol.GitDiff
+	show    *protocol.GitShow
+	compare *protocol.GitCompare
+	err     error
 }
 
 // openGitViewer resolves a git-open (Value group, ID path) or git-commit (ID
@@ -54,7 +61,17 @@ func (m *Model) openGitViewer(a action) tea.Cmd {
 	}
 	content := &gitViewerContent{target: target}
 	att := protocol.Attachment{Kind: "git-diff"}
-	if a.Kind == "git-commit" {
+	switch a.Kind {
+	case "git-whole":
+		content.group, content.whole = a.Value, true
+		att.Name = "Staged vs HEAD"
+		if a.Value == protocol.GitGroupUnstaged {
+			att.Name = "Unstaged changes"
+		}
+	case "git-compare":
+		content.compare = a.ID
+		att.Name = safe(singleLine(a.Value)) + " vs HEAD"
+	case "git-commit":
 		content.commit, content.hash = true, a.ID
 		att.Name = safe(singleLine(a.Value))
 		if g := m.currentGitView(); g != nil && g.log != nil {
@@ -65,7 +82,7 @@ func (m *Model) openGitViewer(a action) tea.Cmd {
 				}
 			}
 		}
-	} else {
+	default:
 		content.path, content.group, content.key = a.ID, a.Value, key
 		if e, ok := m.gitViews[key].entry(a.Value, a.ID); ok && gitEntryWritable(e) {
 			content.entry, content.pinned = e, true
@@ -93,6 +110,11 @@ func (m *Model) openGitViewer(a action) tea.Cmd {
 		if content.commit {
 			show, err := api.GitShow(deadline, target, content.hash)
 			return gitViewerMsg{id: id, show: &show, err: err}
+		}
+		if content.compare != "" {
+			// Base is the branch, head is HEAD: ahead counts HEAD's commits.
+			c, err := api.GitCompare(deadline, target, content.compare, "HEAD")
+			return gitViewerMsg{id: id, compare: &c, err: err}
 		}
 		diff, err := api.GitDiff(deadline, target, content.path, content.group)
 		return gitViewerMsg{id: id, diff: &diff, err: err}
@@ -131,6 +153,11 @@ func (m *Model) acceptGitViewer(msg gitViewerMsg) {
 			text += "\n\n"
 		}
 		vw.att.Content = text + s.Text
+	case msg.compare != nil:
+		c := msg.compare
+		g.pairs = gitComparePairs(c)
+		g.binary, g.truncated, g.bytes = c.Binary, c.Truncated, c.Bytes
+		vw.att.Content = gitCompareText(c)
 	case msg.diff != nil:
 		d := msg.diff
 		g.binary, g.truncated, g.bytes = d.Binary, d.Truncated, d.Bytes
@@ -166,9 +193,12 @@ func gitCommitPairs(c protocol.GitCommit) [][2]string {
 func (m *Model) gitViewerPairs() [][2]string {
 	g := m.viewer.git
 	var pairs [][2]string
-	if g.commit {
+	switch {
+	case g.commit || g.compare != "":
 		pairs = append(pairs, g.pairs...)
-	} else {
+	case g.whole:
+		pairs = append(pairs, [2]string{"Group", gitGroupLabel(g.group)})
+	default:
 		pairs = append(pairs, [2]string{"Path", safe(singleLine(g.path))}, [2]string{"Group", gitGroupLabel(g.group)})
 		switch {
 		case g.changed:
@@ -194,10 +224,13 @@ func (m *Model) gitViewerState() []string {
 		if g.commit {
 			return []string{"Loading commit…"}
 		}
+		if g.compare != "" {
+			return []string{"Loading comparison…"}
+		}
 		return []string{"Loading diff…"}
 	case vw.loadErr != "":
 		return []string{"Diff unavailable · " + vw.loadErr}
-	case !g.commit && g.binary:
+	case !g.commit && g.compare == "" && g.binary:
 		return []string{"Binary file; no text diff"}
 	case vw.att.Content == "":
 		return []string{"No text changes"}
@@ -254,4 +287,57 @@ func (m *Model) gitViewerStyles(lines []string) []gitLineStyle {
 		}
 	}
 	return out
+}
+
+// gitComparePairs are the comparison header pairs. Base is the chosen
+// branch and Head is HEAD, so Ahead counts HEAD's own commits.
+func gitComparePairs(c *protocol.GitCompare) [][2]string {
+	short := func(oid string) string { return safe(singleLine(oid[:min(len(oid), 12)])) }
+	pairs := [][2]string{
+		{"Base", safe(singleLine(gitRefLabel(c.Base))) + " " + short(c.BaseOid)},
+		{"Head", safe(singleLine(gitRefLabel(c.Head))) + " " + short(c.HeadOid)},
+	}
+	if c.MergeBase != "" {
+		pairs = append(pairs, [2]string{"Merge base", short(c.MergeBase)})
+	} else {
+		pairs = append(pairs, [2]string{"Merge base", "none · unrelated histories"})
+	}
+	pairs = append(pairs, [2]string{"Ahead", strconv.Itoa(c.Ahead)}, [2]string{"Behind", strconv.Itoa(c.Behind)})
+	if strings.HasPrefix(c.Base, "refs/remotes/") || strings.HasPrefix(c.Head, "refs/remotes/") {
+		fetched := "never fetched"
+		if t, err := time.Parse(time.RFC3339, c.FetchedAt); err == nil {
+			fetched = t.Local().Format("2006-01-02 15:04 MST")
+		}
+		pairs = append(pairs, [2]string{"Upstream as of", fetched})
+	}
+	return pairs
+}
+
+// gitCompareText is the viewer body: HEAD's commits, the base's commits,
+// then the merge-base diff. It is untrusted text sanitized by the viewer.
+func gitCompareText(c *protocol.GitCompare) string {
+	var b strings.Builder
+	list := func(title string, n int, commits []protocol.GitCommit) {
+		fmt.Fprintf(&b, "%s (%d)\n", title, n)
+		for _, cm := range commits {
+			fmt.Fprintf(&b, "  %s %s\n", singleLine(cm.Short), singleLine(cm.Subject))
+		}
+		if len(commits) < n {
+			fmt.Fprintf(&b, "  … %d more\n", n-len(commits))
+		}
+		b.WriteString("\n")
+	}
+	list("Ahead · only in HEAD", c.Ahead, c.AheadCommits)
+	list("Behind · only in base", c.Behind, c.BehindCommits)
+	switch {
+	case c.MergeBase == "":
+		b.WriteString("No merge base; no diff\n")
+	case c.Binary && c.Text == "":
+		b.WriteString("Binary changes only\n")
+	case c.Text == "":
+		b.WriteString("No changes since the merge base\n")
+	default:
+		b.WriteString(c.Text)
+	}
+	return b.String()
 }

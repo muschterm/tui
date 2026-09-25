@@ -46,7 +46,8 @@ func (c *Client) GitStatus(ctx context.Context, target GitTarget) (protocol.GitS
 }
 
 // GitDiff fetches the bounded patch for one path in one status group
-// (protocol.GitGroup*). The path must currently appear in that group.
+// (protocol.GitGroup*). The path must currently appear in that group. An
+// empty path with the staged or unstaged group fetches that whole group.
 func (c *Client) GitDiff(ctx context.Context, target GitTarget, path, group string) (protocol.GitDiff, error) {
 	q := target.query()
 	q.Set("path", path)
@@ -56,12 +57,17 @@ func (c *Client) GitDiff(ctx context.Context, target GitTarget, path, group stri
 	return out, err
 }
 
-// GitLog fetches up to limit commits from HEAD; limit <= 0 uses the server
-// default (50) and the server caps it at 200.
-func (c *Client) GitLog(ctx context.Context, target GitTarget, limit int) (protocol.GitLog, error) {
+// GitLog fetches up to limit commits in topological order; limit <= 0 uses
+// the server default (50) and the server caps it at 200. scope is
+// protocol.GitLogScopeHead (HEAD plus its upstream; also used when empty)
+// or protocol.GitLogScopeAll (every branch and remote-tracking ref).
+func (c *Client) GitLog(ctx context.Context, target GitTarget, limit int, scope string) (protocol.GitLog, error) {
 	q := target.query()
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
+	}
+	if scope != "" {
+		q.Set("scope", scope)
 	}
 	var out protocol.GitLog
 	err := c.git().request(ctx, "GET", "/v1/git/log?"+q.Encode(), nil, &out)
@@ -75,6 +81,24 @@ func (c *Client) GitShow(ctx context.Context, target GitTarget, commit string) (
 	q.Set("commit", commit)
 	var out protocol.GitShow
 	err := c.git().request(ctx, "GET", "/v1/git/show?"+q.Encode(), nil, &out)
+	return out, err
+}
+
+// GitBranches lists local branches then remote-tracking refs (at most 500).
+func (c *Client) GitBranches(ctx context.Context, target GitTarget) (protocol.GitBranches, error) {
+	var out protocol.GitBranches
+	err := c.git().request(ctx, "GET", "/v1/git/branches?"+target.query().Encode(), nil, &out)
+	return out, err
+}
+
+// GitCompare compares head against base. Each must be HEAD, a full ref name
+// from GitBranches (refs/heads/..., refs/remotes/...) or a full commit hash.
+func (c *Client) GitCompare(ctx context.Context, target GitTarget, base, head string) (protocol.GitCompare, error) {
+	q := target.query()
+	q.Set("base", base)
+	q.Set("head", head)
+	var out protocol.GitCompare
+	err := c.git().request(ctx, "GET", "/v1/git/compare?"+q.Encode(), nil, &out)
 	return out, err
 }
 

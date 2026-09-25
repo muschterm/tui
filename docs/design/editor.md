@@ -49,3 +49,7 @@ Application-managed Git operations that rewrite files use the accepted [save/pau
 Keep source versions recoverable when a save fails; never overwrite overlapping external edits without resolution. Preserve encoding/newline choices once those policies are settled. Use grapheme-aware selection and terminal-cell layout. Keep large directory traversal, syntax work, merging, and preview rendering out of the input loop.
 
 Acceptance scenarios cover concurrent insertion/deletion, peer cursor movement, own-edit undo, replay/reconnect without duplicate edits, autosave/reopen, hidden buffers, external clean merge and overlapping conflicts, delete/replace, failed writes, Unicode, narrow layouts, and keyboard/mouse equivalence. No editor is implemented or tested yet. [Interaction research](../research/interaction-precedents.md) provides examples without establishing this app's behavior.
+
+## Go prototype status
+
+The Go reference app has a read-only Files surface: a lazily loaded tree and read-only buffers inside the single Files tab, with disk-change notices and explicit Reload ([details](go-slice.md#files-surface-read-only--2026-09-24)). It settles only read-only presentation of binary, invalid-UTF-8, oversized and non-regular files for the prototype. Editing, autosave, collaboration and the remaining behavior above stay pending the collaboration library decision and its feasibility probe.

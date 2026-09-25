@@ -78,7 +78,8 @@ func TestCompactColumnsPreserveWorkAndWideLayout(t *testing.T) {
 			m.activate(action{Kind: "column", Index: int(shell.RightRegion)})
 			m.setFocus("prompt")
 			m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
-			if m.focus != "right-body" {
+			// The Files surface's tree is its body's focus area.
+			if m.focus != "right-body" && m.focus != "files-tree" {
 				t.Fatal("F6 focused an invisible transcript", m.focus)
 			}
 			m.activate(action{Kind: "resize-right", Index: 2})

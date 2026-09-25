@@ -55,6 +55,13 @@ var icons = map[string]struct{ glyph, plain string }{
 	// Keyboard focus: a plain Unicode bullet in the cell before the focused
 	// control, translating T3's focus ring without moving the control.
 	"focus": {"•", ">"},
+	// Files surface: tree carets, entry types (cod-file, fa-folder_open_o,
+	// cod-file_symlink_file, cod-file_binary) and buffer controls (cod-arrow_left,
+	// cod-word_wrap, cod-copy).
+	"tree-closed": {"▸", ">"}, "tree-open": {"▾", "v"},
+	"file": {"\uea7b", " "}, "folder-open": {"\uf115", "+"},
+	"file-link": {"\ueaee", "@"}, "file-other": {"\ueae8", "?"},
+	"back": {"\uea9b", "<"}, "wrap": {"\ueb80", "w"}, "copy": {"\uebcc", "c"},
 }
 
 func (m *Model) icon(name string) string {

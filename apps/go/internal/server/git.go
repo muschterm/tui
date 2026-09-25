@@ -301,7 +301,16 @@ func (e *engine) gitLog(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, gitLogMaxLimit)
 	}
-	e.gitHandle(w, r, func(ctx context.Context, dir string) (any, error) { return readGitLog(ctx, dir, limit) })
+	scope := r.URL.Query().Get("scope")
+	switch scope {
+	case "":
+		scope = protocol.GitLogScopeHead
+	case protocol.GitLogScopeHead, protocol.GitLogScopeAll:
+	default:
+		gitFailure(w, failure("invalid", "scope must be head or all"))
+		return
+	}
+	e.gitHandle(w, r, func(ctx context.Context, dir string) (any, error) { return readGitLogScope(ctx, dir, limit, scope) })
 }
 
 func (e *engine) gitShow(w http.ResponseWriter, r *http.Request) {
@@ -609,6 +618,9 @@ func readGitDiff(ctx context.Context, dir, p, group string) (protocol.GitDiff, e
 	default:
 		return diff, failure("invalid", "group must be staged, unstaged, untracked or conflicted")
 	}
+	if p == "" && (group == protocol.GitGroupStaged || group == protocol.GitGroupUnstaged) {
+		return readGitWholeDiff(ctx, dir, group)
+	}
 	nested := group == protocol.GitGroupUntracked && strings.HasSuffix(p, "/") && validGitPath(strings.TrimSuffix(p, "/"))
 	if !nested && !validGitPath(p) {
 		return diff, failure("invalid", "path must be a relative checkout path outside .git")
@@ -793,7 +805,15 @@ func parseGitCommits(out []byte) []protocol.GitCommit {
 }
 
 func readGitLog(ctx context.Context, dir string, limit int) (protocol.GitLog, error) {
-	log := protocol.GitLog{Workspace: inspectWorkspace(ctx, dir), Commits: []protocol.GitCommit{}}
+	return readGitLogScope(ctx, dir, limit, protocol.GitLogScopeHead)
+}
+
+// readGitLogScope lists commits in --topo-order so a graph can be drawn one
+// row per commit. The head scope adds HEAD's upstream when it resolves; the
+// all scope lists every branch and remote-tracking ref plus HEAD (so a
+// detached HEAD still appears). Tags alone never add history.
+func readGitLogScope(ctx context.Context, dir string, limit int, scope string) (protocol.GitLog, error) {
+	log := protocol.GitLog{Workspace: inspectWorkspace(ctx, dir), Scope: scope, Commits: []protocol.GitCommit{}}
 	if log.Workspace.State != "branch" && log.Workspace.State != "detached" {
 		return log, nil
 	}
@@ -801,7 +821,23 @@ func readGitLog(ctx context.Context, dir string, limit int) (protocol.GitLog, er
 	if err != nil {
 		return log, err
 	}
-	out, truncated, err := g.read(ctx, gitLogMaxBytes, "log", "-z", "--no-color", "--decorate=full", "--no-show-signature", "-n", strconv.Itoa(limit+1), gitCommitFormat, "HEAD", "--")
+	revs := []string{"HEAD"}
+	switch scope {
+	case protocol.GitLogScopeAll:
+		revs = append(revs, "--branches", "--remotes")
+	default:
+		if log.Workspace.State == "branch" {
+			up, _, err := g.read(ctx, 4096, "rev-parse", "--symbolic-full-name", "--verify", "--quiet", "--end-of-options", "HEAD@{upstream}")
+			if name := strings.TrimSpace(string(up)); err == nil && validFullRef(name) {
+				log.Upstream = name
+				revs = append(revs, name)
+			} else if err == nil && name != "" {
+				log.UpstreamOmitted = true
+			}
+		}
+	}
+	args := append([]string{"log", "-z", "--no-color", "--topo-order", "--decorate=full", "--no-show-signature", "-n", strconv.Itoa(limit + 1), gitCommitFormat}, revs...)
+	out, truncated, err := g.read(ctx, gitLogMaxBytes, append(args, "--")...)
 	if err != nil {
 		return log, gitError(err)
 	}

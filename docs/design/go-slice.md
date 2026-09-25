@@ -70,6 +70,11 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 | Ctrl+Z | Suspend |
 | Enter / click on a terminal grid | Type into that terminal (this client must control it) |
 | Ctrl+] while typing into a terminal | Leave terminal input; every other key goes to the shell meanwhile |
+| Up / Down / PgUp / PgDn / Home / End in the Files tree | Move the tree selection |
+| Right / Left in the Files tree | Expand a folder (then move into it) / collapse it or move to its parent |
+| Enter / Space in the Files tree | Open a file, expand or collapse a folder, or Load more |
+| Arrows / PgUp / PgDn / Home / End in a Files buffer | Scroll; Left/Right scroll horizontally while not wrapping |
+| w / Backspace in a Files buffer | Toggle line wrapping / return to the tree |
 | Alt+Left / Alt+Right | Resize right panel |
 | Alt+Up / Alt+Down | Resize bottom panel |
 | Ctrl+C / Ctrl+Shift+C | Copy selected text to the local system clipboard; SSH uses OSC 52 with unconfirmed terminal acceptance |
@@ -1047,6 +1052,175 @@ render captures (`TUI_GO_CAPTURE_DIR`), optionally from real reads supplied as
 JSON in `TUI_GO_GIT_JSON`; the 2026-09-24 review used reads of this
 repository at 144×40 and 44×40/44×30 in dark and light. Not yet verified in a
 real terminal (foot) or with `make pty`.
+
+### Git history, branches and comparisons (read-only) — 2026-09-24
+
+Additions to the Git surface; all reads use the policy above and never write
+or contact a remote. The server advertises them as capability `git-history`;
+without it the TUI hides the scope row and whole-diff headings and shows
+"Branches and comparisons need a newer server".
+
+- **Log.** `GET /v1/git/log` takes `scope=head|all` (default `head`) and lists
+  `--topo-order`. `head` is HEAD plus its configured upstream when that
+  resolves (`GitLog.Upstream`); `all` is HEAD plus `--branches --remotes`.
+  The 10 s budget and the 50/200 limits are unchanged; a timeout is reported
+  as `unavailable`. The RECENT COMMITS heading is followed by a segmented
+  `Scope  HEAD  All branches` row (focus key `git:scope`, Enter/click
+  toggles, selected segment accent and bold). The scope is client-local per
+  target; the selection shows the displayed log's scope, a requested change
+  is marked `…` until its log arrives, a failed read reverts it, and nothing
+  changes while disconnected.
+- **Graph lanes** (`internal/tui/git_graph.go`). `layoutGitGraph` runs once
+  when a log arrives and is cached on the view; painting only clips cells.
+  One terminal row per commit keeps graph rows 1:1 with commit rows and
+  their focus keys, so merge/branch connectors are drawn in the commit's own
+  row: node `●` (HEAD `◉`), a horizontal run `─` through connector cells
+  (`┼` across untouched lanes), `╯`/`╰` where a lane that expected the commit
+  ends, `╮` where an extra parent opens a lane to the right, `┤`/`├` where it
+  joins a lane already expecting it, and `┬`/`┴` for those ends when the run
+  continues past them. A commit takes the leftmost lane expecting it or the
+  leftmost free lane; freed lanes are reused, but never in the row where
+  they end. A seeded property test over 1500 random DAGs checks the
+  invariants (one node per row, strokes connect, first-parent continuity,
+  overflow marker, ASCII plain mode). Each lane is two cells; at most
+  `min(6, width/6)` lanes show, with a muted `›` for activity in hidden lanes
+  (the node itself when the commit is in one). A lane whose expected parent is
+  beyond the loaded list is dashed `┆`. Lane colors cycle blue, green, gold,
+  violet, cyan and pink. Plain icons use `* @ | : - + / \`. Limit: box-drawing
+  glyphs are East Asian Ambiguous width; a terminal rendering them wide
+  misaligns the graph. Goldens: `git_graph_test.go` (linear, merge, octopus,
+  criss-cross, lane reuse, overflow, parent beyond list; rich and plain).
+- **Branches.** `GET /v1/git/branches` returns local branches then
+  remote-tracking refs (`for-each-ref`, cap 500, symbolic remote HEADs
+  omitted) with short and full names, tip, upstream, ahead/behind from local
+  refs, `upstream_gone`, current-branch flag and the worktree path that has it
+  checked out. Names follow git's ref-name rules (non-ASCII allowed) except
+  that a component starting with `-` is never passed back; such refs are
+  counted in `omitted` and the section says so, as does an unsafe upstream
+  (`upstream_omitted` on the log). The 500 cap counts every ref read,
+  including symbolic ones. If ahead/behind cannot be computed within half
+  the budget, the list is re-read without it (`tracking_omitted`). The BRANCHES section below RECENT COMMITS is collapsed by
+  default (disclosure row `git:section:branches`, count once read) and reads
+  only while expanded, re-reading on each surface refresh. Rows mark the
+  current branch (`●`, plain `*`, bold), branches checked out elsewhere (`+`)
+  and upstream state (`↑2 ↓1`, plain `+2 -1`, or gold `gone`). Activating a
+  row (key `git:branch:<full ref>`) opens a comparison.
+- **Compare.** `GET /v1/git/compare?base=&head=` accepts only `HEAD`, full
+  `refs/heads/…` / `refs/remotes/…` names that exist under exactly that name,
+  or full lowercase hashes that resolve to themselves; everything else is
+  `invalid` (no revision expressions, abbreviations or options; commands use
+  `--end-of-options`). It returns resolved ids, exact ahead/behind counts,
+  up to 200 commits each way, the merge base (empty for unrelated histories,
+  with no diff) and the bounded merge-base diff (same flags and caps as
+  per-entry diffs), plus `fetched_at` from FETCH_HEAD's mtime. The viewer
+  title is `<branch> vs HEAD`; pairs are Base, Head, Merge base, Ahead,
+  Behind and, when a remote-tracking ref is involved, "Upstream as of" (or
+  "never fetched"); the body lists HEAD-only and base-only commits, then the
+  diff.
+- **Whole-group diffs.** The STAGED and CHANGES headings are activatable rows
+  (`git:section:staged|unstaged`) opening "Staged vs HEAD" (`diff --cached`)
+  or "Unstaged changes" in the viewer, via `GET /v1/git/diff` with an empty
+  path. They are not pinned entries, so the viewer's write keys are refused.
+
+Tests: `internal/server/git_branches_test.go` (topo order, scopes, branch
+list with upstream/worktree/gone, compare validation, merge-base diff,
+bounds, unrelated histories, whole diffs), `internal/tui/git_graph_test.go`
+and `git_branches_view_test.go`. Captures `graph`, `graph-plain`,
+`graph-narrow` and `compare` join `TestGitSurfaceCaptures`. Not verified in a
+real terminal.
+
+### Files surface (read-only) — 2026-09-24
+
+The right-host Files surface (`internal/tui/files_surface.go`,
+`files_view.go`) replaces the former "Collaborative editor unavailable"
+placeholder with a read-only directory tree and read-only buffers for the
+displayed checkout (the draft's project or the active thread). Nothing in it
+writes, and it shows no disabled edit affordance; editing waits for the
+[editor](editor.md) decisions. Unix servers advertise `files-read`; without
+it the surface reads "Server does not offer file browsing" and sends
+nothing. At most four file reads run at once; a read that cannot get a slot
+within its budget fails `busy`. A view holds at most 20 open files (another
+open is refused with "Close a file first"), Copy strips escape sequences and
+controls other than tab/CR/LF (a truncated file notes "Copied the first
+1.0 MiB"), names the server cannot address read "Unsupported file name",
+and views of deleted threads or changed checkouts are pruned.
+
+- **Server reads** (`internal/server/files.go`, `files_unix.go`;
+  `internal/protocol/files.go`; `internal/client/files.go`), resolved from
+  `project_id` or `thread_id` like the Git reads, authenticated, with a 5 s
+  budget:
+  - `GET /v1/files/list?dir=&cursor=&hidden=0|1` → `{Dir, Entries[{Name,
+    Kind file|dir|symlink|other, Size, Token}], Next, Truncated, Skipped}`.
+    Directories first, then byte order of name; pages of 500 with an opaque
+    cursor naming the last entry, so pages stay stable when entries appear
+    or disappear between requests. At most 20000 names are scanned
+    (`Truncated`); names that are not valid UTF-8 are counted in `Skipped`.
+    `.git` (any case) is never listed or listable; dot names only with
+    `hidden=1`.
+  - `GET /v1/files/read?path=` → `{Path, Kind text|binary|too_large|not_regular,
+    Size, Token, Sha256, Encoding utf-8|invalid, Newline lf|crlf|mixed|none,
+    BOM, Text, Truncated, LinkTarget}`. Text is at most 1 MiB (cut at a UTF-8
+    boundary, `Truncated`); files up to 16 MiB are hashed whole; larger files
+    are `too_large` metadata. A NUL in the first 8 KiB, or more than a
+    quarter of it being invalid UTF-8, is `binary`; other invalid UTF-8 is
+    shown with U+FFFD and `Encoding invalid`. A leading BOM is removed and
+    reported. A symlink is `not_regular` with its link text; its target is
+    never read.
+  - `GET /v1/files/stat?path=` → `{Path, Kind, Size, Token}`; a missing
+    path is `absent`.
+  - Paths are clean, relative, slash-separated, without `.`/`..`/empty
+    components, NUL or a `.git` component. Directories are opened with
+    `openParent` (openat2 `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, else an
+    `O_NOFOLLOW` walk), so a symlinked directory is `not_directory` (409)
+    and is never traversed; files are opened `O_NOFOLLOW|O_NONBLOCK` and
+    checked with `fstat`, so a FIFO never blocks. Tokens are the Git
+    writer's type-prefixed lstat tokens. Fixture checkouts return 409
+    `unavailable`.
+- **Tree.** FILES heading with a glyph-only Refresh icon (rereads loaded
+  folders), the checkout path (muted, truncated from the left), a Hidden
+  files toggle row, a rule, then the tree: `▸`/`▾` carets (plain `>`/`v`)
+  and Nerd Font folder/file/link icons (plain: a trailing `/` on folders).
+  Folders load lazily with "Loading…"; empty ones read "Empty folder";
+  later pages use a "Load more (N shown)" row. Rows are full-row square-fill
+  controls with hover; the tree body is one Tab stop whose selected row
+  carries the focus mark. Wheel and the scrollbar scroll it.
+- **Buffers.** Opening a file shows it in the same Files tab; there is only
+  ever one Files host tab. A buffer replaces the tree at every width. The
+  strip has a back control, then one square-fill tab per open file (close in
+  its icon slot, like surface tabs) and an overflow menu when tabs do not
+  fit; reopening an open file selects it. Below it, one metadata line
+  ("28.3 KiB · UTF-8 · LF", "UTF-8 with BOM", "invalid UTF-8 shown as �",
+  "mixed line endings"; for other kinds the path) with Wrap, Copy (the loaded
+  text) and Reload icons. The text pane has muted line numbers, CRLF shown as
+  line breaks, tabs expanded to 4-cell stops by cell width, escape sequences
+  and controls removed, and no wrapping by default: long lines end in `›`
+  and a horizontally scrolled view starts with `‹`; `w` wraps at grapheme
+  boundaries. Other kinds state "Binary file · 2.3 MiB", "Too large to show
+  · 20.0 MiB", "Not a regular file" or `→ target` for a symlink. A truncated
+  text reads "Showing first 1.0 MiB of 3.2 MiB". Search and selection copy
+  are deferred.
+- **Disk changes.** While a buffer is visible the client polls
+  `/v1/files/stat` every 2 s (a `tea.Tick` that is not rescheduled while the
+  surface is hidden). A different token shows "! Changed on disk" with a
+  Reload button; `absent` shows "Deleted on disk". Content is never replaced
+  until Reload.
+- **Restoration.** Tree expansion, loaded listings, hidden-file choice,
+  open buffers, their scroll/wrap state and the tree position are
+  client-local per checkout target (thread, or draft project), like the Git
+  surface's cache, so switching threads restores them. Results carry their
+  target and generation and are dropped when either changed.
+- **Compact.** The Surfaces column paints the same tree and buffer; the back
+  control returns from a buffer to the tree.
+- **Tests.** `internal/server/files_test.go` (ordering, hidden and `.git`,
+  stable pagination across an insertion, confinement including symlinked
+  directories and files, classification, FIFO, fixture, auth);
+  `internal/tui/files_surface_test.go` (tree and pointer/keyboard parity,
+  pagination, hidden toggle, clip/wrap/CRLF, sanitization, kinds, strip
+  overflow and singleton tab, polling only while visible, banners and
+  Reload, restoration and stale results, compact column, fixture).
+  `TUI_GO_CAPTURE_DIR=… go test ./internal/tui -run
+  'TestFilesCaptures|TestFilesRepositoryCaptures'` renders fixture data and
+  this repository through a real server in a temporary HOME.
 
 ### Git write actions — 2026-09-24
 

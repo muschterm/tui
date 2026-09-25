@@ -212,13 +212,13 @@ func (m *Model) surfaceBlocks(s shell.Surface) []surfaceBlock {
 		// bottom panel reuses terminalBlocks without it (it has no title row).
 		return append([]surfaceBlock{heading("Terminal", ""), gap}, m.terminalBlocks(s.ID)...)
 	case "files":
+		// The host paints the tree or buffer itself (files_view.go); these
+		// blocks are its plain-text summary.
 		b = append(b, heading("Files", ""), gap,
-			surfaceBlock{kind: surfaceLongBlock, label: "Checkout", value: t.Checkout}, gap,
-			statusBlock(m, "Collaborative editor", "unavailable", true),
-			surfaceBlock{kind: surfaceTextBlock, value: "File writes are not enabled in this slice.", ink: p.muted},
-			gap, surfaceBlock{kind: surfaceRuleBlock}, gap, heading("Planned validation", ""), gap)
-		for _, item := range []string{"Concurrent edits and own-edit undo", "Durable buffers versus disk saves", "External-change reconciliation"} {
-			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: "• " + item, ink: p.text})
+			surfaceBlock{kind: surfaceLongBlock, label: "Checkout", value: t.Checkout})
+		if fv := m.currentFilesView(); fv != nil && fv.buffer() != nil {
+			buf := fv.buffer()
+			b = append(b, gap, surfaceBlock{kind: surfacePairBlock, label: "Open", value: buf.path, note: filesBufferMeta(buf)})
 		}
 	case "git":
 		b = append(b, m.gitSurfaceBlocks()...)

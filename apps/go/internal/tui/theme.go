@@ -46,6 +46,12 @@ func style(fg, bg string) lipgloss.Style {
 // Only our renderer may supply terminal escapes. Agent data, paths, and drafts
 // pass through this boundary before becoming styled terminal text.
 func safe(s string) string {
+	return strings.ReplaceAll(safeKeepTabs(s), "\t", "    ")
+}
+
+// safeKeepTabs is safe without replacing tabs, for callers that expand them
+// by column.
+func safeKeepTabs(s string) string {
 	s = ansi.Strip(strings.ToValidUTF8(s, "�"))
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
@@ -57,7 +63,7 @@ func safe(s string) string {
 			return -1
 		}
 		return r
-	}, strings.ReplaceAll(s, "\t", "    "))
+	}, s)
 }
 
 func fit(s string, w int) string {

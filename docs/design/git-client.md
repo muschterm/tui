@@ -10,7 +10,10 @@ upstream ahead/behind from local refs, in-progress operation), bounded
 per-entry diffs, the 50 most recent commits and bounded commit patches,
 presented in the right host and the read-only viewer with refresh on
 visibility, target change, turn end and explicit Refresh. Reads perform no Git
-mutation and no network access.
+mutation and no network access. It also has topological history with
+commit-graph lanes (HEAD plus upstream, or all branches), a branch list with
+upstream ahead/behind, and read-only branch-versus-HEAD and
+staged-versus-HEAD/unstaged whole diffs ([details](go-slice.md#git-history-branches-and-comparisons-read-only--2026-09-24)).
 
 The server, protocol and Go client also implement whole-file stage, unstage
 and discard, and commit including amend ([ADR 0020](../adr/0020-git-write-actions.md);
@@ -28,8 +31,7 @@ refused when status could not list the whole staged set. The TUI does not expose
 them yet; verified with real Git in `git_write_test.go`, not in a terminal.
 
 Remaining: TUI actions for these writes (including discard confirmation and
-the published-amend warning), commit graph lanes and graph actions, branch and
-staged-versus-HEAD comparison views beyond per-entry diffs, hunk/line staging,
+the published-amend warning), graph actions, hunk/line staging,
 multi-select, conflicted-path staging, submodule changes, branch switching,
 soft reset, pull/fetch/push, rebase and conflict resolution (manual and
 agent-assisted), context menus, turn comparisons, live-buffer coordination,
