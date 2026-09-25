@@ -155,6 +155,12 @@ func (m *Model) gitBranchBlocks(g *gitView) []surfaceBlock {
 	if len(g.branches.Branches) == 0 {
 		return append(b, surfaceBlock{kind: surfaceTextBlock, value: "No branches", ink: p.muted})
 	}
+	key, _ := m.gitTarget()
+	block := ""
+	refs := m.gitRefsEnabled() && g.status != nil
+	if refs {
+		block = m.gitRefBlock(key, g, protocol.GitKindSwitch)
+	}
 	for _, remote := range []bool{false, true} {
 		for _, br := range g.branches.Branches {
 			if br.Remote != remote {
@@ -165,7 +171,14 @@ func (m *Model) gitBranchBlocks(g *gitView) []surfaceBlock {
 				action: action{Kind: "git-compare", ID: br.Ref, Value: br.Name},
 				help:   "Compare " + name + " with HEAD · read-only"}
 			row.when = gitBranchTrack(br, m.plainIcons)
-			row.controls = m.gitBranchControls(br)
+			if refs {
+				row.slots = true
+				row.controls = m.gitBranchControls(br, block)
+				if !br.Remote && !br.Head {
+					row.help += " · S Switch"
+				}
+				row.help += " · b New branch"
+			}
 			b = append(b, surfaceBlock{kind: surfaceGitBlock, git: row})
 		}
 	}
@@ -183,10 +196,6 @@ func (m *Model) gitBranchBlocks(g *gitView) []surfaceBlock {
 	}
 	return b
 }
-
-// gitBranchControls is the write-action hook for branch rows; empty until
-// branch switch/create lands.
-func (m *Model) gitBranchControls(protocol.GitBranch) [2]*gitControl { return [2]*gitControl{} }
 
 // gitBranchTrack is the compact upstream state: ↑2 ↓1, gone, or empty.
 func gitBranchTrack(br protocol.GitBranch, plain bool) string {
@@ -231,6 +240,10 @@ func gitExtraRowText(r *gitRow) string {
 			}
 		}
 		return strings.TrimSpace(mark + strings.ToUpper(r.text) + " " + r.when)
+	case "heading":
+		return "GIT"
+	case "name":
+		return "Branch name: " + r.text
 	case "branch":
 		line := r.text
 		if r.on {
@@ -246,8 +259,17 @@ func gitExtraRowText(r *gitRow) string {
 
 // paintGitExtraRow paints scope, section and branch rows.
 func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
+	if r.kind == "heading" || r.kind == "name" {
+		m.paintGitRefRow(f, x, y, width, r)
+		return
+	}
 	p := m.colors()
-	v := m.componentStyle(squareFill, m.controlState(false, r.key), p.text, p.panel)
+	state := m.controlState(false, r.key)
+	for _, c := range r.controls {
+		// Hovering a row's own control keeps the row's hover fill.
+		state.Hovered = state.Hovered || c != nil && m.hover == c.key
+	}
+	v := m.componentStyle(squareFill, state, p.text, p.panel)
 	f.styledButton(x, y, width, "", r.key, r.action, v)
 	f.hits[len(f.hits)-1].Label = r.help
 	bg := v.background
@@ -316,6 +338,13 @@ func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
 			f.text(cx, y, 1, "+", p.muted, bg)
 		}
 		cx += 2
+		if r.slots && end-cx > 2*gitSlotWidth+8 {
+			// Reserved slots: the name and tracking never move when the
+			// controls appear.
+			end -= 2 * gitSlotWidth
+			m.paintGitControls(f, end+1, y, r, bg)
+			end--
+		}
 		tw := ansi.StringWidth(r.when)
 		room := end - cx
 		if tw > 0 && tw+2 < room {

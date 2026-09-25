@@ -135,6 +135,7 @@ func (m *Model) nextGitRefresh() tea.Cmd {
 	if key != "" {
 		m.syncGitDraft(key)
 	}
+	m.gitDialogsSettle(key)
 	opsDone := m.gitOpsChanged(key)
 	active := activeTurn(m.thread()) && !m.creatingThread()
 	ended := m.gitTurnKey == key && m.gitTurnActive && !active
@@ -263,6 +264,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 	if cmd, ok := m.gitBranchesAction(a); ok {
 		return cmd
 	}
+	if cmd, ok := m.gitRefAction(a); ok {
+		return cmd
+	}
 	return m.gitWriteAction(a)
 }
 
@@ -281,6 +285,8 @@ type gitRow struct {
 	// stay blank) so path truncation never depends on their visibility.
 	slots    bool
 	controls [2]*gitControl
+	// tools are the heading's always-visible icon controls (git_ref_view.go).
+	tools []*gitControl
 	// Composer and write-status rows (git_write_view.go): the part, the
 	// message line and editor height, plain text and toggle/disabled state.
 	compose     string
@@ -401,14 +407,17 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	heading := func(text, value string) surfaceBlock {
 		return surfaceBlock{kind: surfaceHeadingBlock, label: text, value: value}
 	}
-	b := []surfaceBlock{{kind: surfaceHeadingBlock, label: "Git", glyph: m.icon("refresh"),
-		action: action{Kind: "git-refresh"}, key: "git-refresh"}, gap}
-	b = append(b, m.gitCheckoutBlocks()...)
 	key, _ := m.gitTarget()
 	g := m.gitViews[key]
 	if g == nil {
 		g = &gitView{}
 	}
+	b := []surfaceBlock{{kind: surfaceHeadingBlock, label: "Git", glyph: m.icon("refresh"),
+		action: action{Kind: "git-refresh"}, key: "git-refresh"}, gap}
+	if m.gitRefsEnabled() {
+		b[0] = m.gitHeadingBlock(key, g)
+	}
+	b = append(b, m.gitCheckoutBlocks()...)
 	s := g.status
 	if s != nil && s.Upstream != "" {
 		value := safe(singleLine(s.Upstream))

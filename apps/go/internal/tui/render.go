@@ -289,9 +289,15 @@ func (m *Model) compose(paint bool) frame {
 	}
 	m.renderMentions(&f)
 	// A context menu opened over the viewer must layer above it, so the
-	// viewer paints first when both are present.
+	// viewer paints first when both are present; the document review's
+	// confirmations layer above it the same way.
 	if m.viewer != nil {
 		m.renderViewer(&f)
+		if len(m.menu) > 0 {
+			m.renderMenu(&f)
+		}
+	} else if m.docReview != nil {
+		m.renderDocReview(&f)
 		if len(m.menu) > 0 {
 			m.renderMenu(&f)
 		}
@@ -1011,7 +1017,10 @@ func menuPosition(items []menuItem, index int) (int, int) {
 // which keep red ink.
 func menuItemDestructive(item menuItem) bool {
 	switch item.Action.Kind {
-	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove", "git-discard-confirm", "git-commit-ack":
+	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove", "git-discard-confirm", "git-commit-ack", "git-ack-confirm", "git-reset-confirm":
+		return true
+	case "doc-close-force", "doc-quit-force", "doc-dismiss-confirm", "doc-resolve-confirm", "doc-take-confirm":
+		// Shared-document choices that discard or overwrite someone's text.
 		return true
 	}
 	return false

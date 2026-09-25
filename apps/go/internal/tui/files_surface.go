@@ -84,6 +84,20 @@ type fileBuffer struct {
 	rowsWrap bool
 	rowsRoom int
 	widest   int
+	// Shared document (editor_session.go): doc is its ID once opened,
+	// docOpen the open command in flight (kept for an identical Retry after
+	// a lost reply), docErr a failed open, docRO the server's read-only
+	// reason and docLost refused text kept after the document ended.
+	doc     string
+	docOpen *protocol.Command
+	docErr  string
+	docRO   string
+	docLost []docLost
+	// docGoneN counts consecutive disappearances of its document; reopening
+	// stops after three until Retry.
+	docGoneN int
+	// docW and docH are the editor text area's last laid-out size.
+	docW, docH int
 }
 
 // filesView is one target's client-local Files view.
@@ -189,11 +203,11 @@ func (m *Model) nextFilesRefresh() tea.Cmd {
 		m.filesShown = ""
 		return nil
 	}
-	m.pruneFilesViews()
+	pruned := m.pruneFilesViews()
 	if !m.connected || m.filesClient() == nil || m.filesFixture() || !m.filesAvailable() {
-		return nil
+		return pruned
 	}
-	var cmds []tea.Cmd
+	cmds := []tea.Cmd{pruned}
 	if key != m.filesShown {
 		m.filesShown = key
 		cmds = append(cmds, m.resumeFiles())
@@ -305,10 +319,10 @@ func (m *Model) acceptFilesList(msg filesListMsg) {
 	m.markDirty()
 }
 
-func (m *Model) acceptFilesRead(msg filesReadMsg) {
+func (m *Model) acceptFilesRead(msg filesReadMsg) tea.Cmd {
 	v := m.acceptFilesView(msg.key)
 	if v == nil {
-		return
+		return nil
 	}
 	for _, b := range v.buffers {
 		if b.path != msg.path || b.gen != msg.gen {
@@ -317,13 +331,33 @@ func (m *Model) acceptFilesRead(msg filesReadMsg) {
 		b.loading = false
 		if msg.err != nil {
 			b.err = safe(singleLine(msg.err.Error()))
-			return
+			return nil
 		}
 		r := msg.read
 		b.read, b.err, b.disk = &r, "", ""
 		b.lines, b.rows = nil, nil
 		m.markDirty()
+		// An editable text opens its shared document (read the target the
+		// result belongs to, which need not be the displayed one).
+		return m.maybeOpenDocument(msg.key, m.filesTargetFor(msg.key), b)
 	}
+	return nil
+}
+
+// filesTargetFor returns the Git target behind a view key.
+func (m *Model) filesTargetFor(key string) client.GitTarget {
+	if current, target := m.filesTarget(); current == key {
+		return target
+	}
+	if rest, ok := strings.CutPrefix(key, "thread:"); ok {
+		id, _, _ := strings.Cut(rest, ":")
+		return client.GitTarget{ThreadID: id}
+	}
+	if rest, ok := strings.CutPrefix(key, "project:"); ok {
+		id, _, _ := strings.Cut(rest, ":")
+		return client.GitTarget{ProjectID: id}
+	}
+	return client.GitTarget{}
 }
 
 func (m *Model) acceptFilesStat(msg filesStatMsg) {
@@ -364,7 +398,8 @@ func (m *Model) filesTick() tea.Cmd {
 	v := m.currentFilesView()
 	b := v.buffer()
 	api := m.filesClient()
-	if b == nil || b.read == nil || b.loading || b.statPending || api == nil {
+	if b == nil || b.read == nil || b.loading || b.statPending || api == nil || m.bufferDoc(b) != nil {
+		// A document watches its own file on the server.
 		return nil
 	}
 	b.statPending = true
@@ -401,6 +436,9 @@ func (m *Model) openFilesBuffer(p string) tea.Cmd {
 func (m *Model) closeFilesBuffer(i int) tea.Cmd {
 	v := m.currentFilesView()
 	if i < 0 || i >= len(v.buffers) {
+		return nil
+	}
+	if m.docCloseGuard(v.buffers[i]) {
 		return nil
 	}
 	v.buffers = append(v.buffers[:i:i], v.buffers[i+1:]...)
@@ -492,15 +530,26 @@ func (m *Model) filesAction(a action) tea.Cmd {
 		}
 		m.showMenu("Open files", items)
 	case "files-reload":
-		if b := v.buffer(); b != nil && online {
+		if b := v.buffer(); b != nil && online && m.bufferDoc(b) == nil {
 			return m.readFilesBuffer(b)
 		}
 	case "files-wrap":
 		if b := v.buffer(); b != nil {
+			if s := m.bufferDoc(b); s != nil && s.rep != nil {
+				// Keep the first visible line across the change.
+				line, _ := s.rep.txt.rowLine(b.scroll, docWrapRoom(b))
+				b.wrap, b.hscroll = !b.wrap, 0
+				b.scroll = s.rep.txt.rowStart(line, docWrapRoom(b))
+				m.markDirty()
+				return nil
+			}
 			b.wrap, b.hscroll, b.scroll = !b.wrap, 0, 0
 			m.markDirty()
 		}
 	case "files-copy":
+		if b := v.buffer(); b != nil && m.bufferDoc(b) != nil && m.bufferDoc(b).rep != nil {
+			return m.copyText(clipboardSafeText(m.bufferDoc(b).rep.txt.String()))
+		}
 		if b := v.buffer(); b != nil && b.read != nil && b.read.Kind == protocol.FileReadText {
 			cmd := m.copyText(clipboardSafeText(b.read.Text))
 			if b.read.Truncated {
@@ -619,6 +668,9 @@ func (m *Model) filesTextKey(v *filesView, s string) (tea.Cmd, bool) {
 		return nil, false
 	}
 	h := max(1, m.filesTextHeight())
+	if doc := m.bufferDoc(b); doc != nil && doc.rep != nil && s == "enter" {
+		return m.startDocEdit(b, doc), true
+	}
 	switch s {
 	case "up":
 		b.scroll--
@@ -687,10 +739,11 @@ func (m *Model) filesAvailable() bool { return m.hasCapability("files-read") }
 
 // pruneFilesViews drops views whose thread or project is gone or whose
 // checkout changed (the key names the checkout it was built for).
-func (m *Model) pruneFilesViews() {
+func (m *Model) pruneFilesViews() tea.Cmd {
 	if len(m.filesViews) == 0 {
-		return
+		return nil
 	}
+	var cmds []tea.Cmd
 	live := map[string]bool{}
 	for _, t := range m.snapshot.Threads {
 		live["thread:"+t.ID+":"+t.Checkout] = true
@@ -707,8 +760,11 @@ func (m *Model) pruneFilesViews() {
 				continue
 			}
 		}
+		// Unstored document text outlives the view.
+		cmds = append(cmds, m.orphanView(m.filesViews[key]))
 		delete(m.filesViews, key)
 	}
+	return tea.Batch(cmds...)
 }
 
 // clipboardSafeText keeps the text, tabs and line endings of untrusted file

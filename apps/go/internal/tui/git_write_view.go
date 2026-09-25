@@ -65,16 +65,19 @@ func (m *Model) gitWriteBlocks(key string, g *gitView) []surfaceBlock {
 	button := func(label, glyph, k string, a action) surfaceBlock {
 		return surfaceBlock{kind: surfaceGitBlock, git: &gitRow{compose: "button", text: label, mark: glyph, key: k, action: a, help: label}}
 	}
+	b = append(b, m.gitCreateBlocks(key)...)
 	reason, progress := m.gitWriteBlock(key, g)
 	switch {
 	case progress:
-		b = append(b, statusBlock(m, reason, "running", false))
+		b = append(b, m.gitProgressBlocks(key, g, reason)...)
 	case reason == gitLeaseCopy:
 		b = append(b, statusBlock(m, reason, "", false))
 		b[len(b)-1].glyph, b[len(b)-1].ink = panelStatusMark(m, "waiting")
 	}
 	if st := m.gitWriteFor(key); st != nil && !st.running {
 		switch {
+		case st.transport == "" && gitRefKind(st.cmd.Kind):
+			b = append(b, m.gitRefResultBlocks(key, g, st)...)
 		case st.transport != "":
 			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: st.transport, ink: p.red},
 				button("Retry "+strings.TrimPrefix(st.cmd.Kind, "git.")+" · same command", m.icon("refresh"), "git:retry", action{Kind: "git-retry"}),
@@ -177,12 +180,17 @@ func gitMessageLine(value string, i int) string {
 }
 
 func (m *Model) gitMessageStyles(width int) {
+	m.gitMessageStylesFor(m.gitMsg(), width)
+}
+
+// gitMessageStylesFor applies the Git input styles to a editor.
+func (m *Model) gitMessageStylesFor(a *textarea.Model, width int) {
 	p := m.colors()
 	s := textarea.Styles{}
 	s.Focused = textarea.StyleState{Base: style(p.text, p.input), Text: style(p.text, p.input), Placeholder: style(p.muted, p.input), CursorLine: style(p.text, p.input), Selection: style(p.text, p.selected), EndOfBuffer: style(p.text, p.input).Width(width)}
 	s.Blurred = s.Focused
 	s.Cursor.Color = lipColor(p.blue)
-	m.gitMsg().SetStyles(s)
+	a.SetStyles(s)
 }
 
 // gitComposeFocused reports keyboard focus inside the composer.
@@ -308,22 +316,9 @@ func (m *Model) gitRowShowsControls(r *gitRow) bool {
 // their hit so focus can reveal them.
 func (m *Model) paintGitControls(f *frame, x, y int, r *gitRow, bg string) {
 	show := m.gitRowShowsControls(r)
-	p := m.colors()
 	for i, c := range r.controls {
-		sx := x + i*gitSlotWidth
-		if c == nil {
-			continue
+		if c != nil {
+			m.paintGitSlot(f, x+i*gitSlotWidth, y, c, bg, show)
 		}
-		s := m.controlState(false, c.key)
-		s.Disabled = c.disabled
-		v := m.iconStyle(s, p.muted, bg)
-		v.focused = s.Focused
-		if show || s.Focused {
-			f.styledText(sx+1, y, 2, c.glyph, v, false)
-			if v.focused {
-				f.focusMark(sx, y, v, bg)
-			}
-		}
-		f.hits = append(f.hits, hit{Rect: shell.Rect{X: sx + 1, Y: y, W: 2, H: 1}, Action: c.action, Label: c.help, Key: c.key, Slot: shell.Rect{X: sx, Y: y, W: gitSlotWidth, H: 1}})
 	}
 }

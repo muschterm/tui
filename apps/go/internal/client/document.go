@@ -87,8 +87,9 @@ import (
 //
 // Offsets in the replica are UTF-16 code units; keep cursors on grapheme
 // boundaries and never split a surrogate pair (the server rejects it).
-// Undo is the replica's own (in-memory) UndoManager scoped to the local
-// origin; it does not survive a restart or a replica rebuild.
+// Undo is the client's own concern (the TUI records inverse operations
+// rather than using ygo's UndoManager); it is in memory and does not survive
+// a restart or a replica rebuild.
 //
 // Quarantined documents (DocumentStatus.Quarantined) cannot be streamed or
 // edited: open the file again for a new document, or delete the retained

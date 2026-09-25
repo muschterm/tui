@@ -232,6 +232,11 @@ func (m *Model) renderFilesTree(f *frame, r shell.Rect, v *filesView) {
 		m.paintFilesToggle(f, x, y, w, "Hidden files", v.hidden)
 		y++
 	}
+	if n := len(m.docOrphans); n > 0 && y < bottom {
+		m.docNoticeRow(f, x, y, w, "failed", fmt.Sprintf("%d kept unsaved %s", n, docPlural(n, "text", "texts")),
+			docButton{"Show", "doc-kept-orphans", action{Kind: "doc-kept", Value: "orphans"}})
+		y++
+	}
 	if r.H >= 8 && y < bottom {
 		panelRuleOn(f, m, x, y, w, p.panel)
 		y++
@@ -436,6 +441,10 @@ func (m *Model) renderFilesBuffer(f *frame, r shell.Rect, v *filesView) {
 	if y >= bottom {
 		return
 	}
+	if doc := m.bufferDoc(b); doc != nil && doc.viewText() != nil {
+		m.renderDocBody(f, shell.Rect{X: x, Y: y, W: w, H: bottom - y}, b, doc)
+		return
+	}
 	// Metadata and the buffer's own controls.
 	text := b.read != nil && b.read.Kind == protocol.FileReadText
 	controls := []struct{ icon, key, help string }{{"refresh", "files-reload", "Reload from disk"}}
@@ -466,7 +475,7 @@ func (m *Model) renderFilesBuffer(f *frame, r shell.Rect, v *filesView) {
 	f.text(x, y, max(0, right-x-1), meta, p.muted, p.panel)
 	y++
 	// Disk and truncation notices.
-	notice := func(state, label, button string) {
+	notice := func(state, label, button string, a action) {
 		if y >= bottom {
 			return
 		}
@@ -476,22 +485,37 @@ func (m *Model) renderFilesBuffer(f *frame, r shell.Rect, v *filesView) {
 		bw := 0
 		if button != "" {
 			bw = ansi.StringWidth(button) + 2
-			f.compactButton(m, x+w-bw, y, bw, button, "files-reload", action{Kind: "files-reload"}, false, 0)
+			f.compactButton(m, x+w-bw, y, bw, button, a.Kind, a, false, 0)
 		}
 		f.text(x+2, y, max(0, w-2-bw-1), label, p.text, p.panel)
 		y++
 	}
+	reload := action{Kind: "files-reload"}
 	switch {
 	case b.disk == "deleted":
-		notice("failed", "Deleted on disk", "")
+		notice("failed", "Deleted on disk", "", reload)
 	case b.disk == "changed":
-		notice("stale", "Changed on disk", "Reload")
+		notice("stale", "Changed on disk", "Reload", reload)
 	}
 	if b.read != nil && b.read.Truncated {
-		notice("unavailable", fmt.Sprintf("Showing first %s of %s", filesSize(protocol.FileTextLimit), filesSize(b.read.Size)), "")
+		notice("unavailable", fmt.Sprintf("Showing first %s of %s", filesSize(protocol.FileTextLimit), filesSize(b.read.Size)), "", reload)
 	}
 	if b.err != "" && b.read != nil {
-		notice("failed", "Reload failed · "+b.err, "")
+		notice("failed", "Reload failed · "+b.err, "", reload)
+	}
+	// Shared-document states of a text buffer shown through the file view.
+	if q, ok := m.quarantinedDoc(b); ok {
+		notice("failed", "Earlier edits to this file could not be loaded", "Delete retained edits", action{Kind: "doc-dismiss", ID: q.ID, Value: b.path})
+	}
+	if len(b.docLost) > 0 && y < bottom {
+		m.docKeptRow(f, x, y, w, nil, b)
+		y++
+	}
+	switch {
+	case b.docRO != "":
+		notice("unavailable", "Read-only · "+b.docRO, "", reload)
+	case b.docErr != "":
+		notice("failed", "Editing unavailable · "+b.docErr, "Retry", action{Kind: "doc-retry"})
 	}
 	body := shell.Rect{X: x, Y: y, W: w, H: max(0, bottom-y)}
 	if body.H == 0 {

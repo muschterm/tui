@@ -67,14 +67,22 @@ These bindings are first-slice choices for interactive review, not a cross-langu
 | 1–9 on a question option, tab or header | Select or toggle that choice |
 | Delete in a tab menu row | Close that surface |
 | Ctrl+Q / Ctrl+C without a selection | Detach TUI |
-| Ctrl+Z | Suspend |
+| Ctrl+Z | Suspend (Undo while editing a file) |
 | Enter / click on a terminal grid | Type into that terminal (this client must control it) |
 | Ctrl+] while typing into a terminal | Leave terminal input; every other key goes to the shell meanwhile |
 | Up / Down / PgUp / PgDn / Home / End in the Files tree | Move the tree selection |
 | Right / Left in the Files tree | Expand a folder (then move into it) / collapse it or move to its parent |
 | Enter / Space in the Files tree | Open a file, expand or collapse a folder, or Load more |
 | Arrows / PgUp / PgDn / Home / End in a Files buffer | Scroll; Left/Right scroll horizontally while not wrapping |
-| w / Backspace in a Files buffer | Toggle line wrapping / return to the tree |
+| w / Backspace in a Files buffer | Toggle line wrapping / return to the tree (outside edit mode) |
+| Enter / click in an editable Files buffer | Edit its shared document (requests the single editor role); Esc leaves edit mode and keeps the text |
+| Printable keys, Enter, Tab while editing | Insert text, a newline or a tab (Tab no longer traverses controls until Esc) |
+| Arrows, Home / End, PgUp / PgDn while editing | Move by grapheme, visual row, line end or page; Ctrl+Home / Ctrl+End move to the document ends |
+| Ctrl+Left / Right or Alt+Left / Right while editing | Move by word (Alt+Left/Right resize the right panel outside edit mode) |
+| Shift with any movement, or drag in the text | Extend the selection |
+| Backspace / Delete (with Ctrl or Alt: by word) while editing | Delete the selection, the previous or next grapheme, or join lines |
+| Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z where distinguishable) while editing | Undo / redo this client's own edits; others' edits stay |
+| Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V while editing | Select all / copy / cut / paste (bracketed paste also inserts) |
 | Alt+Left / Alt+Right | Resize right panel |
 | Alt+Up / Alt+Down | Resize bottom panel |
 | Ctrl+C / Ctrl+Shift+C | Copy selected text to the local system clipboard; SSH uses OSC 52 with unconfirmed terminal acceptance |
@@ -646,6 +654,15 @@ without fallback. Missing CLIs report unavailable with setup guidance. Probe
 details and server logs identify the selected local path. Shell aliases are not
 executables, and an already-running server keeps its inherited PATH/environment;
 restart the intended server after changing them. Native ACP agents are unaffected.
+
+Tests and harnesses that start a real server must never let its startup probe
+reach the developer's own installed `claude`/`codex`: point `CLAUDE_CODE_EXECUTABLE`
+and `CODEX_PATH` at a path that cannot exist (the built-in adapters never fall
+back), and, when a non-default `TUI_GO_AGENT_CLAUDE_COMMAND`/`_CODEX_COMMAND`
+ACP adapter name might be looked up on PATH, put stand-in recorder scripts
+ahead of it. `internal/server/server_test.go`'s `isolateAgentDiscovery` and
+`scripts/harness_env.py`'s `isolated_env` (default; pass `keep_home=True` only
+for the `TUI_GO_LIVE_ACP=1`-gated live-agent harnesses) apply this by default.
 
 After publishing discovery, startup probes run concurrently with a 30-second
 limit. Each initializes an adapter and creates then closes a provisional session
@@ -1222,6 +1239,168 @@ and views of deleted threads or changed checkouts are pruned.
   'TestFilesCaptures|TestFilesRepositoryCaptures'` renders fixture data and
   this repository through a real server in a temporary HOME.
 
+### Editing shared documents (TUI) — 2026-09-25
+
+Editor slice B (TUI side) makes Files buffers editable through the server's
+shared documents ([ADR 0022](../adr/0022-shared-documents-go.md); server wire
+contract in `internal/protocol/document.go`, replica recipe in
+`internal/client/document.go`). It adds `internal/tui/editor_text.go` (line
+model), `editor_replica.go` (ygo replica), `editor_session.go` (commands,
+stream, pending edits, recovery), `editor.go` (keys, pointer, edits),
+`editor_view.go` (painting) and `editor_review.go` (conflict review). Only one
+client edits at a time; peer cursors and simultaneous editors are slice C.
+
+- **Opening.** When the server advertises `shared-documents`, a text buffer
+  whose read is complete sends `document.open` for its path (thread or draft
+  project target). `document_read_only` keeps the read-only view with
+  "Read-only · <server reason>"; other failures show "Editing unavailable"
+  with Retry (a lost reply resends the same command ID). Every buffer of one
+  document ID in this client shares one session: one stream, one replica and
+  one cursor. The session is released, with `document.close`, when no buffer
+  shows it any more and nothing is pending. A document buffer stops the 2 s
+  stat poll and hides Reload: the server watches its own file.
+- **Replica and line model.** The client replica is `github.com/reearth/ygo`
+  v1.50.0 (the server's pin) with a random 32-bit Yjs client ID. Every change,
+  local or remote, reaches the editor as the text observer's delta and is
+  applied to a line model with per-line UTF-16 lengths, lazily extended
+  UTF-16 line offsets and per-line width/row caches, so a keystroke never
+  re-reads the whole text. Cursors are line/byte positions on grapheme
+  boundaries (uniseg); UTF-16 appears only at the replica boundary.
+- **Painting.** Line numbers, then cells: tabs expand to 4-cell stops by
+  column, wide graphemes take two cells (cut by an edge they paint as
+  spaces; a cluster wider than two cells or measured differently by the
+  frame paints as `�` over its cells), C0 controls paint as Control Pictures (`␛`, `␀`), DEL as `␡`,
+  C1/bidi/format/zero-width clusters as `�`, in muted ink. Document text never
+  reaches the terminal as control sequences. Soft wrap (`w`) wraps by cells
+  at grapheme boundaries and moves the cursor by visual rows; without wrap
+  the view scrolls horizontally with `‹`/`›` edge marks. The cursor is a
+  reverse-video cell, the selection the theme's selection fill.
+- **Editing.** Enter or a click requests the single editor role
+  (`document.edit`); edit mode starts once the status names this client.
+  Each insertion, deletion, paste, cut, undo and redo is one replica
+  transaction whose own update is sent with a fresh op ID and the current
+  `EditGen` and kept until its durable ack. Inserted text has `\r\n` and
+  lone `\r` turned into `\n` and NUL removed; text that is not valid
+  UTF-8 (a binary clipboard, an invalid bracketed paste) is refused with
+  "Clipboard holds non-text data"; an edit that would make the
+  file (with CRLF and BOM restored) exceed 1 MiB is refused locally. Typing
+  pauses past 2000 unacknowledged edits or 32 MiB of pending updates.
+- **Undo.** ygo's UndoManager is not used: in v1.50.0 it drops a client's
+  first insert from merged steps, and after an undo later inserts can land at
+  stale positions or split surrogate pairs (diverging the replica). The
+  editor records its own inverse operations per local transaction
+  (`editor_undo.go`): an insert is the range of clocks this replica created,
+  and undoing it deletes those of its characters that still exist (text
+  others deleted is skipped, text others inserted is never touched); a
+  delete keeps the removed text, anchors at its surviving neighbours
+  (relative positions) and the removed characters' IDs, and undoing it
+  inserts the text again there, redirecting its own removed IDs to the new
+  characters so an earlier step still finds them (type, delete, undo, undo
+  restores the original). Undo and redo run as ordinary forward
+  transactions. A step split into so many pieces that undoing it would need
+  more than 2048 position lookups is skipped with "Undo too large here"
+  rather than blocking input. Steps group a typing run, a deletion run, and each newline,
+  paste, cut or replacement on its own; a pause over 1 s or a cursor jump
+  starts a new step. History is in memory (1000 steps) and ends with the
+  replica.
+- **Remote changes** (server merges of disk changes, other clients after a
+  take-over) are applied with the cursor, selection anchor and each buffer's
+  first visible line held by ygo relative positions, so the view and caret
+  stay on the same text.
+- **Save state** on the buffer's first line, strongest first: Read-only ·
+  reason; Deleted on disk · autosave paused; Paused · changed on disk (both
+  with Review); Not yet stored · retrying · N edits (unacknowledged while
+  disconnected or refused as unavailable); Storing… (unacknowledged, in
+  flight); Reconnecting…; Failed · error · retrying; Checking the file…;
+  Saving…; Saved only when `SavedRev == DurableRev`, the state is saved, this
+  replica has reached that revision and nothing is unacknowledged; otherwise
+  Unsaved · N pending. The file format (UTF-8 [with BOM] · LF/CRLF) follows.
+- **Single editor.** While another client holds the role, the buffer shows
+  "Simultaneous editing unavailable · another client is editing" with Take
+  over; Enter and clicks do not type. Take over asks first (that client's
+  edits not stored yet are refused and kept on its side), then sends
+  `document.take-edit`. Losing the role ends edit mode with a notice.
+- **Recovery** follows the client contract. A connection loss keeps the
+  replica and its ID: the new stream's state is applied to the existing
+  replica and every unacknowledged update is resent in order with its
+  original op ID and bytes (duplicates are acknowledged, not applied twice).
+  `unavailable` pauses sending and resends from the refused op once a
+  status is not failed (or after 2 s). A refusal with resync closes the
+  stream, discards the replica and reconnects with a new replica ID; the old
+  replica's items are merged into a scratch copy of the new state and the
+  text difference is re-applied as fresh transactions, with a notice. If the
+  replica itself fails during an edit (a library panic is caught and never
+  ends the TUI), the intended text is merged three-way against the text
+  before the edit and the new state (with the failed replica's items merged
+  in when still readable), so others' concurrent edits stay; a conflicting
+  change is kept as a copy instead ("check it"). While recovering, the
+  buffer shows the draft with "Recovering your edits…", edit mode stays but
+  keys are held (Esc leaves), and the draft counts for the close and detach
+  guards. A draft refused again, another editor, or a document that no
+  longer exists keeps the text as "Edits not stored · reason" with Copy and
+  Dismiss and, with several, All… listing each with Copy and Dismiss (up to
+  20 per list; evicting the oldest is announced; also shown after the file
+  reopens). Copies whose file view or session goes away (a deleted thread,
+  a changed checkout) move to a model-wide list at the top of the Files
+  tree ("N kept unsaved texts" · Show); thread deletion and project removal
+  confirmations mention unsaved document changes. Nothing is dropped
+  silently. Reopening stops after three disappearances in
+  a row ("Editing unavailable" with Retry).
+- **Conflict review.** Review opens a centered read-only dialog with the
+  versions from `GET /v1/documents/{id}/versions`: Changes (a line diff, `-`
+  lines only on disk, `+` only in the document, with 3 context lines),
+  Document, Disk and Base tabs (1–4, Left/Right). Keep mine, Use disk and
+  Discard each confirm with their consequence (Cancel is the default) and send
+  `document.resolve` with the reviewed `DurableRev`, `DocumentDisk` = the
+  reviewed `DiskID` and ClientID. The actions are refused while the versions
+  load, while own edits are unacknowledged, or once the document changed
+  (Refresh), and while this replica has not reached the reviewed revision;
+  `stale_document` refetches the versions. A lost reply offers an
+  identical Retry.
+- **Leaving.** Closing a buffer that holds unacknowledged edits, a
+  recovering draft or kept copies asks first (Keep open, Copy, Close
+  anyway); so does detaching (Ctrl+Q, Ctrl+C, Detach), which replaces any
+  open menu. A quarantined stored document for the same file offers "Delete
+  retained edits" (`document.dismiss`) behind a confirmation.
+- **Keys.** See [Prototype interaction](#prototype-interaction). Ctrl+Z is Undo
+  only in edit mode, where F-keys, Ctrl+Q and the context-menu key keep their
+  global meaning and every other key is consumed. Ctrl+S reports that edits
+  save automatically.
+- **Tests.** `editor_undo_test.go` (the ygo repros, and an oracle fuzz of
+  local edits, undo, redo and server edits with astral, ZWJ, CJK and
+  combining text: every update passes server validation, texts agree, no
+  U+FFFD, remote text is never removed, exact undo/redo without remote
+  edits; 1500 seeds × 50 steps in `make test`, 20000 seeds run once);
+  `editor_recovery_test.go` (recovery window, gone/reopen copies, guards,
+  undo keys); `editor_replica_test.go` (UTF-16/grapheme/cell mapping with
+  emoji, CJK and combining marks, sanitization, deltas, every local update
+  accepted by the server's own validator, undo that keeps remote edits,
+  cursor anchoring); `editor_test.go` against a fake server with the real
+  validation (ack and Saved, status truth table, reconnect resends the same
+  op IDs without duplicates, resync re-applies the draft under a new replica
+  ID and keeps a twice-refused draft as a copy, take-over, unavailable
+  resend, undo, keys/selection/graphemes/paste, wrap, pointer, close and
+  detach guards, read-only, review and its confirmations, quarantine,
+  sanitization); `editor_e2e_test.go` through a real server in a temporary
+  HOME and checkout (typing reaches disk, a second client sees it live and
+  cannot type, an overlapping disk change pauses, Review › Keep mine writes
+  the document). `BenchmarkDocKeystroke1MiB*` and a budget test cover a 1 MiB
+  document. The end-to-end server runs with missing Claude/Codex runtime
+  paths and marker stand-ins on PATH and asserts no agent runtime starts.
+  `TUI_GO_CAPTURE_DIR=… go test ./internal/tui -run
+  TestEditorCaptures` writes editing, storing, retrying, unsaved,
+  other-editor, conflict, review, confirmation, not-stored and narrow
+  captures in both themes.
+- **Measured** (linux/amd64, this machine, 2026-09-25): a keystroke into a
+  1 MiB document plus painting the document pane takes about 1.8 ms; with the
+  whole frame (the fixture thread's composer, queue and question card
+  included) about 5.3 ms, most of it outside the editor.
+- **Not done:** peer cursors and simultaneous editors (slice C), search,
+  Markdown preview of the live document, durable undo, per-grapheme mouse
+  positioning of complex emoji beyond uniseg widths, a manual reconnect
+  control, and wiring of Git rewrites to document pauses in the TUI. No
+  interactive terminal session with a real user has been recorded yet.
+
 ### Git write actions — 2026-09-24
 
 `internal/tui/git_write.go` and `git_write_view.go` add the ADR 0020 writes
@@ -1304,6 +1483,104 @@ error code's copy, hook output sanitization, Retry reusing the command ID,
 and drafts across targets. `TestGitWriteCaptures` writes render captures
 (rows, discard, composer, published, failure, narrow; dark and light). Not yet
 verified against a live server in a real terminal.
+
+### Git ref and remote actions (TUI) — 2026-09-24
+
+`internal/tui/git_ref.go` and `git_ref_view.go` add the ADR 0021 actions to
+the Git surface, offered while the server has `git-writes`, `git-history`
+and `git-refs`. They share the per-target write slot of the ADR 0020 writes:
+one command at a time, built once from what was shown, **Retry** resends the
+same ID, a refusal drops it. Fetch, pull and push are sent with
+`client.GitSync` (16 minute timeout), as are switch and soft reset (open
+documents are flushed first, then Git has 5 minutes); branch creation uses
+`client.GitWrite`. Push asks first: "Push \<branch\> (N commits) to
+\<upstream\>?" with Cancel focused; fetch and pull (fast-forward only) are
+one step. An acknowledgement the server asks for never replaces an open menu:
+it waits with the notice "Review required · Git", opens when the menu closes,
+and stays at the source as **Review · …**; one for a target that is not shown,
+or a final result naming one, offers **Review and switch/reset again** with
+fresh status. Dialog state is dropped when its menu closes.
+
+- **Heading controls.** The GIT heading carries glyph-only icon controls in
+  fixed reserved slots: Fetch (`cod-cloud_download`, plain `F`), Pull
+  (`cod-repo_pull`, `v`, fast-forward only), Push (`cod-repo_push`, `^`) and
+  Refresh. Unavailable controls stay in place, muted, with the reason in
+  help: no upstream, detached HEAD, "Behind upstream · Pull first" for Push,
+  a running write, or (Pull only) an agent turn holding the checkout lease.
+  No "fetched \<age\>" is shown: status does not report FETCH_HEAD time.
+- **Progress and Cancel.** A running sync reads "Fetching origin… 42%",
+  "Pulling origin/main…" or "Pushing main…", with Git's phase below, from the
+  snapshot `GitOp.Progress`; **Cancel** appears while `GitOp.Cancellable` and
+  sends `git.cancel` (a new ID; `not_running`/`not_cancellable` explained).
+- **Results** stay at the source until the next action: "Fetched origin",
+  "Fast-forwarded \<branch\> to \<short\>", "Up to date", "Ahead of upstream
+  by N", "Diverged: N ahead, M behind" with "Fetched, not integrated · merge
+  or rebase explicitly" and **Compare with \<upstream\>** (the existing
+  comparison viewer against the fetched tip), "Fetched origin, not integrated
+  · \<reason\>", "Fetch failed · \<reason\>", "Pushed main → origin/main",
+  "Pushed \<short\> (newer than shown) to origin/main" (`pushed_newer_head`),
+  "\<branch\> may have moved to \<short\> · result unknown · refresh and
+  check" (pull outcome unknown after the fast-forward started),
+  "Push rejected · \<reason\>" (plus "Pull first" for fetch first /
+  non-fast-forward). Credential failures (`auth_required`,
+  `host_key_unknown`, `agent_unavailable`) add "Run `git fetch` once in a
+  terminal to trust the host or unlock the key"; nothing is executed.
+  `upstream_name_mismatch` explains `push.default`. `outcome_unknown` keeps
+  "Result unknown · refresh and check" (a push adds "the remote may have
+  accepted it") with Refresh. `would_overwrite` lists up to 8 sanitized paths
+  and "and N others" or, when `PathsIncomplete`, "and others · see output";
+  `partial_switch` reads "Git changed files but did not switch; review status".
+- **Branch rows** (BRANCHES) reserve two slots revealed on hover/focus:
+  Switch (`cod-arrow_right`, `>`; local branches other than HEAD, disabled
+  when checked out in another worktree or while the lease is held) and a
+  vertical ellipsis opening the row menu: "Switch to \<branch\>", "Create
+  branch from \<branch\> \<short\>…", "Compare \<branch\> with HEAD".
+  Remote-tracking rows do not switch (switch-create would not set tracking).
+- **Commit rows** open a menu (Shift+F10, Menu key or right-click): "Create
+  branch at \<short\>…", "Soft reset \<branch|detached HEAD\> to
+  \<short\>…" (not on HEAD) and "Copy hash \<short\>".
+- **Switch** with a listed change opens a dialog "Switch to \<branch\>
+  carrying N changes?" with staged/unstaged/untracked counts, Cancel focused
+  and an explicit "Carry N changes and switch"; the command carries the
+  shown count and `GitWorktreeFingerprint` of the shown status, and a status
+  that changed before confirmation is refused locally. `leaves_commits`
+  opens "Leaving N commits reachable only from HEAD · they stay in the
+  reflog" and resends with `AcknowledgeLeaveCommits` under a new ID.
+- **Create branch** opens an inline single-line name editor under the
+  heading ("NEW BRANCH from \<start\>"; Enter creates, Esc cancels and
+  returns focus to the originating row; it closes when the target changes) with
+  Create branch, Create and switch (the switch-create carry flow) and Cancel;
+  names get a light client check, Git validates.
+- **Soft reset** confirms "Soft reset \<branch\> to \<short\>?", the subject,
+  "About N commits leave \<branch\> (from the loaded log)" — an estimate, given
+  only when the log was read at the shown HEAD, else "Commits after \<short\>
+  leave \<branch\>" — "Only the reflog keeps them unless another branch, tag
+  or remote contains them" and "Their changes stay staged; files are
+  unchanged". `published_commit` and `not_ancestor` refusals open a second
+  explicit acknowledgement and resend with it. Success shows "Previous tip
+  \<short\>" and **Undo** (`GitUndoResetSoftCommand`) while HEAD is still
+  where the reset left it. Undo carries no acknowledgement (a refusal asks as
+  for any reset) and an undo offers no further Undo.
+
+| Key (GIT heading controls, branch rows and their slots, commit rows) | Action |
+| --- | --- |
+| `f` / `p` / `P` | Fetch / Pull (fast-forward only) / Push confirmation |
+| `S` on a local branch row | Switch (carry dialog when changes are listed) |
+| `b` on a branch or commit row | Create branch at its tip or commit |
+| `r` on a commit row | Soft reset confirmation |
+| `y` on a commit row | Copy full hash |
+| Shift+F10, Menu, right-click | Branch or commit row menu |
+
+Tests: `internal/tui/git_ref_test.go` (fake `GitWrite`/`GitSync`): heading
+slot order and geometry, keyboard/pointer parity, progress and Cancel,
+every pull/push result copy, diverged Compare, lease gating (pull blocked,
+fetch and branch create allowed), the carry dialog (default Cancel, count and
+fingerprint sent, stale status refused), leaves_commits resend, would_overwrite
+and partial_switch rendering, branch creation, soft reset with published
+acknowledgement and Undo, Retry reusing the ID, branch slot stability and
+context menus. `TestGitRefCaptures` writes captures (progress, diverged,
+carry, reset, branch row, create; dark and light). Not yet verified against a
+live server in a real terminal.
 
 ### Embedded terminals — 2026-09-24
 

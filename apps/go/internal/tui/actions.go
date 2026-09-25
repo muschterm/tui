@@ -141,6 +141,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	if strings.HasPrefix(a.Kind, "files-") {
 		return m.filesAction(a)
 	}
+	if strings.HasPrefix(a.Kind, "doc-") {
+		return m.docAction(a)
+	}
 	if strings.HasPrefix(a.Kind, "git-") {
 		return m.gitAction(a)
 	}
@@ -204,6 +207,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "context-paste":
 		return m.pasteClipboard()
 	case "quit":
+		if m.docQuitGuard() {
+			return nil
+		}
 		return m.quit()
 	case "suspend":
 		return m.suspend()
@@ -412,6 +418,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		m.threadMenu(a.ID)
 	case "thread-delete":
 		m.confirmThreadDelete(a.ID)
+		m.docDeleteNote(func(key string) bool { return strings.HasPrefix(key, "thread:"+a.ID+":") })
 	case "thread-delete-cancel":
 		m.menu = nil
 	case "thread-delete-confirm":

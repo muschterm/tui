@@ -141,6 +141,8 @@ type frame struct {
 	// Files surface tree and buffer text areas and their scroll limits.
 	filesTree, filesText                      shell.Rect
 	filesTreeMax, filesTextMax, filesTextHMax int
+	// docText is an editable document's text cells (editor_view.go).
+	docText shell.Rect
 }
 
 type snapshotMsg protocol.Snapshot
@@ -270,6 +272,7 @@ type Model struct {
 	gitTurnKey    string
 	gitTurnActive bool
 	gitW          gitWriteUI
+	gitR          gitRefUI
 	// Read-only Files surface (files_surface.go): per-target views, the read
 	// generation, the target last shown and whether the disk poll is ticking.
 	filesReads   filesAPI
@@ -294,6 +297,19 @@ type Model struct {
 	termSeq   uint64
 	termFocus string
 	termDial  terminalDialer
+	// Shared documents (editor_session.go): sessions by document ID, the
+	// stream/read generation counter, the session in edit mode, the open
+	// conflict review, the editor's clipboard read generation and
+	// injectable API and dialer for tests.
+	docs        map[string]*docSession
+	docSeq      uint64
+	docEdit     string
+	docReview   *docReview
+	docPasteGen uint64
+	// docOrphans are kept copies whose file view or session is gone.
+	docOrphans []docLost
+	docAPIs    documentAPI
+	docDial    docDialer
 }
 
 func newInput(placeholder string) textarea.Model {
@@ -596,6 +612,12 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	if m.gitW.ready {
 		m.gitW.message.Blur()
 	}
+	if m.gitR.ready {
+		m.gitR.name.Blur()
+	}
+	if key == gitBranchNameKey {
+		return m.gitBranchInput().Focus()
+	}
 	if key == gitMessageKey {
 		return m.gitMsg().Focus()
 	}
@@ -740,8 +762,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, handled := m.acceptTerminalMsg(msg); handled {
 		return m, tea.Batch(cmd, m.syncTerminals())
 	}
+	if cmd, handled := m.acceptDocMsg(msg); handled {
+		return m, tea.Batch(cmd, m.syncDocuments())
+	}
 	_, cmd := m.update(msg)
-	return m, tea.Batch(cmd, m.syncThumbnails(), m.syncTerminals())
+	return m, tea.Batch(cmd, m.syncThumbnails(), m.syncTerminals(), m.syncDocuments())
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -780,7 +805,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case filesListMsg:
 		m.acceptFilesList(msg)
 	case filesReadMsg:
-		m.acceptFilesRead(msg)
+		cmd = m.acceptFilesRead(msg)
 	case filesStatMsg:
 		m.acceptFilesStat(msg)
 	case filesTickMsg:
@@ -795,6 +820,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptGitWrite(msg)
 	case gitHeadMsg:
 		cmd = m.acceptGitHead(msg)
+	case gitCancelMsg:
+		cmd = m.acceptGitCancel(msg)
 	case viewerImageMsg:
 		cmd = m.acceptViewerImage(msg)
 	case thumbnailMsg:
@@ -861,7 +888,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reconcileProjects()
 			m.reconcileThreadMembership()
 		}
-		cmd = m.reconcileRequests()
+		cmd = tea.Batch(m.reconcileRequests(), m.syncDocSnapshot())
 		if m.pruneQuestionDrafts() {
 			m.markDirty()
 		}
@@ -1080,6 +1107,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		if c, handled := m.terminalPaste(msg.Content); handled {
 			cmd = c
+		} else if c, handled := m.docPaste(msg.Content); handled {
+			cmd = c
 		} else if m.terminalTooSmall() || m.viewer != nil || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
 			// Nothing behind a modal, the resize notice or settings accepts input.
 			cmd = m.showNoticeAs(noticeUnavailable, "Paste ignored · no visible input")
@@ -1095,6 +1124,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.storeAnswer(m.answer.Value())
 		} else if m.focus == gitMessageKey {
 			cmd = m.gitMessagePaste(msg.Content)
+		} else if m.focus == gitBranchNameKey {
+			cmd = m.gitBranchNamePaste(msg.Content)
 		} else if m.focus == "prompt" {
 			m.promptView.Reset()
 			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(msg.Content)})
@@ -1129,7 +1160,15 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	if cmd, handled := m.terminalKey(k); handled {
 		return cmd
 	}
+	if cmd, handled := m.docKey(k); handled {
+		return cmd
+	}
 	s := k.String()
+	if m.docReview != nil && len(m.menu) == 0 {
+		if cmd, handled := m.docReviewKey(k); handled {
+			return cmd
+		}
+	}
 	if m.viewer != nil && m.contextMenu == nil {
 		if cmd, handled := m.gitViewerWriteKey(s); handled {
 			return cmd
@@ -1138,6 +1177,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			return cmd
 		}
 	}
+	if s == "esc" && m.focus == gitBranchNameKey && len(m.menu) == 0 {
+		return m.closeGitCreate()
+	}
 	if len(m.menu) == 0 && contextMenuKey(k) {
 		return m.openContextMenuForFocus()
 	}
@@ -1145,6 +1187,10 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return m.pasteClipboard()
 	}
 	if s == "ctrl+q" {
+		// The guard replaces any open menu, including its own.
+		if m.docQuitGuard() {
+			return nil
+		}
 		return m.quit()
 	}
 	if s == "ctrl+z" {
@@ -1175,6 +1221,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			}
 		}
 		if s == "ctrl+c" {
+			if m.docQuitGuard() {
+				return nil
+			}
 			return m.quit()
 		}
 		m.status = "No text is selected"
@@ -1372,7 +1421,13 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	if m.focus == gitMessageKey {
 		return m.gitMessageKeyPress(k)
 	}
+	if m.focus == gitBranchNameKey {
+		return m.gitBranchNameKeyPress(k)
+	}
 	if cmd, handled := m.gitRowKey(s); handled {
+		return cmd
+	}
+	if cmd, handled := m.gitRefKey(s); handled {
 		return cmd
 	}
 	if cmd, handled := m.filesKey(s); handled {
@@ -1436,10 +1491,18 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	f := m.measure()
 	p := msg.Mouse()
+	if m.docReview != nil && len(m.menu) == 0 {
+		if cmd, handled := m.docReviewMouse(msg, f); handled {
+			return cmd
+		}
+	}
 	if m.viewer != nil && m.contextMenu == nil {
 		if cmd, handled := m.viewerMouse(msg, f); handled {
 			return cmd
 		}
+	}
+	if cmd, handled := m.docMouse(msg, f); handled {
+		return cmd
 	}
 	switch msg.(type) {
 	case tea.MouseWheelMsg:

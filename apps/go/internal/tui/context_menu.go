@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/muschterm/tui/apps/go/internal/shell"
 )
@@ -33,6 +35,9 @@ func (m *Model) openContextMenuForFocus() tea.Cmd {
 		if m.selectionLive(f) && m.selectedText != "" {
 			return m.openSelectionContextMenu(m.focus)
 		}
+	}
+	if gitFocusKey(m.focus) || strings.HasPrefix(m.focus, "git-bact:") {
+		return m.openGitContextMenu(m.focus)
 	}
 	return nil
 }
@@ -91,6 +96,9 @@ func (m *Model) openContextMenuAtPointer(f frame, x, y int) tea.Cmd {
 			focus = "right-body"
 		}
 		return m.openSelectionContextMenu(focus)
+	}
+	if cmd, ok := m.openGitContextMenuAt(f, x, y); ok {
+		return cmd
 	}
 	if !m.promptContextRect(f).Contains(x, y) {
 		return nil

@@ -258,6 +258,17 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 				{Label: fmt.Sprintf("Delete project and %d threads permanently", count), Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
 				{Note: "Files on disk will be kept"},
 			})
+			m.docDeleteNote(func(key string) bool {
+				if strings.HasPrefix(key, "project:"+p.ID+":") {
+					return true
+				}
+				for _, t := range m.snapshot.Threads {
+					if t.ProjectID == p.ID && strings.HasPrefix(key, "thread:"+t.ID+":") {
+						return true
+					}
+				}
+				return false
+			})
 		}
 	case "project-remove-confirm":
 		return true, m.command(protocol.Command{Kind: "project.remove", ProjectID: a.ID, Revision: a.Revision}, a)

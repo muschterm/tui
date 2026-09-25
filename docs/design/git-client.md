@@ -60,6 +60,12 @@ Verified with local bare repositories, a loopback HTTP server and fake SSH
 commands in `git_ref_test.go` and `git_remote_test.go`, not against real
 hosting services or in a terminal.
 
+TUI implemented 2026-09-24: heading Fetch/Pull/Push controls with progress and
+Cancel, branch-row Switch and context menus, commit-row Create branch and Soft
+reset with Undo, and the carry, leave-commits and published confirmations
+([Go slice](go-slice.md#git-ref-and-remote-actions-tui--2026-09-24)); fake-API
+tests and render captures only, not yet a live server in a real terminal.
+
 ## Accepted scope
 
 Provide status, attractive diffs, file/hunk/line staging, commits, history, branch switching, a commit graph, and right-click context menus. Include soft reset to a chosen commit, fast-forward-only pull by default, and rebase. Conflicts can be resolved manually or with a selected connected agent; when multiple agents are available, the user can choose one.

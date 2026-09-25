@@ -61,7 +61,11 @@ var icons = map[string]struct{ glyph, plain string }{
 	"tree-closed": {"▸", ">"}, "tree-open": {"▾", "v"},
 	"file": {"\uea7b", " "}, "folder-open": {"\uf115", "+"},
 	"file-link": {"\ueaee", "@"}, "file-other": {"\ueae8", "?"},
-	"back": {"\uea9b", "<"}, "wrap": {"\ueb80", "w"}, "copy": {"\uebcc", "c"},
+	// Git ref and remote actions: cod-cloud_download, cod-repo_pull,
+	// cod-repo_push and cod-arrow_right (switch to a branch).
+	"fetch": {"\ueac2", "F"}, "pull": {"\ueb40", "v"}, "push": {"\ueb41", "^"},
+	"switch": {"\uea9c", ">"},
+	"back":   {"\uea9b", "<"}, "wrap": {"\ueb80", "w"}, "copy": {"\uebcc", "c"},
 }
 
 func (m *Model) icon(name string) string {

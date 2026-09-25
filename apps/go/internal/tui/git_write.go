@@ -75,6 +75,15 @@ type gitWriteState struct {
 	// viewer sanitizes it).
 	output    string
 	truncated bool
+	// result is a ref or remote action's final result (git_ref.go), shown
+	// until the next action.
+	result *protocol.GitResult
+	// undo marks a soft reset that undid another; it offers no Undo.
+	undo bool
+	// ack is an acknowledgement the server asked for that is not shown yet;
+	// review offers the flow again with fresh status.
+	ack    *gitAckDialog
+	review bool
 }
 
 type gitDiscardDialog struct {
@@ -209,6 +218,18 @@ func gitProgressVerb(op string) string {
 		return "Discarding…"
 	case "commit", protocol.GitKindCommit:
 		return "Committing…"
+	case "fetch", protocol.GitKindFetch:
+		return "Fetching…"
+	case "pull", protocol.GitKindPull:
+		return "Pulling…"
+	case "push", protocol.GitKindPush:
+		return "Pushing…"
+	case "switch", protocol.GitKindSwitch:
+		return "Switching…"
+	case "reset_soft", protocol.GitKindResetSoft:
+		return "Resetting…"
+	case "branch_create", protocol.GitKindBranchCreate:
+		return "Creating branch…"
 	}
 	return "Git write running…"
 }
@@ -353,6 +374,9 @@ func (m *Model) sendGitWrite(key string, cmd protocol.Command, label string) tea
 }
 
 func (m *Model) dispatchGitWrite(key string, cmd protocol.Command) tea.Cmd {
+	if c := m.dispatchGitRef(key, cmd); c != nil {
+		return c
+	}
 	api := m.gitWriter()
 	ctx := m.ctx
 	if ctx == nil {
@@ -657,6 +681,9 @@ func (m *Model) acceptGitWrite(msg gitWriteMsg) tea.Cmd {
 	}
 	st.running = false
 	m.markDirty()
+	if gitRefKind(msg.cmd.Kind) {
+		return m.acceptGitRef(msg, st)
+	}
 	current, _ := m.gitTarget()
 	refresh := func() tea.Cmd {
 		if msg.key != current {
