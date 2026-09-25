@@ -288,6 +288,89 @@ later.
   trusts the copy's manifest for whether the saved file existed, so a
   failed read never deletes the working file.
 
+## Agent conflict resolution (S4)
+
+- **Job-kind thread** (user decision). `git.resolve_job_start` creates a
+  thread with `Thread.Job` (kind `conflict_resolution`, the operation, its
+  checkout and the paths it may edit), with its own agent and settings, and
+  queues one scoped prompt: the operation, side labels, the conflicted
+  paths and their conflict kinds, and the instruction to edit only those
+  files, run checks and not run staging, committing or operation Git
+  commands. It runs through the ordinary fixture or ACP machinery
+  (approvals, questions, activity, interrupt) and belongs to the Git
+  operation panel, not the thread list. The operation record gets
+  `JobThreadID` and `agent_running`; the job thread is exempt from the
+  checkout reservation (and goes ahead of waiters it holds back) while every
+  other thread still waits. An operation started elsewhere is adopted into
+  a new record when a job starts.
+- **Before the agent runs** (inside the lease, recorded durably), every job
+  path has a saved copy (S3), and the job records HEAD, the stop, the other
+  unmerged paths and the status outside its paths.
+- **Stop for review (Q10).** When the job's turn ends (a hook after the ACP
+  turn or the fixture tick) the record becomes `agent_review`; a cancelled
+  or failed turn, or a server restart, makes it `agent_interrupted`, and jobs
+  never restart by themselves. `GitOperationState.Review` is computed on
+  every read: per path whether the file changed, is deleted, still has
+  markers or was staged, with a bounded unified diff from the saved copy,
+  and violations (HEAD moved, the stop changed, other conflicts resolved,
+  files outside the job's paths changed, job paths staged) that are
+  reported, never repaired. Accept is `git.conflict_resolve` pinned to the
+  reviewed tokens; reject is `git.conflict_restore` from the saved copy.
+  `git.resolve_job_followup` sends another prompt (also after an interrupt
+  or restart), `git.resolve_job_cancel` interrupts, and
+  `git.resolve_job_end` closes the job thread and detaches it. While the
+  agent works, conflict and operation commands are refused (`job_running`);
+  in review they are allowed, and a continue, skip or abort that moves the
+  operation ends the job. Nothing continues the operation but the user.
+- **Fixture agent.** A fixture job completes like any fixture turn without
+  editing files, so its review shows every path unchanged.
+- **S4 review.** The job start saves open documents and takes a
+  `before_job` copy of every job path (working file and index); the review
+  compares with it and reject restores it, so the user's own edits from
+  before the job are neither attributed to the agent nor lost. Follow-ups
+  keep that baseline. A staged item shows its index content and is
+  accepted with `keep_staged`, pinned to the reviewed index entry.
+- **Content gate (S4 gate round, coordinator decision).** The first job of
+  a stop records the whole index (`ls-files --stage`, stored as a blob) as
+  `GitOperationRecord.JobBaseline`; every user `conflict_choose`,
+  `conflict_resolve` (including `keep_staged`) or `conflict_restore` on a
+  path records the index entries it left in `JobDecisions`. Continue and
+  skip recompute: every index entry that differs from the baseline and is
+  not exactly a recorded decision is listed in
+  `GitOperationState.AgentChanges` with its staged diff against the
+  baseline, and the command is refused (`review_pending`) unless it
+  carries that set's fingerprint as `AcknowledgeAgentChanges`. A baseline
+  or index that could not be read in full makes the set Incomplete, which
+  also needs the acknowledgement. The gate is checked at prepare time
+  against the actual index, so a stale or cached review cannot let unseen
+  content through; it persists after `git.resolve_job_end` and after the
+  job thread's deletion, and is cleared only when the operation moves on
+  (a continue, skip or abort that changed it, or the operation ending).
+  Only the index is gated because only the index enters the commit;
+  worktree-only changes stay visible in the review and status. Changes
+  staged through ordinary `git.stage`/`git.unstage` or in a terminal are
+  not decisions and need the acknowledgement too (`git.commit` is refused
+  during an operation).
+- **Review lifecycle.** A review is never cached while the job's turn is
+  running, dispatching or stopping after a cancel (it reports `running`);
+  the cached review is dropped and recomputed when a turn really ends,
+  including a cancelled or failed one. The cache key covers HEAD, the stop,
+  the whole index listing, the job paths' worktree tokens and the outside
+  status fingerprint. The review is computed within a 10 second budget,
+  with Myers diffs limited to 500 edits and 256 KiB per review; anything
+  not compared is
+  Unknown and makes the review Incomplete. The job thread refuses ordinary
+  prompt, resume, reopen and queue commands (`job_thread`) and deletion
+  while it works; deleting it otherwise detaches the job. Ending the job
+  removes its thread without an acknowledgement; the content gate remains.
+  If the operation ends while the agent's turn is running, the record
+  becomes `ended_by_job`, keeps the last review, and the turn is stopped;
+  an operation that ends in review or after an interrupt (for example the
+  user committing in a terminal) is `ended_external`. A read of the
+  operation does not synchronize job states while an application write
+  holds the operation, so a running continue is not mistaken for the agent
+  ending it.
+
 ## Known limits
 
 Accepted residual risks from the five review rounds (2026-09-25):
@@ -362,13 +445,34 @@ Accepted residual risks from the five review rounds (2026-09-25):
   the same timestamp resolution on a reused inode would share copies. A restore creates missing parent directories but refuses symlinked
   or non-directory parents; the parent check and the rename are not atomic
   against a concurrent program replacing a parent directory.
+- **Resolution jobs.** The job's scope is an instruction, not a sandbox:
+  the agent runs with its own permissions and may edit or stage anything;
+  the review flags what it did outside its scope but cannot prevent it.
+  Outside changes are detected from status (tracked and untracked,
+  not ignored) with at most 2000 entries recorded (beyond that only a
+  fingerprint); ignored files and changes that status does not show are
+  not detected. Diffs compare up to 50000 lines per side with at most 500
+  edits and 64 KiB per diff, 256 KiB per review. The cached review can be
+  stale until refreshed; the content gate does not depend on it. The gate
+  covers the index only: agent edits left unstaged in the working tree are
+  not committed by continue but remain there, visible through the review
+  and ordinary status after the job ends. The gate cannot tell who staged
+  a change, so user staging outside the conflict commands needs the same
+  acknowledgement; an index too large to record (the status output bound)
+  makes every continue and skip need an acknowledgement of an Incomplete
+  set whose items are not listed. Agent commits or operation commands run
+  while the turn is active are attributed to the job (`ended_by_job`) only
+  when they end the operation during that turn; anything the agent's
+  processes do after the turn is reported as external. An operation the
+  agent ended is detected from its state files; the last review is kept
+  only if one was computed before.
 - **Merge message.** `-m` reproduces Git's usual message without
   " into <branch>"; `merge.log` still appends.
 
 ## Deferred
 
-Resolution commands (S3: staging, choosing a side, deleting), agent
-resolution jobs (S4), the TUI, interactive rebase, rebasing merges,
+The operation, conflict and resolution-job TUI beyond what exists,
+interactive rebase, rebasing merges,
 `--onto`, octopus merges, cherry-pick and revert as started commands,
 skip for cherry-pick and revert, `git am` and bisect management, and
 predicting conflicts before a start.

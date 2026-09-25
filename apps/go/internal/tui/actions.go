@@ -62,6 +62,9 @@ func (m *Model) openCommands() {
 	}
 	var threads []menuItem
 	for _, t := range m.snapshot.Threads {
+		if jobThread(t) {
+			continue
+		}
 		threads = append(threads, menuItem{Label: "Thread · " + t.Title, Action: action{Kind: "thread", ID: t.ID}})
 	}
 	var tabs []menuItem
@@ -444,7 +447,7 @@ func (m *Model) activate(a action) tea.Cmd {
 	case "closed-threads":
 		var items []menuItem
 		for _, t := range m.snapshot.Threads {
-			if t.Closed && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
+			if t.Closed && !jobThread(t) && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
 				items = append(items, menuItem{Label: t.Title, Action: action{Kind: "thread", ID: t.ID}})
 			}
 		}
@@ -466,13 +469,17 @@ func (m *Model) activate(a action) tea.Cmd {
 		}
 		var items []menuItem
 		for _, thread := range m.snapshot.Threads {
+			title := thread.Title
+			if jobThread(thread) {
+				title = "Git resolution job · " + title
+			}
 			for _, r := range thread.Requests {
 				if r.State == "pending" {
-					items = append(items, menuItem{Label: thread.Title + " · " + r.Title, Action: action{Kind: "attention-item", ID: thread.ID, Value: r.ID}})
+					items = append(items, menuItem{Label: title + " · " + r.Title, Action: action{Kind: "attention-item", ID: thread.ID, Value: r.ID}})
 				}
 			}
 			if thread.State == "failed" {
-				items = append(items, menuItem{Label: thread.Title + " · failed", Action: action{Kind: "thread", ID: thread.ID}})
+				items = append(items, menuItem{Label: title + " · failed", Action: action{Kind: "attention-item", ID: thread.ID}})
 			}
 		}
 		if len(items) == 0 {
@@ -481,6 +488,10 @@ func (m *Model) activate(a action) tea.Cmd {
 			m.showMenu("Attention", items)
 		}
 	case "attention-item":
+		if t, ok := m.threadByID(a.ID); ok && jobThread(t) {
+			// A job thread's items belong to the Git operation panel.
+			return m.openJobGitPanel(t)
+		}
 		cmd = m.activate(action{Kind: "thread", ID: a.ID})
 		if m.state.Active == a.ID {
 			for i, r := range m.requests() {

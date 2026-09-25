@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -205,15 +206,21 @@ func validateGitWrite(c protocol.Command) error {
 		return failure("invalid", "select exactly one project or thread")
 	}
 	if gitOperationKind(c.Kind) {
-		if w.Conflict != nil {
+		if w.Conflict != nil || w.ResolveJob != nil {
 			return failure("invalid", "conflict payloads are not accepted for "+c.Kind)
 		}
 		return validateGitOperationWrite(c.Kind, w)
 	}
 	if gitConflictKind(c.Kind) {
+		if w.ResolveJob != nil {
+			return failure("invalid", "resolve_job payloads are not accepted for "+c.Kind)
+		}
 		return validateGitConflictWrite(c.Kind, w)
 	}
-	if w.Integrate != nil || w.Operation != nil || w.Conflict != nil {
+	if gitResolveJobKind(c.Kind) {
+		return validateResolveJobStart(w)
+	}
+	if w.Integrate != nil || w.Operation != nil || w.Conflict != nil || w.ResolveJob != nil {
 		return failure("invalid", "integrate and operation payloads are not accepted for "+c.Kind)
 	}
 	if gitRefOrSyncKind(c.Kind) {
@@ -461,6 +468,16 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	if err != nil {
 		return protocol.Receipt{}, err
 	}
+	w.recordLookup = func() *protocol.GitOperationRecord {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if rec := gitOperationFor(&e.snap, w.top); rec != nil {
+			copied := *rec
+			copied.JobDecisions = maps.Clone(rec.JobDecisions)
+			return &copied
+		}
+		return nil
+	}
 	w.copyLookup = func(key string) []protocol.GitConflictCopy {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -478,6 +495,10 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	if again, err := gitWriteTargetLocked(&e.snap, c); err != nil || again != dir {
 		e.mu.Unlock()
 		return protocol.Receipt{}, failure("not_found", "the target changed while the request was prepared")
+	}
+	if holder := e.gitThreadHolderLocked(w.top); kind.lease && holder != nil && holder.Job != nil {
+		e.mu.Unlock()
+		return protocol.Receipt{}, failure("job_running", "a resolution agent is working on this operation; cancel it first")
 	}
 	if holder := e.gitThreadHolderLocked(w.top); kind.lease && holder != nil {
 		e.mu.Unlock()
@@ -767,6 +788,9 @@ type gitWriter struct {
 	// copyLookup finds the saved copy of an operation stop (git_conflict.go);
 	// set by runGitWrite.
 	copyLookup func(stopKey string) []protocol.GitConflictCopy
+	// recordLookup returns a copy of the operation record of this
+	// repository (git_resolve_job.go); set by runGitWrite.
+	recordLookup func() *protocol.GitOperationRecord
 }
 
 var gitVersion = sync.OnceValues(func() ([2]int, error) {
@@ -1254,6 +1278,8 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return prepareOperationCommand(ctx, g, w, c)
 	case protocol.GitKindConflictChoose, protocol.GitKindConflictResolve, protocol.GitKindConflictRestore:
 		return prepareConflict(ctx, g, w, c)
+	case protocol.GitKindResolveJobStart:
+		return prepareJobStart(ctx, g, w, c)
 	}
 	return nil, failure("unsupported_command", fmt.Sprintf("unsupported command %q", c.Kind))
 }

@@ -274,6 +274,7 @@ type Model struct {
 	gitW          gitWriteUI
 	gitR          gitRefUI
 	gitO          gitOpUI
+	gitCF         gitConflictUI
 	// Read-only Files surface (files_surface.go): per-target views, the read
 	// generation, the target last shown and whether the disk poll is ticking.
 	filesReads   filesAPI
@@ -348,8 +349,8 @@ func New(c *client.Client, id string, snapshot protocol.Snapshot, data []byte) *
 		m.state.DraftThreads = map[string]*threadView{}
 	}
 	m.threadSearch.SetValue(m.state.ThreadFilter)
-	if !m.creatingThread() && !slices.ContainsFunc(snapshot.Threads, func(t protocol.Thread) bool { return t.ID == m.state.Active }) && len(snapshot.Threads) > 0 {
-		m.state.Active = m.nextOpenThread("")
+	if !m.creatingThread() && !slices.ContainsFunc(snapshot.Threads, func(t protocol.Thread) bool { return t.ID == m.state.Active && !jobThread(t) }) && len(snapshot.Threads) > 0 {
+		m.state.Active = m.jobFallbackThread(m.state.Active)
 	}
 	for _, t := range snapshot.Threads {
 		v := m.state.Threads[t.ID]
@@ -824,7 +825,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitCancelMsg:
 		cmd = m.acceptGitCancel(msg)
 	case gitOperationMsg:
-		m.acceptGitOperation(msg)
+		cmd = m.acceptGitOperation(msg)
+	case gitConflictFileMsg:
+		cmd = m.acceptConflictFile(msg)
 	case gitPreviewMsg:
 		cmd = m.acceptGitPreview(msg)
 	case viewerImageMsg:
@@ -1184,6 +1187,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	}
 	if s == "esc" && m.focus == gitBranchNameKey && len(m.menu) == 0 {
 		return m.closeGitCreate()
+	}
+	if s == "esc" && len(m.menu) == 0 && m.gitCF.viewer != nil && (gitFocusKey(m.focus) || m.focus == "right-body" || m.focus == "git-refresh") {
+		return m.closeGitConflictViewer()
 	}
 	if len(m.menu) == 0 && contextMenuKey(k) {
 		return m.openContextMenuForFocus()

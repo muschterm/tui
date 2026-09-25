@@ -244,6 +244,15 @@ func gitExtraRowText(r *gitRow) string {
 		return "GIT"
 	case "conflict":
 		return strings.TrimSpace(gitConflictBadge(r.conflict.Kind) + " " + r.text + " " + gitConflictFlags(r.conflict))
+	case "ctabs":
+		var parts []string
+		for _, t := range gitConflictTabs {
+			if t == r.text {
+				t = "[" + t + "]"
+			}
+			parts = append(parts, t)
+		}
+		return strings.Join(parts, " | ")
 	case "review-end":
 		return "— " + r.text + " —"
 	case "name":
@@ -263,6 +272,10 @@ func gitExtraRowText(r *gitRow) string {
 
 // paintGitExtraRow paints scope, section and branch rows.
 func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
+	if r.kind == "ctabs" {
+		m.paintGitConflictTabs(f, x, y, width, r)
+		return
+	}
 	if r.kind == "heading" || r.kind == "name" || r.kind == "review-end" {
 		m.paintGitRefRow(f, x, y, width, r)
 		return

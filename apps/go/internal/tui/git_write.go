@@ -257,11 +257,17 @@ func (m *Model) gitWriteBlock(key string, g *gitView) (string, bool) {
 	if st := m.gitWriteFor(key); st != nil && st.running {
 		return gitProgressVerb(st.cmd.Kind), true
 	}
+	if p := m.gitCF.prep; p != nil && p.key == key {
+		return "Preparing a conflict action…", true
+	}
 	if st := m.gitWriteFor(key); st != nil && st.transport != "" {
 		return gitPendingCopy, false
 	}
 	if op := m.gitRunningOp(g.status.Workspace.Path); op != nil {
 		return gitProgressVerb(op.Op), true
+	}
+	if m.gitJobLeaseHeld(g.status.Workspace.Path) {
+		return gitJobLeaseCopy, false
 	}
 	if m.gitLeaseHeld(g.status.Workspace.Path) {
 		return gitLeaseCopy, false
@@ -366,6 +372,10 @@ func gitEntryWritable(e protocol.GitStatusEntry) bool {
 
 // sendGitWrite records cmd as the target's write and sends it.
 func (m *Model) sendGitWrite(key string, cmd protocol.Command, label string) tea.Cmd {
+	if st := m.gitW.writes[key]; st != nil && (st.running || st.transport != "") {
+		// Never replace a write in flight or awaiting Retry.
+		return m.showNoticeAs(noticeUnavailable, gitPendingCopy)
+	}
 	if m.gitW.writes == nil {
 		m.gitW.writes = map[string]*gitWriteState{}
 	}

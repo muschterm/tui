@@ -780,8 +780,18 @@ func reconcileRecord(rec *protocol.GitOperationRecord, st protocol.GitOperationS
 // run here.
 func recoverGitOperations(s *protocol.Snapshot) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	// Resolution jobs never continue by themselves after a restart: their
+	// threads wait for an explicit follow-up.
+	for i := range s.Threads {
+		if t := &s.Threads[i]; t.Job != nil && activeTurn(t) {
+			t.State, t.NeedsResume = "interrupted", true
+		}
+	}
 	for i := range s.GitOperations {
 		rec := &s.GitOperations[i]
+		if rec.State == protocol.GitOperationAgentRunning {
+			rec.State, rec.UpdatedAt = protocol.GitOperationAgentInterrupted, now
+		}
 		if !gitOperationActive(rec.State) {
 			continue
 		}
@@ -963,17 +973,41 @@ func (e *engine) ensureOperationPollLocked() {
 // ---- Reads ----
 
 func (e *engine) gitOperation(w http.ResponseWriter, r *http.Request) {
-	e.gitHandle(w, r, func(ctx context.Context, dir string) (any, error) {
-		e.mu.Lock()
-		seq := e.gitLocked().opSeq
-		e.mu.Unlock()
-		st, top, err := readGitOperation(ctx, dir)
-		if err != nil || top == "" {
-			return st, err
+	refresh := r.URL.Query().Get("review") == "refresh"
+	e.gitHandle(w, r, func(ctx context.Context, dir string) (any, error) { return e.operationState(ctx, dir, refresh) })
+}
+
+// operationState is GET /v1/git/operation: the observed operation,
+// reconciled with its record, with the attached job's review (cached, or
+// computed again with refresh).
+func (e *engine) operationState(ctx context.Context, dir string, refresh bool) (protocol.GitOperationState, error) {
+	e.mu.Lock()
+	seq := e.gitLocked().opSeq
+	e.mu.Unlock()
+	st, top, err := readGitOperation(ctx, dir)
+	if err != nil || top == "" {
+		return st, err
+	}
+	e.attachOperation(&st, top, seq)
+	e.mu.Lock()
+	in := e.jobInputLocked(top)
+	e.mu.Unlock()
+	if in != nil && st.Kind != "" {
+		st.Review = e.reviewFor(ctx, st, top, in, refresh)
+	}
+	e.mu.Lock()
+	var rec *protocol.GitOperationRecord
+	if r := gitOperationFor(&e.snap, top); r != nil && r.JobBaseline != nil && gitOperationActive(r.State) {
+		copied := *r
+		rec = &copied
+	}
+	e.mu.Unlock()
+	if rec != nil && st.Kind != "" {
+		if g, err := newGitReader(ctx, top); err == nil {
+			st.AgentChanges = agentChanges(ctx, g, *rec)
 		}
-		e.attachOperation(&st, top, seq)
-		return st, nil
-	})
+	}
+	return st, nil
 }
 
 // readGitOperation observes the target's operation; top is the repository
@@ -996,7 +1030,7 @@ func readGitOperation(ctx context.Context, dir string) (protocol.GitOperationSta
 	if err != nil {
 		return st, "", err
 	}
-	observed.Workspace = st.Workspace
+	observed.Workspace, observed.Toplevel = st.Workspace, g.dir
 	return observed, g.dir, nil
 }
 
@@ -1008,6 +1042,7 @@ func readGitOperation(ctx context.Context, dir string) (protocol.GitOperationSta
 func (e *engine) attachOperation(st *protocol.GitOperationState, top string, seq uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.syncJobsLocked()
 	gs := e.gitLocked()
 	busy := gs.opSeq != seq
 	for _, h := range gs.holders {
@@ -1482,6 +1517,11 @@ func operationJournal(c protocol.Command, top string, observed protocol.GitOpera
 	matched := ""
 	var previous string
 	return func(s *protocol.Snapshot, res *protocol.GitResult, now string) error {
+		if res == nil {
+			if err := refuseWhileJobRuns(s, top); err != nil {
+				return err
+			}
+		}
 		rec := gitOperationFor(s, top)
 		if res == nil {
 			if rec != nil && gitOperationActive(rec.State) && recordMatches(*rec, observed) {
@@ -1506,6 +1546,16 @@ func operationJournal(c protocol.Command, top string, observed protocol.GitOpera
 		}
 		if matched == "" || rec == nil || rec.OperationID != matched {
 			return nil
+		}
+		// A continue, skip or abort that moved the operation ends the job
+		// that was reviewing the earlier stop.
+		if res.Operation != nil && res.Operation.Outcome != protocol.GitOutcomeUnchanged {
+			if rec.JobThreadID != "" {
+				endJobLocked(s, rec, now)
+			}
+			// The operation moved on: the gate's baseline belonged to the
+			// stop it left.
+			rec.JobBaseline, rec.JobDecisions = nil, nil
 		}
 		applyOperationResult(rec, res, previous, now)
 		if res.Operation != nil && res.Operation.State != nil {
@@ -1589,6 +1639,9 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		if err := checkPending(st); err != nil {
 			return nil, err
 		}
+		if err := refuseAgentChanges(ctx, g, w.record(), req.AcknowledgeAgentChanges); err != nil {
+			return nil, err
+		}
 		if err := checkIdentity(ctx, w); err != nil {
 			return nil, err
 		}
@@ -1609,6 +1662,9 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 			return nil, err
 		}
 		if err := checkPending(st); err != nil {
+			return nil, err
+		}
+		if err := refuseAgentChanges(ctx, g, w.record(), req.AcknowledgeAgentChanges); err != nil {
 			return nil, err
 		}
 		if err := checkIdentity(ctx, w); err != nil {

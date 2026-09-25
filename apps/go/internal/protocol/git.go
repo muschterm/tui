@@ -330,6 +330,14 @@ type GitOperationState struct {
 	// such an abort ("not uptodate"), so it is refused here too until they
 	// are staged or discarded (abort_blocked).
 	AbortBlockedBy []string `json:"abort_blocked_by,omitempty"`
+	// Review (additive, S4) is the review of the attached resolution job.
+	Review *GitResolveReview `json:"review,omitempty"`
+	// Toplevel (additive) is the absolute repository toplevel that every
+	// path here is relative to.
+	Toplevel string `json:"toplevel,omitempty"`
+	// AgentChanges (additive, S4 gate) is set while a resolution job's
+	// baseline is recorded for this operation (also after the job ended).
+	AgentChanges *GitAgentChanges `json:"agent_changes,omitempty"`
 }
 
 // GitOperationBackup is the copy the server makes immediately before an

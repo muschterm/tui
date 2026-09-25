@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +82,9 @@ type fakeAgent struct {
 	// question turn: blocking Codex mode, a bridge delivery receipt after the
 	// answer, and a failed prompt after the answer.
 	questionBlocking, questionReceipt, questionFail bool
+	// cwd is the session's working directory; FAKE-WRITE and FAKE-GIT
+	// prompt lines act in it (resolution job tests).
+	cwd string
 }
 
 func (f *fakeAgent) optionWire() []any {
@@ -154,6 +160,11 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		}
 		f.sessions++
 		f.sessionID = "session-fake"
+		var request struct {
+			Cwd string `json:"cwd"`
+		}
+		_ = json.Unmarshal(params, &request)
+		f.cwd = request.Cwd
 		id := f.sessionID
 		f.mu.Unlock()
 		return map[string]any{"sessionId": id, "configOptions": f.optionWire()}, nil
@@ -238,6 +249,7 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 	f.cancel = cancel
 	f.mu.Unlock()
 	session := request.SessionId
+	f.act(text)
 	switch {
 	case strings.Contains(text, "cancel me"):
 		f.update(ctx, session, chunk("counting"))
@@ -481,4 +493,27 @@ func activityOf(t protocol.Thread, id string) protocol.Activity {
 		}
 	}
 	return protocol.Activity{}
+}
+
+// act performs the file and Git actions a prompt asks the fake agent for:
+// "FAKE-WRITE <path> <content>" (\n in content is a newline) and
+// "FAKE-GIT <args...>", each on its own line, in the session directory.
+func (f *fakeAgent) act(text string) {
+	f.mu.Lock()
+	cwd := f.cwd
+	f.mu.Unlock()
+	if cwd == "" {
+		return
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "FAKE-WRITE "):
+			path, content, _ := strings.Cut(strings.TrimPrefix(line, "FAKE-WRITE "), " ")
+			_ = os.WriteFile(filepath.Join(cwd, path), []byte(strings.ReplaceAll(content, `\n`, "\n")), 0o644)
+		case strings.HasPrefix(line, "FAKE-GIT "):
+			cmd := exec.Command("git", append([]string{"-C", cwd, "-c", "core.hooksPath=/dev/null"}, strings.Fields(strings.TrimPrefix(line, "FAKE-GIT "))...)...)
+			_ = cmd.Run()
+		}
+	}
 }

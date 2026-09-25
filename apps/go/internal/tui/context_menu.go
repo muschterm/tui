@@ -36,7 +36,7 @@ func (m *Model) openContextMenuForFocus() tea.Cmd {
 			return m.openSelectionContextMenu(m.focus)
 		}
 	}
-	if gitFocusKey(m.focus) || strings.HasPrefix(m.focus, "git-bact:") {
+	if gitFocusKey(m.focus) || strings.HasPrefix(m.focus, "git-bact:") || strings.HasPrefix(m.focus, "git-cact:") {
 		return m.openGitContextMenu(m.focus)
 	}
 	return nil

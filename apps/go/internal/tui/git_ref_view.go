@@ -118,6 +118,14 @@ func (m *Model) gitRefResultBlocks(key string, g *gitView, st *gitWriteState) []
 	if gitOperationKind(st.cmd.Kind) && st.transport == "" {
 		return m.gitOperationResultBlocks(st)
 	}
+	if gitConflictKind(st.cmd.Kind) && r != nil && r.State == protocol.GitStateSucceeded {
+		glyph, ink := panelStatusMark(m, "succeeded")
+		b := []surfaceBlock{{kind: surfaceStatusBlock, label: gitConflictDone(st), glyph: glyph, ink: ink}}
+		if st.warning != "" {
+			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: st.warning, ink: m.colors().gold})
+		}
+		return append(b, m.gitConflictResultBlocks(st)...)
+	}
 	switch {
 	case st.ack != nil:
 		b = append(b, text(st.failure, p.gold),

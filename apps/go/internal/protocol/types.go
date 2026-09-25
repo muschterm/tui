@@ -114,6 +114,43 @@ type Thread struct {
 	// another thread's checkout writer lease blocks. It is derived by the
 	// server and recomputed on load; a persisted value never blocks dispatch.
 	WriterWait *WriterWait `json:"writer_wait,omitempty"`
+	// Job (additive, ADR 0023 S4) marks a job-kind thread: an agent working
+	// on one Git operation's conflicts. Job threads belong to the Git
+	// operation panel, not the ordinary thread list.
+	Job *ThreadJob `json:"job,omitempty"`
+}
+
+// Thread job kinds (ThreadJob.Kind).
+const ThreadJobConflictResolution = "conflict_resolution"
+
+// ThreadJob describes a job-kind thread. OperationID is the Git operation it
+// works on, Checkout that operation's repository toplevel and Paths the
+// conflicted paths it may edit. The Base fields are what the server saw
+// before the agent started, for the review: HEAD, the stop key, the other
+// unmerged paths and the status entries outside the job's paths
+// (BaseOutside, "group NUL path NUL pin" lines, at most 2000;
+// OutsideIncomplete when there were more, then only BaseOutsideFingerprint
+// is compared).
+type ThreadJob struct {
+	Kind                   string   `json:"kind"`
+	OperationID            string   `json:"operation_id"`
+	Checkout               string   `json:"checkout"`
+	Paths                  []string `json:"paths"`
+	BaseHead               string   `json:"base_head,omitempty"`
+	BaseStop               string   `json:"base_stop,omitempty"`
+	BaseOtherUnmerged      []string `json:"base_other_unmerged,omitempty"`
+	BaseOutside            []string `json:"base_outside,omitempty"`
+	BaseOutsideFingerprint string   `json:"base_outside_fingerprint,omitempty"`
+	OutsideIncomplete      bool     `json:"outside_incomplete,omitempty"`
+	StartedAt              string   `json:"started_at,omitempty"`
+	// Additive (S4 review). BaseCopy is the before_job copy of every job
+	// path (working tree and index) taken after open documents were saved,
+	// immediately before the agent started: the review's "before" and what
+	// reject restores. Decisions records the user's accept or reject per
+	// path since the job's latest turn (DecisionsTurn).
+	BaseCopy      string            `json:"base_copy,omitempty"`
+	Decisions     map[string]string `json:"decisions,omitempty"`
+	DecisionsTurn string            `json:"decisions_turn,omitempty"`
 }
 
 // Activity is one transcript entry: a user prompt, agent reply, tool call or

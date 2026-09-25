@@ -245,17 +245,24 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 			if reason := protocol.ProjectRemoveBlocked(m.snapshot, p.ID); reason != "" {
 				return true, m.showNoticeAs(noticeError, "Cannot remove project: "+reason)
 			}
-			count := 0
+			count, jobs := 0, 0
 			for _, t := range m.snapshot.Threads {
 				if t.ProjectID == p.ID {
 					count++
+					if jobThread(t) {
+						jobs++
+					}
 				}
+			}
+			label := fmt.Sprintf("Delete project and %d threads permanently", count)
+			if jobs > 0 {
+				label += fmt.Sprintf(" (including %d resolution job threads)", jobs)
 			}
 			// Cancel is deliberately first. Thread membership revisions bind this exact
 			// confirmation to the project and count the user reviewed.
 			m.showMenuFor("Remove project · ", p.Name, []menuItem{
 				{Label: "Cancel", Action: action{Kind: "noop"}},
-				{Label: fmt.Sprintf("Delete project and %d threads permanently", count), Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
+				{Label: label, Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
 				{Note: "Files on disk will be kept"},
 			})
 			m.docDeleteNote(func(key string) bool {

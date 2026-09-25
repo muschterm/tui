@@ -116,7 +116,7 @@ func (m *Model) gitBranchInput() *textarea.Model {
 
 // gitRefKind reports the ADR 0021 command kinds.
 func gitRefKind(kind string) bool {
-	if gitOperationKind(kind) {
+	if gitOperationKind(kind) || gitConflictKind(kind) {
 		return true
 	}
 	switch kind {
@@ -135,7 +135,7 @@ func gitSyncKind(kind string) bool {
 // so wait while an agent turn holds it; fetch, push and branch creation run
 // beside agent turns.
 func gitLeaseKind(kind string) bool {
-	return kind == protocol.GitKindSwitch || kind == protocol.GitKindResetSoft || kind == protocol.GitKindPull || gitOperationKind(kind)
+	return kind == protocol.GitKindSwitch || kind == protocol.GitKindResetSoft || kind == protocol.GitKindPull || gitOperationKind(kind) || gitConflictKind(kind)
 }
 
 // gitUpstreamRemote is the remote part of an upstream such as origin/main,
@@ -685,6 +685,9 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 		}
 		// Refused before anything ran: the command is dropped.
 		delete(m.gitW.writes, msg.key)
+		if c, ok := m.acceptConflictRefusal(msg.key, msg.cmd, pe); ok && msg.key == current {
+			return c
+		}
 		var ack *gitAckDialog
 		if n, ok := client.GitLeaveCommitsCount(msg.err); ok {
 			ack = &gitAckDialog{key: msg.key, cmd: msg.cmd, code: "leaves_commits", count: n, label: st.label, undo: st.undo}
@@ -787,6 +790,9 @@ func (m *Model) gitRefDoneCopy(st *gitWriteState, r *protocol.GitResult) string 
 	}
 	if gitOperationKind(st.cmd.Kind) {
 		return gitOperationDoneCopy(st, r)
+	}
+	if gitConflictKind(st.cmd.Kind) {
+		return gitConflictDone(st)
 	}
 	return m.gitSyncSummary(st, r)
 }
@@ -923,6 +929,14 @@ func gitRefCopy(kind, code string) string {
 		}
 	case "operation_in_progress":
 		return "Finish or abort the merge, rebase, cherry-pick, revert or bisect first"
+	case "binary_unacknowledged":
+		return "The file is binary · review it and confirm staging it as it is"
+	case "unsaved_unacknowledged":
+		return "The file cannot be copied first · confirm overwriting it without a copy"
+	case "not_conflicted":
+		return "The path is no longer unmerged · refreshed"
+	case "no_saved_copy":
+		return "No saved copy of this stop holds the path"
 	case "dirty_tree":
 		return "Commit or discard changes first · merge and rebase need a clean tracked tree (untracked files are fine)"
 	case "unborn":
@@ -978,6 +992,9 @@ const gitCredentialAdvice = "Run `git fetch` once in a terminal to trust the hos
 // Git row or control has focus: f fetch, p pull, P push, S switch, b new
 // branch, r soft reset, y copy hash.
 func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
+	if cmd, ok := m.gitConflictKey(s); ok {
+		return cmd, true
+	}
 	if m.gitO.review != nil && strings.HasPrefix(m.focus, "git:review") {
 		switch s {
 		case "pgdown", "pgup", "home", "end", "up", "down":
@@ -1038,6 +1055,9 @@ func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
 // openGitContextMenu opens the context menu of a branch or commit row. Every
 // item names the commit and the branch or HEAD it affects.
 func (m *Model) openGitContextMenu(focus string) tea.Cmd {
+	if strings.HasPrefix(focus, "git:conflict:") || strings.HasPrefix(focus, "git-cact:") {
+		return m.openGitConflictMenu(focus)
+	}
 	if rest, ok := strings.CutPrefix(focus, "git-bact:"); ok {
 		_, ref, _ := strings.Cut(rest, ":")
 		focus = "git:branch:" + ref
@@ -1110,7 +1130,7 @@ func (m *Model) openGitContextMenuAt(f frame, x, y int) (tea.Cmd, bool) {
 		if !h.Rect.Contains(x, y) {
 			continue
 		}
-		if strings.HasPrefix(h.Key, "git:branch:") || strings.HasPrefix(h.Key, "git:commit:") {
+		if strings.HasPrefix(h.Key, "git:branch:") || strings.HasPrefix(h.Key, "git:commit:") || strings.HasPrefix(h.Key, "git:conflict:") || strings.HasPrefix(h.Key, "git-cact:") {
 			return m.openGitContextMenu(h.Key), true
 		}
 		if ref, ok := strings.CutPrefix(h.Key, "git-bact:"); ok {

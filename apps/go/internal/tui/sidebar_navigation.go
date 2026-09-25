@@ -16,6 +16,9 @@ import (
 func (m *Model) navigationSections() (open, closed []navigationRow) {
 	query := strings.ToLower(strings.TrimSpace(m.state.ThreadFilter))
 	for _, t := range m.snapshot.Threads {
+		if jobThread(t) {
+			continue // job threads belong to the Git operation panel
+		}
 		if m.state.ProjectFilter != "" && t.ProjectID != m.state.ProjectFilter || query != "" && !strings.Contains(strings.ToLower(t.Title), query) {
 			continue
 		}

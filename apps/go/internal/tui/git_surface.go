@@ -276,6 +276,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 	if cmd, ok := m.gitOperationAction(a); ok {
 		return cmd
 	}
+	if cmd, ok := m.gitConflictAction(a); ok {
+		return cmd
+	}
 	return m.gitWriteAction(a)
 }
 
@@ -427,6 +430,9 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 		action: action{Kind: "git-refresh"}, key: "git-refresh"}, gap}
 	if m.gitRefsEnabled() {
 		b[0] = m.gitHeadingBlock(key, g)
+	}
+	if v := m.gitCF.viewer; v != nil && v.key == key {
+		return append(b, m.gitConflictViewerBlocks(v)...)
 	}
 	if r := m.gitO.review; r != nil && r.key == key {
 		// The review of an acknowledged list takes over the body.

@@ -30,8 +30,10 @@ type fakeGit struct {
 	// oper and preview answer the merge/rebase reads (git_operation_test.go).
 	oper    protocol.GitOperationState
 	preview protocol.GitIntegratePreview
-	err     error
-	calls   []string
+	// conflictFiles answers GitConflictFile by "path|version".
+	conflictFiles map[string]protocol.GitConflictFile
+	err           error
+	calls         []string
 }
 
 func (g *fakeGit) record(call string) {

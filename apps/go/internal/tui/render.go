@@ -541,9 +541,9 @@ func (m *Model) writerWaitLine(t protocol.Thread, p palette) contentLine {
 	}
 	lead := "·"
 	line := contentLine{text: lead + " " + status, fg: p.text, bg: p.canvas, lead: lead, leadFG: p.muted}
-	if holderID != "" && known {
+	if holderID != "" && known && !jobThread(holder) {
 		line.action = action{Kind: "thread", ID: holderID}
-	} else if op != "" {
+	} else if op != "" || known && jobThread(holder) {
 		line.action = action{Kind: "open", Value: "git"}
 	}
 	return line
@@ -1031,6 +1031,8 @@ func menuItemDestructive(item menuItem) bool {
 		return true
 	case "git-op-confirm":
 		return item.Action.Value != protocol.GitKindOperationContinue || item.Action.ID == "markers"
+	case "git-conflict-confirm":
+		return item.Action.Value == "destructive"
 	case "git-integrate-confirm":
 		return item.Action.Value == "published"
 	case "doc-close-force", "doc-quit-force", "doc-dismiss-confirm", "doc-resolve-confirm", "doc-take-confirm":

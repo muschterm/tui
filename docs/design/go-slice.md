@@ -1692,6 +1692,72 @@ backup, nothing_to_commit Skip, code copy, the reservation line and the
 diverged entry points. `TestGitOperationCaptures` renders preview, panel and
 abort (dark and light). Not yet verified against a live server in a terminal.
 
+### Manual conflict resolution (TUI) — 2026-09-25
+
+`internal/tui/git_conflict.go` and `git_conflict_view.go` add ADR 0023 S3 to
+the operation panel's UNMERGED rows while the server has `git-conflicts`.
+Rows reserve View and ⋮ slots; Enter views, `o`/`t` choose ours/theirs,
+`m` marks resolved, `e` edits, Shift+F10 / right-click / ⋮ open the menu
+(View, Choose ours/theirs/base with the operation's side labels, Edit in
+Files, Mark resolved, Resolve as deleted…, Restore a saved copy…).
+
+- **Viewer** takes over the Git surface body: path and kind badge, Close,
+  Base / Ours / Theirs / Working / Saved tabs (read on demand with
+  `GET /v1/git/conflict`), side labels, marker lines in gold, "Contains
+  conflict markers" or "Too large to check", and binary, symlink, absent,
+  directory and special-file states; the Saved tab lists the stop's copies
+  (reason and age). Content is sanitized and bounded. The viewer rereads when
+  the row's pins change.
+- **Pins.** Every command pins the ConflictPin and WorktreeToken of the row
+  the user acted on; the working file read for the action, and the working
+  version the viewer displays when it shows the path, must carry the same
+  pins, else nothing is sent and status refreshes. Viewer reads carry a
+  generation, so an older reply never replaces a newer one. While an
+  action reads, other Git writes wait ("Preparing a conflict action…"), and
+  no write ever replaces one in flight or awaiting Retry. Content lines are
+  built once per read and capped at 4096 cells. Esc closes the viewer and
+  returns focus to the row.
+- **Choose** writes a side directly only when the working file is known to
+  equal the stop's saved content (same Oid and mode; a missing Oid or no
+  saved copy counts as unknown and always confirms); otherwise it asks "Replace your edits in \<path\> with
+  \<side (label)\>? A copy is kept · Restore brings it back". **Mark
+  resolved** stages directly, or asks when the file still has markers, is
+  too large to check or is binary (AcknowledgeMarkers / AcknowledgeBinary =
+  the reviewed token). **Resolve as deleted** explains that the file stays on
+  disk as untracked. **Restore** lists the original conflict and each
+  before-overwrite (or "before the agent ran") copy with its age, adding the
+  absolute time when ages collide, then confirms naming what is replaced
+  (and, for the original copies, that the path becomes unmerged again). It
+  stays available after the path is resolved.
+  `unsaved_unacknowledged` asks "Overwrite without a copy" and resends with
+  AcknowledgeUnsaved under a new ID. All confirmations focus Cancel.
+- **Results**: "Wrote \<side\> into \<path\> · still unmerged", "Marked
+  resolved", "Resolved as deleted · the file stays untracked", "Restored";
+  **Restore previous content…** for `Previous`, an eviction line for
+  `Evicted`, and copy for every S3 code.
+- **Edit** opens the path in the Files surface (a shared document when
+  editable), mapped from the repository toplevel to the checkout; a file
+  outside the checkout is not opened. Until the server reports the
+  operation's toplevel, Edit explains that it needs a newer server.
+- **S4 hooks**: `gitConflictAgentItems` ("Resolve with agent…") and
+  `gitConflictReviewMode`. Job threads (`Thread.Job`) are left out of
+  navigation, search, Closed and the command palette, but their questions,
+  approvals and failures stay in the attention bell, where activating one
+  opens the Git surface (on an open thread of the job's project); writer-wait
+  links to a job thread open the Git surface, a job thread never stays
+  active, project removal counts "including N resolution job threads", and
+  a running job blocks Git writes with "Resolution job running · stop it
+  first".
+
+Tests: `internal/tui/git_conflict_test.go` (fake reads/writes): viewer tabs
+and sanitization, choose with and without edits (row pins), stale pins,
+marker and binary acknowledgements, clean resolve, resolve as deleted,
+restore menu and confirm, Previous restore, unsaved acknowledgement resend,
+menu/key parity, job-thread filtering. `TestGitConflictCaptures` renders the
+viewer, the choose confirmation and the restore menu (dark and light). The
+client cannot yet read a specific copy's content (`copy_id`), so copies are
+listed and restorable but not viewable individually.
+
 ### Embedded terminals — 2026-09-24
 
 Phase 3 of [ADR 0019](../adr/0019-embedded-terminal-sessions.md): right-host

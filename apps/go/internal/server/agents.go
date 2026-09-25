@@ -133,6 +133,9 @@ func (e *engine) mutateThread(id string, commit bool, fn func(*protocol.Thread))
 // applyCommand routes the commands the engine itself owns and otherwise defers
 // to the pure snapshot transition.
 func (e *engine) applyCommand(next *protocol.Snapshot, c protocol.Command, resolved *resolvedPath) (string, error) {
+	if jobControlKind(c.Kind) {
+		return e.applyJobControl(next, c)
+	}
 	if c.Kind == "agent.probe" {
 		return e.applyProbe(next, c)
 	}
@@ -190,6 +193,13 @@ func (e *engine) afterCommit(c protocol.Command, target string) {
 		if r := e.runs[c.ThreadID]; r != nil {
 			go r.interrupt()
 		}
+	case protocol.GitKindResolveJobCancel:
+		if r := e.runs[target]; r != nil {
+			go r.interrupt()
+		}
+	case protocol.GitKindResolveJobFollowup:
+		e.ensureRunLocked(target)
+	case protocol.GitKindResolveJobEnd:
 	case "thread.delete":
 		// The sweep above already stopped the run; nothing else to do.
 	case "request.answer":
@@ -795,6 +805,12 @@ func (r *acpRun) finishTurn(w dispatchWork, response acp.PromptResponse, err err
 	if err != nil {
 		r.e.logf("agent turn failed", "thread", r.threadID, "error", err)
 	}
+	// A resolution job's turn end moves its operation to review, and the
+	// turn is reviewed as it really ended (also after a cancel).
+	r.e.mu.Lock()
+	r.e.syncJobsLocked()
+	r.e.jobTurnEndedLocked(r.threadID)
+	r.e.mu.Unlock()
 }
 
 func setActivityState(t *protocol.Thread, id, state string) {
@@ -837,6 +853,10 @@ func (r *acpRun) fail(w dispatchWork, title string, err error) {
 	})
 	r.e.logf("agent dispatch failed", "thread", r.threadID, "error", err)
 	r.clearSession()
+	r.e.mu.Lock()
+	r.e.syncJobsLocked()
+	r.e.jobTurnEndedLocked(r.threadID)
+	r.e.mu.Unlock()
 }
 
 func (r *acpRun) clearSession() {

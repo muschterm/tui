@@ -174,7 +174,10 @@ func putConflictCopy(s *protocol.Snapshot, c protocol.GitConflictCopy) (evicted 
 		if old.CheckoutKey != c.CheckoutKey || old.StopKey != c.StopKey || old.Path != c.Path || old.Reason != c.Reason {
 			continue
 		}
-		if c.Reason != protocol.GitCopyBeforeOverwrite || (c.ContentOid != "" && old.ContentOid == c.ContentOid) {
+		switch {
+		case c.Reason == protocol.GitCopyBeforeJob:
+			// Every job start keeps its own pre-job copy.
+		case c.Reason != protocol.GitCopyBeforeOverwrite || (c.ContentOid != "" && old.ContentOid == c.ContentOid):
 			return nil
 		}
 	}
@@ -416,7 +419,7 @@ func pathCopies(ctx context.Context, g *gitReader, copies []protocol.GitConflict
 			continue
 		}
 		all = append(all, c)
-		if original == nil && c.Reason != protocol.GitCopyBeforeOverwrite {
+		if original == nil && (c.Reason == protocol.GitCopyAtStop || c.Reason == protocol.GitCopyBeforeFirstChange) {
 			copied := c
 			original = &copied
 		}
@@ -568,6 +571,9 @@ func readConflictFileCopy(ctx context.Context, dir, p, version, copyID string, c
 				break
 			}
 			f.Mode, f.Size, f.Symlink = mode, int64(len(data)), mode == "120000"
+			if oid, err := hashContent(ctx, g, data); err == nil {
+				f.Oid = oid
+			}
 			if f.Symlink {
 				f.Kind = "symlink"
 			}
@@ -605,10 +611,10 @@ func validateGitConflictWrite(kind string, w *protocol.GitWrite) error {
 			return failure("invalid", "choose takes a side (and acknowledge_unsaved) only")
 		}
 	case protocol.GitKindConflictResolve:
-		if c.As != protocol.GitConflictAsContent && c.As != protocol.GitConflictAsDeleted {
-			return failure("invalid", "as must be content or deleted")
+		if c.As != protocol.GitConflictAsContent && c.As != protocol.GitConflictAsDeleted && c.As != protocol.GitConflictAsKeepStaged {
+			return failure("invalid", "as must be content, deleted or keep_staged")
 		}
-		if c.Side != "" || c.CopyID != "" || c.AcknowledgeUnsaved != "" || (c.As == protocol.GitConflictAsDeleted && (c.AcknowledgeMarkers != "" || c.AcknowledgeBinary != "")) {
+		if c.Side != "" || c.CopyID != "" || c.AcknowledgeUnsaved != "" || (c.As != protocol.GitConflictAsContent && (c.AcknowledgeMarkers != "" || c.AcknowledgeBinary != "")) {
 			return failure("invalid", "resolve takes as (and marker or binary acknowledgements for content) only")
 		}
 	case protocol.GitKindConflictRestore:
@@ -808,7 +814,11 @@ func prepareConflict(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 	var restoreFrom *protocol.GitConflictCopy
 	switch c.Kind {
 	case protocol.GitKindConflictChoose, protocol.GitKindConflictResolve:
-		if !unmerged {
+		keep := c.Kind == protocol.GitKindConflictResolve && req.As == protocol.GitConflictAsKeepStaged
+		if keep && unmerged {
+			return nil, failure("conflicted", "the path is still unmerged; there is no staged resolution to keep")
+		}
+		if !keep && !unmerged {
 			return nil, failure("not_conflicted", "the path is not unmerged")
 		}
 	case protocol.GitKindConflictRestore:
@@ -837,7 +847,8 @@ func prepareConflict(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return nil, err
 	}
 	p := &gitPlan{paths: []string{req.Path}}
-	p.journal = conflictJournal(w.top)
+	var decided string // the path's index entries after the command
+	p.journal = conflictJournal(w.top, c, func() string { return decided })
 	p.run = func(ctx context.Context) (res protocol.GitResult) {
 		op := &protocol.GitOperationResult{Kind: st.Kind, HeadBefore: st.HeadOid, Outcome: protocol.GitOutcomeUnchanged}
 		defer func() { res.Operation = op }()
@@ -898,6 +909,10 @@ func prepareConflict(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		case protocol.GitKindConflictChoose:
 			res = chooseSide(ctx, w, req, stages, tok)
 		case protocol.GitKindConflictResolve:
+			if req.As == protocol.GitConflictAsKeepStaged {
+				res = gitResult(protocol.GitStateSucceeded, "", "Kept the staged resolution of "+req.Path+" as reviewed", nil)
+				break
+			}
 			res = resolvePath(ctx, g, w, req, tok)
 		default:
 			res = restorePath(ctx, g, w, req, restoreFrom.CopyID, tok)
@@ -912,6 +927,11 @@ func prepareConflict(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 				if after.UnmergedFingerprint != "" {
 					op.Outcome = protocol.GitOutcomeStoppedConflicts
 				}
+			}
+		}
+		if res.State == protocol.GitStateSucceeded {
+			if out, truncated, err := g.read(vctx, 64<<10, "ls-files", "--stage", "-z", "--", req.Path); err == nil && !truncated {
+				decided = stageMap(out)[req.Path]
 			}
 		}
 		return res
@@ -1127,11 +1147,15 @@ func writeWorktreeAtomic(w *gitWriter, p, tok string, present bool, mode string,
 
 // conflictJournal records copies made without an engine runtime and moves
 // the operation's record to ready once no unmerged path remains.
-func conflictJournal(top string) func(*protocol.Snapshot, *protocol.GitResult, string) error {
+func conflictJournal(top string, c protocol.Command, decided func() string) func(*protocol.Snapshot, *protocol.GitResult, string) error {
 	return func(s *protocol.Snapshot, res *protocol.GitResult, now string) error {
-		if res == nil || res.Operation == nil {
+		if res == nil {
+			return refuseWhileJobRuns(s, top)
+		}
+		if res.Operation == nil {
 			return nil
 		}
+		recordJobDecision(s, top, c, res, decided())
 		if rec := gitOperationFor(s, top); rec != nil && res.Operation.State != nil && gitOperationActive(rec.State) && recordMatches(*rec, *res.Operation.State) {
 			switch rec.State {
 			case protocol.GitOperationAgentRunning, protocol.GitOperationAgentReview, protocol.GitOperationAgentInterrupted:

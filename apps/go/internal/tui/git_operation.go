@@ -122,14 +122,14 @@ func (m *Model) readGitOperation(key string, target client.GitTarget, gen uint64
 	}
 }
 
-func (m *Model) acceptGitOperation(msg gitOperationMsg) {
+func (m *Model) acceptGitOperation(msg gitOperationMsg) tea.Cmd {
 	g := m.acceptGitView(msg.key, msg.gen)
 	if g == nil {
-		return
+		return nil
 	}
 	if msg.err != nil {
 		g.operErr = safe(singleLine(msg.err.Error()))
-		return
+		return nil
 	}
 	s := msg.state
 	g.oper, g.operErr = &s, ""
@@ -144,6 +144,7 @@ func (m *Model) acceptGitOperation(msg gitOperationMsg) {
 		}
 		m.showNoticeAs(noticeUnavailable, gitRefCopy(d.kind, "stale_operation"))
 	}
+	return m.gitConflictViewerRefresh(msg.key, g)
 }
 
 // gitSameStop reports two reads of one operation at the same stop.
@@ -641,9 +642,13 @@ func (m *Model) gitOperationSettle(key string) {
 		m.gitO.review, m.gitO.op = nil, nil
 	}
 	m.gitReviewSeen()
+	if v := m.gitCF.viewer; v != nil && v.key != key {
+		m.gitCF.viewer = nil
+	}
 	if len(m.menu) != 0 {
 		return
 	}
+	m.gitCF.dialog = nil
 	m.gitO.integrate = nil
 	if m.gitO.review == nil {
 		m.gitO.op = nil
@@ -655,10 +660,6 @@ func (m *Model) gitOperationSettle(key string) {
 		}
 	}
 }
-
-// gitConflictControls is the S3 hook: reserved slot controls for a
-// conflict row (choose ours/theirs/base, mark resolved…). None yet.
-func (m *Model) gitConflictControls(protocol.GitConflict) [2]*gitControl { return [2]*gitControl{} }
 
 // gitShortCheckout names a checkout by its last two path components.
 func gitShortCheckout(path string) string {

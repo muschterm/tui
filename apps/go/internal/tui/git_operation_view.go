@@ -82,6 +82,10 @@ func (m *Model) gitOperationBlocks(g *gitView) []surfaceBlock {
 				action: action{Kind: "git-open", Value: protocol.GitGroupConflicted, ID: c.Path},
 				help:   "Open " + path + " · " + gitConflictLabel(c.Kind)}
 			row.controls = m.gitConflictControls(c)
+			if m.gitConflictsEnabled() {
+				row.action = action{Kind: "git-conflict-view", ID: c.Path}
+				row.help = "View versions · " + path + " · " + gitConflictLabel(c.Kind) + " · o/t choose · m resolved · e edit"
+			}
 			b = append(b, surfaceBlock{kind: surfaceGitBlock, git: row})
 		}
 		if o.ConflictsTruncated {

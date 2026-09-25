@@ -199,7 +199,7 @@ func (m *Model) selectThread(id string) {
 
 func (m *Model) nextOpenThread(exclude string) string {
 	for _, t := range m.snapshot.Threads {
-		if t.ID != exclude && !t.Closed && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
+		if t.ID != exclude && !t.Closed && !jobThread(t) && (m.state.ProjectFilter == "" || t.ProjectID == m.state.ProjectFilter) {
 			return t.ID
 		}
 	}

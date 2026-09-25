@@ -71,6 +71,12 @@ const (
 	GitKindConflictChoose  = "git.conflict_choose"
 	GitKindConflictResolve = "git.conflict_resolve"
 	GitKindConflictRestore = "git.conflict_restore"
+
+	// Agent conflict resolution (ADR 0023, S4); payload GitResolveJob.
+	GitKindResolveJobStart    = "git.resolve_job_start"
+	GitKindResolveJobFollowup = "git.resolve_job_followup"
+	GitKindResolveJobCancel   = "git.resolve_job_cancel"
+	GitKindResolveJobEnd      = "git.resolve_job_end"
 )
 
 // Git write states, shared by Receipt.State, GitResult.State and GitOp.State.
@@ -174,6 +180,8 @@ type GitWrite struct {
 	Operation *GitOperationWrite `json:"operation,omitempty"`
 	// Additive (S3).
 	Conflict *GitConflictWrite `json:"conflict,omitempty"`
+	// Additive (S4).
+	ResolveJob *GitResolveJob `json:"resolve_job,omitempty"`
 }
 
 // GitPathPin names one status entry exactly as GitStatus showed it.
@@ -799,6 +807,10 @@ type GitOperationWrite struct {
 	// nothing runs (backup_incomplete). It supersedes
 	// AcknowledgeBackupIncomplete, which alone no longer suffices.
 	AcknowledgeBackupMissing string `json:"acknowledge_backup_missing,omitempty"`
+	// AcknowledgeAgentChanges (S4 gate, continue and skip) is
+	// GitAgentChanges.Fingerprint of the unexplained index changes the user
+	// reviewed and accepts committing.
+	AcknowledgeAgentChanges string `json:"acknowledge_agent_changes,omitempty"`
 }
 
 // GitBackupEntry records one abort or skip backup in Snapshot.GitBackups
@@ -883,6 +895,11 @@ const (
 	GitOperationAgentRunning     = "agent_running"
 	GitOperationAgentReview      = "agent_review"
 	GitOperationAgentInterrupted = "agent_interrupted"
+
+	// GitOperationEndedByJob: the operation ended while a resolution job
+	// was attached (its agent continued, skipped or aborted it); the last
+	// review is kept on the record.
+	GitOperationEndedByJob = "ended_by_job"
 )
 
 // GitOperationRecord is one application-started merge or rebase, in
@@ -917,6 +934,41 @@ type GitOperationRecord struct {
 	EndedAt        string             `json:"ended_at,omitempty"`
 	// Backup (additive) is the latest backup made for this operation.
 	Backup *GitOperationBackup `json:"backup,omitempty"`
+	// Review (additive, S4) is the cached review of the attached (or, after
+	// ended_by_job, the last) resolution job; ReviewKey identifies the
+	// repository state it was computed for.
+	Review    *GitResolveReview `json:"review,omitempty"`
+	ReviewKey string            `json:"review_key,omitempty"`
+	// JobBaseline and JobDecisions (additive, S4 gate) outlive the job:
+	// the index as it was when the first resolution job of this stop
+	// started, and, per path, the index entries a user decision (resolve,
+	// restore) left. Continue and skip are gated on them until the
+	// operation moves on (GitOperationState.AgentChanges).
+	JobBaseline  *GitJobBaseline   `json:"job_baseline,omitempty"`
+	JobDecisions map[string]string `json:"job_decisions,omitempty"`
+}
+
+// GitJobBaseline is GitOperationRecord.JobBaseline: IndexBlob is an
+// unreferenced blob holding `git ls-files --stage -z` at the job's start;
+// Incomplete when the index was too large to record.
+type GitJobBaseline struct {
+	IndexBlob  string `json:"index_blob,omitempty"`
+	Incomplete bool   `json:"incomplete,omitempty"`
+	StartedAt  string `json:"started_at"`
+}
+
+// GitAgentChanges is GitOperationState.AgentChanges: every index entry that
+// differs from the job baseline and that no user decision explains (the
+// decision's recorded entries equal the current ones). Items show each
+// path's current staged content against the baseline (IndexOid,
+// IndexDiff). Continue and skip are refused (review_pending) until the
+// command carries Fingerprint as AcknowledgeAgentChanges; Incomplete means
+// the comparison could not be made in full, which needs the same
+// acknowledgement.
+type GitAgentChanges struct {
+	Items       []GitResolveItem `json:"items"`
+	Fingerprint string           `json:"fingerprint,omitempty"`
+	Incomplete  bool             `json:"incomplete,omitempty"`
 }
 
 // Manual conflict resolution (ADR 0023, S3). Three journaled commands act on
@@ -1001,6 +1053,9 @@ const (
 	GitCopyAtStop            = "at_stop"
 	GitCopyBeforeFirstChange = "before_first_change"
 	GitCopyBeforeOverwrite   = "before_overwrite"
+	// GitCopyBeforeJob is every path of a resolution job, taken right
+	// before its agent starts (S4).
+	GitCopyBeforeJob = "before_job"
 )
 
 // GitConflictCopyRef names one saved copy of a path.
@@ -1026,6 +1081,10 @@ const (
 
 	GitConflictAsContent = "content"
 	GitConflictAsDeleted = "deleted"
+	// GitConflictAsKeepStaged (S4 review) accepts a path a resolution
+	// job's agent already staged, exactly as reviewed (ConflictPin pins the
+	// index entry); nothing is run.
+	GitConflictAsKeepStaged = "keep_staged"
 )
 
 // Versions for GET /v1/git/conflict.
@@ -1041,7 +1100,9 @@ const (
 // working|saved (plus the target): one version of a path that is unmerged
 // now or has a saved copy for the operation's current stop. base, ours and
 // theirs are the index stages while the path is unmerged, else those of the
-// saved copy; working is the file now; saved is the working-tree content
+// saved copy; working is the file now (Oid: the blob ID of its content,
+// computed without writing, for files up to 8 MiB); saved is the
+// working-tree content
 // the saved copy holds. Present is false for an absent side or file.
 // Content is at most 1 MiB (Truncated beyond); Binary means a NUL in the
 // first 8 KiB; Symlink content is the link target. ConflictPin and
@@ -1103,4 +1164,129 @@ type GitConflictCopy struct {
 	CopyID      string   `json:"copy_id"`
 	CreatedAt   string   `json:"created_at"`
 	Missing     []string `json:"missing,omitempty"`
+}
+
+// Agent conflict resolution (ADR 0023, S4; Q10). A resolution job is an
+// agent turn in a job-kind thread (Thread.Job) that may edit the listed
+// conflicted files and run checks, then stops for review: the server never
+// stages, continues, skips or aborts for it. The job thread is exempt from
+// the operation's checkout reservation; every other thread still waits.
+//
+//   - git.resolve_job_start (a journaled Git write, like the others):
+//     OperationID (the recorded operation; empty adopts an operation started
+//     elsewhere into a new record), AgentID and Settings (as thread.start),
+//     Paths (unmerged paths; empty means all) and optional Instructions
+//     (at most 4 KiB, appended to the prompt). Before the agent starts, every
+//     path has a saved copy (the review's "before") and the server records
+//     HEAD, the stop, the other unmerged paths and the status outside the
+//     job's paths. The record becomes agent_running with JobThreadID.
+//     Refused (job_exists) while a job is attached; end it first.
+//   - git.resolve_job_followup (an ordinary command): OperationID and
+//     Prompt; another turn in the same job thread (also after an interrupted
+//     job or a server restart), record back to agent_running.
+//   - git.resolve_job_cancel: OperationID; interrupts the running turn (as
+//     thread.interrupt). The record becomes agent_interrupted.
+//   - git.resolve_job_end: OperationID; closes the job thread and detaches
+//     it; the record returns to stopped_conflicts or ready.
+//
+// When the job's turn ends the record becomes agent_review (agent_interrupted
+// when it was cancelled, failed or the server restarted; jobs never restart
+// by themselves). GitOperationState.Review compares every job path with its
+// saved copy and flags scope violations. Accepting a path is
+// git.conflict_resolve pinned to the reviewed ConflictPin and WorktreeToken;
+// rejecting it is git.conflict_restore of the item's CopyID. While the job
+// runs, git.conflict_* and git.operation_continue, _skip and _abort are
+// refused (job_running: stop the agent first); in review they are allowed,
+// and a successful continue, skip or abort ends the job.
+//
+// Review round (2026-09-25): the job start takes a before_job copy of every
+// job path (working file and index, after open documents were saved); the
+// review compares with it and reject restores it, so the user's own edits
+// from before the job are never attributed to the agent or lost. A staged
+// item shows its index content (IndexOid, IndexDiff) and is accepted with
+// As keep_staged, pinned to the reviewed index entry. Continue and skip are
+// gated on content (GitAgentChanges): the first job of a stop records the
+// whole index (GitOperationRecord.JobBaseline), each user resolve or
+// restore records the entries it left (JobDecisions), and every index
+// entry that differs from the baseline without a matching decision must be
+// acknowledged by fingerprint (AcknowledgeAgentChanges) or the command is
+// refused (review_pending). The gate outlives End and the job thread's
+// deletion until the operation moves on. git.resolve_job_end removes the
+// job thread; follow-up and end are refused while a cancelled turn is
+// still stopping. A review is never cached while a turn is active, and a
+// turn that ends (also after a cancel) is reviewed again. The job thread refuses ordinary commands (job_thread:
+// prompt.send, prompt.reopen-send, thread.resume, thread.reopen, queue.*)
+// and deletion while it works; deleting it otherwise detaches the job. If
+// the operation ends while a job is attached (the agent continued, skipped
+// or aborted it), the record becomes ended_by_job, keeps the last review
+// and the job's turn is stopped. Codes: review_pending, job_thread.
+type GitResolveJob struct {
+	OperationID  string    `json:"operation_id,omitempty"`
+	AgentID      string    `json:"agent_id,omitempty"`
+	Settings     *Settings `json:"settings,omitempty"`
+	Paths        []string  `json:"paths,omitempty"`
+	Instructions string    `json:"instructions,omitempty"`
+	Prompt       string    `json:"prompt,omitempty"`
+}
+
+// Review states (GitResolveReview.State).
+const (
+	GitReviewRunning     = "running"
+	GitReviewReady       = "ready"
+	GitReviewInterrupted = "interrupted"
+)
+
+// GitResolveReview is GitOperationState.Review while a job is attached.
+// Violations name what the agent did outside its scope: HEAD moved, the
+// operation's stop changed, other unmerged paths were resolved, files
+// outside the job's paths changed, or job paths were staged (the agent ran
+// git add or rm). They are reported, never repaired.
+//
+// Additive (S4 review): the review is computed when the job's turn ends and
+// on an explicit refresh (GET /v1/git/operation?review=refresh), and cached
+// on the record; Stale reports that the repository changed since
+// (refresh to see it). TurnID is the job turn it reviews, StopReason how
+// that turn ended (end_turn, max_tokens, refusal, cancelled...).
+// Fingerprint digests the items and violations.
+type GitResolveReview struct {
+	JobThreadID string           `json:"job_thread_id"`
+	State       string           `json:"state"`
+	Items       []GitResolveItem `json:"items"`
+	Violations  []string         `json:"violations,omitempty"`
+	Incomplete  bool             `json:"incomplete,omitempty"`
+	TurnID      string           `json:"turn_id,omitempty"`
+	StopReason  string           `json:"stop_reason,omitempty"`
+	Stale       bool             `json:"stale,omitempty"`
+	Fingerprint string           `json:"fingerprint,omitempty"`
+	ComputedAt  string           `json:"computed_at,omitempty"`
+}
+
+// GitResolveItem reviews one job path: Changed (the working file differs
+// from the saved copy), Staged (no longer unmerged: the agent staged or
+// removed it), Deleted (the file is gone), HasMarkers (conflict-marker
+// lines remain), Binary, and Diff, a bounded unified diff from the saved
+// working file to the current one (DiffTruncated when cut). ConflictPin
+// and WorktreeToken pin accept (git.conflict_resolve); CopyID is the saved
+// copy reject restores (git.conflict_restore).
+type GitResolveItem struct {
+	Path          string `json:"path"`
+	Changed       bool   `json:"changed,omitempty"`
+	Staged        bool   `json:"staged,omitempty"`
+	Deleted       bool   `json:"deleted,omitempty"`
+	HasMarkers    bool   `json:"has_markers,omitempty"`
+	Binary        bool   `json:"binary,omitempty"`
+	Diff          string `json:"diff,omitempty"`
+	DiffTruncated bool   `json:"diff_truncated,omitempty"`
+	ConflictPin   string `json:"conflict_pin,omitempty"`
+	WorktreeToken string `json:"worktree_token,omitempty"`
+	CopyID        string `json:"copy_id,omitempty"`
+	// Additive (S4 review). Unknown: the item could not be compared (an
+	// error or the review's time budget); nothing about it is claimed.
+	// IndexOid and IndexDiff show a staged entry's content against the
+	// pre-job file (accept it with As keep_staged). Decision is accepted or
+	// rejected once the user decided.
+	Unknown   bool   `json:"unknown,omitempty"`
+	IndexOid  string `json:"index_oid,omitempty"`
+	IndexDiff string `json:"index_diff,omitempty"`
+	Decision  string `json:"decision,omitempty"`
 }

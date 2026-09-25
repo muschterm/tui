@@ -663,3 +663,21 @@ func TestGitConflictCopyRetention(t *testing.T) {
 		t.Fatal("current stop lost its at_stop copy")
 	}
 }
+
+func TestGitOperationToplevelAndWorkingOid(t *testing.T) {
+	e, root, git := conflictSetup(t)
+	gitTry(t, root, "merge", "other")
+	st := operationOf(t, e, root)
+	if st.Toplevel != root {
+		t.Fatalf("toplevel %q, want %q", st.Toplevel, root)
+	}
+	f := conflictFileOf(t, e, root, "c.txt", protocol.GitConflictVersionWorking)
+	if f.Oid == "" || f.Oid != git("hash-object", "--no-filters", "c.txt") {
+		t.Fatalf("working oid %q", f.Oid)
+	}
+	before := git("count-objects", "-v")
+	conflictFileOf(t, e, root, "c.txt", protocol.GitConflictVersionWorking)
+	if git("count-objects", "-v") != before {
+		t.Fatal("reading the working version wrote an object")
+	}
+}

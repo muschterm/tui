@@ -50,15 +50,9 @@ func conflictSetup(t *testing.T) (*engine, string, func(...string) string) {
 // operationOf reads the operation as GET /v1/git/operation does.
 func operationOf(t *testing.T, e *engine, root string) protocol.GitOperationState {
 	t.Helper()
-	e.mu.Lock()
-	seq := e.gitLocked().opSeq
-	e.mu.Unlock()
-	st, top, err := readGitOperation(context.Background(), root)
+	st, err := e.operationState(context.Background(), root, false)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if top != "" {
-		e.attachOperation(&st, top, seq)
 	}
 	return st
 }

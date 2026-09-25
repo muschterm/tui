@@ -126,7 +126,7 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	if c.Kind == "terminal.open" {
 		return e.openTerminal(ctx, c)
 	}
-	if strings.HasPrefix(c.Kind, "git.") {
+	if strings.HasPrefix(c.Kind, "git.") && !jobControlKind(c.Kind) {
 		return e.gitWriteCommand(ctx, c)
 	}
 	if strings.HasPrefix(c.Kind, "document.") {
@@ -309,6 +309,14 @@ func (e *engine) tick() error {
 			}
 		}
 		trimFixtureActivity(t)
+	}
+	// A finished fixture resolution job moves its operation to review.
+	if out := syncJobStatesLocked(&next, func(checkout string) string {
+		dir, _ := e.gitDirForLocked(checkout)
+		return gitDirOperation(dir)
+	}); out.changed {
+		e.afterJobSyncLocked(out)
+		changed = true
 	}
 	if !changed {
 		// Candidates are derived, so a free checkout is re-examined every tick
