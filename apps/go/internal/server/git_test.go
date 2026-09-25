@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/muschterm/tui/apps/go/internal/client"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
+	"golang.org/x/sys/unix"
 )
 
 // gitFixture isolates tests from the developer's global/system Git config.
@@ -564,5 +566,139 @@ func TestGitUntrackedSpecialFiles(t *testing.T) {
 	var pe *protocol.Error
 	if !errors.As(err, &pe) || pe.Code != "not_diffable" {
 		t.Fatalf("nested repo: %v", err)
+	}
+}
+
+func TestGitCraftedFilterNamesCannotBypassOrInject(t *testing.T) {
+	root, git := gitFixture(t)
+	marks := t.TempDir()
+	script := filepath.Join(marks, "mk.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$0.ran.$1\"\nexec cat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init")
+	names := []string{"a=b", "sp ace", "h#sh", "d.o.t", "x"}
+	var attrs strings.Builder
+	for i, name := range names {
+		fmt.Fprintf(&attrs, "f%d filter=%s\n", i, name)
+		writeFile(t, root, fmt.Sprintf("f%d", i), "one\n")
+	}
+	writeFile(t, root, ".gitattributes", attrs.String())
+	git("add", ".")
+	git("commit", "-m", "one")
+	for i, name := range names[:4] {
+		git("config", "filter."+name+".clean", fmt.Sprintf("%s BYPASS%d", script, i))
+	}
+	// Plain git never runs this; a naive -c override would synthesize
+	// filter.x.process=<script> INJ.
+	git("config", "filter.x.clean", "cat")
+	git("config", "filter.x.process="+script+" INJ #.required", "false")
+	for i := range names {
+		writeFile(t, root, fmt.Sprintf("f%d", i), "one\ntwo\n")
+	}
+	mustStatus(t, root)
+	for i := range names {
+		if _, err := readGitDiff(context.Background(), root, fmt.Sprintf("f%d", i), "unstaged"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ran, _ := filepath.Glob(script + ".ran.*"); len(ran) != 0 {
+		t.Fatalf("filter command executed: %v", ran)
+	}
+}
+
+func TestGitDiffDoesNotEnterSubmodules(t *testing.T) {
+	base, _ := gitFixture(t)
+	marker := filepath.Join(base, "SUBFILTER")
+	sub := filepath.Join(base, "subsrc")
+	gitIn(t, base, "init", sub)
+	writeFile(t, sub, ".gitattributes", "* filter=s\n")
+	writeFile(t, sub, "f", "x\n")
+	gitIn(t, sub, "add", ".")
+	gitIn(t, sub, "commit", "-m", "s")
+	top := filepath.Join(base, "top")
+	gitIn(t, base, "init", top)
+	gitIn(t, top, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+	gitIn(t, top, "commit", "-m", "t")
+	inner := filepath.Join(top, "sub")
+	gitIn(t, inner, "commit", "--allow-empty", "-m", "moved")
+	gitIn(t, inner, "config", "filter.s.clean", "sh -c 'touch "+marker+"; cat'")
+	writeFile(t, inner, "f", "dirty\n")
+	s := mustStatus(t, top)
+	if e := hasEntry(s, "sub", "unstaged"); e == nil || !e.Submodule {
+		t.Fatalf("submodule entry: %+v", s.Entries)
+	}
+	if d, err := readGitDiff(context.Background(), top, "sub", "unstaged"); err != nil || !strings.Contains(d.Text, "Subproject commit") {
+		t.Fatalf("submodule diff: %v %+v", err, d)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("git ran inside the submodule")
+	}
+}
+
+func TestGitProjectAtRepositorySubdirectory(t *testing.T) {
+	root, git := gitFixture(t)
+	git("init")
+	writeFile(t, root, "top.txt", "a\n")
+	writeFile(t, root, "sub/in.txt", "b\n")
+	git("add", ".")
+	git("commit", "-m", "one")
+	writeFile(t, root, "top.txt", "a\nchanged\n")
+	writeFile(t, root, "sub/new.txt", "fresh\n")
+	project := filepath.Join(root, "sub")
+	s := mustStatus(t, project)
+	if hasEntry(s, "top.txt", "unstaged") == nil || hasEntry(s, "sub/new.txt", "untracked") == nil {
+		t.Fatalf("status: %+v", s.Entries)
+	}
+	if d, err := readGitDiff(context.Background(), project, "top.txt", "unstaged"); err != nil || !strings.Contains(d.Text, "+changed") {
+		t.Fatalf("tracked: %v %+v", err, d)
+	}
+	if d, err := readGitDiff(context.Background(), project, "sub/new.txt", "untracked"); err != nil || !strings.Contains(d.Text, "+fresh") {
+		t.Fatalf("untracked: %v %+v", err, d)
+	}
+}
+
+func TestGitNoisyGlobalFilterStderr(t *testing.T) {
+	root, git := gitFixture(t)
+	global := filepath.Join(os.Getenv("HOME"), ".gitconfig")
+	if err := os.WriteFile(global, []byte("[filter \"noisy\"]\n\tclean = \"sh -c 'head -c 262144 /dev/zero | tr \\\\\\\\0 x >&2; cat'\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("init")
+	writeFile(t, root, ".gitattributes", "*.n filter=noisy\n")
+	writeFile(t, root, "a.n", "a\n")
+	git("add", ".")
+	git("commit", "-m", "one")
+	writeFile(t, root, "a.n", "a\nb\n")
+	if d, err := readGitDiff(context.Background(), root, "a.n", "unstaged"); err != nil || !strings.Contains(d.Text, "+b") {
+		t.Fatalf("noisy filter: %v %+v", err, d)
+	}
+}
+
+func TestGitWalkParentFallback(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a/b/f.txt", "x\n")
+	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(rootFD)
+	fd, err := walkParent(rootFD, "a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstatat(fd, "f.txt", &st, 0); err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(fd)
+	for _, dir := range []string{"link/b", "link", "a/missing"} {
+		if fd, err := walkParent(rootFD, dir); err == nil {
+			unix.Close(fd)
+			t.Fatalf("walked %s", dir)
+		}
 	}
 }

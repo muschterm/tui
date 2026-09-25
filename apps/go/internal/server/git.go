@@ -52,11 +52,23 @@ var errGitNotRepository = errors.New("not a git checkout")
 //     (including keys pulled in by a local include) is neutralized with
 //     empty clean/smudge/process and required=false, which git treats as "no
 //     filter" (verified: the configured command never runs, status is sane);
-//     a driver defined purely in global/system scope still runs;
+//     a driver defined purely in global/system scope still runs. The
+//     overrides travel as GIT_CONFIG_COUNT/KEY_n/VALUE_n so a crafted
+//     subsection name ("a=b", "x.process=cmd #") is taken verbatim and can
+//     neither dodge nor inject configuration, as it could through -c. A name
+//     that cannot be represented (NUL or newline) fails the read closed. A
+//     single local key disables that driver even when it is defined globally
+//     (e.g. `git lfs install --local` makes LFS files read raw here);
+//   - global drivers still run and may read repository files (.lfsconfig);
+//   - gitfile, alternates, replace refs and core.worktree redirection are
+//     honored as Git configures them, so a checkout can present another
+//     repository's data read-only; accepted for this slice;
+//   - all reads run at the repository toplevel, because status paths are
+//     toplevel-relative even when a project is registered at a subdirectory;
 //   - fsmonitor, pager, external diff, textconv and signature verification
 //     are disabled outright; hooks never run for these commands;
-//   - submodules are scanned with --ignore-submodules=dirty, so no git runs
-//     inside them (submodule commit changes are reported; dirty submodule
+//   - status, diff and show use --ignore-submodules=dirty, so no git runs
+//     inside submodules (whose local config is never scanned) (submodule commit changes are reported; dirty submodule
 //     worktrees are not);
 //   - GIT_NO_LAZY_FETCH=1 stops partial clones from contacting promisor
 //     remotes; missing objects surface as unavailable. Nothing here fetches.
@@ -67,17 +79,23 @@ var errGitNotRepository = errors.New("not a git checkout")
 // literal. git runs in its own process group, which is killed on output cap,
 // deadline or cancellation so filter children are not orphaned.
 type gitReader struct {
-	dir   string
-	extra []string
+	dir string
+	env []string
 }
 
 func newGitReader(ctx context.Context, dir string) (*gitReader, error) {
 	g := &gitReader{dir: dir}
+	top, truncated, err := g.read(ctx, 64<<10, "rev-parse", "--show-toplevel")
+	if err != nil || truncated || len(top) < 2 {
+		return nil, failure("unavailable", "Git toplevel could not be resolved")
+	}
+	g.dir = strings.TrimSuffix(string(top), "\n")
 	out, truncated, err := g.read(ctx, 1<<20, "config", "--list", "--show-scope", "-z")
 	if err != nil || truncated {
 		return nil, failure("unavailable", "Git configuration could not be read")
 	}
 	seen := map[string]bool{}
+	var names []string
 	// -z records are "scope\0key\nvalue\0".
 	fields := strings.Split(string(out), "\x00")
 	for i := 0; i+1 < len(fields); i += 2 {
@@ -95,15 +113,33 @@ func newGitReader(ctx context.Context, dir string) (*gitReader, error) {
 			continue
 		}
 		name := key[len("filter."):last]
-		if seen[name] {
-			continue
+		if strings.ContainsAny(name, "\x00\n") {
+			return nil, failure("unavailable", "unsafe repository filter configuration")
 		}
-		seen[name] = true
-		for _, v := range []string{"clean=", "smudge=", "process=", "required=false"} {
-			g.extra = append(g.extra, "-c", "filter."+name+"."+v)
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
 		}
 	}
+	g.env = gitFilterOverrides(names)
 	return g, nil
+}
+
+// gitFilterOverrides neutralizes each named filter through the environment
+// config channel, whose keys git takes verbatim.
+func gitFilterOverrides(names []string) []string {
+	var env []string
+	n := 0
+	for _, name := range names {
+		for _, kv := range [][2]string{{"clean", ""}, {"smudge", ""}, {"process", ""}, {"required", "false"}} {
+			env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=filter.%s.%s", n, name, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, kv[1]))
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))
 }
 
 // read runs one command with output capped at limit bytes; reaching the cap
@@ -116,7 +152,6 @@ func (g *gitReader) read(ctx context.Context, limit int, args ...string) (out []
 		"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "color.ui=false",
 		"-c", "log.showSignature=false", "-c", "diff.external=", "-c", "core.bigFileThreshold=8m",
 	}
-	base = append(base, g.extra...)
 	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "GIT_") && !strings.HasPrefix(entry, "PAGER=") {
@@ -124,9 +159,10 @@ func (g *gitReader) read(ctx context.Context, limit int, args ...string) (out []
 		}
 	}
 	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1", "GIT_PAGER=cat", "PAGER=cat")
+	cmd.Env = append(cmd.Env, g.env...)
 	configureGitProcess(cmd)
 	w := &cappedOutput{limit: limit, full: cancel}
-	stderr := &cappedOutput{limit: gitStderrMaxBytes, full: func() {}}
+	stderr := &cappedOutput{limit: gitStderrMaxBytes, drain: true}
 	cmd.Stdout, cmd.Stderr = w, stderr
 	cmd.WaitDelay = 100 * time.Millisecond
 	err = cmd.Run()
@@ -151,17 +187,24 @@ type cappedOutput struct {
 	limit int
 	over  bool
 	full  func()
+	drain bool // keep the prefix, silently discard the rest (stderr)
 }
 
 func (c *cappedOutput) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.over {
+		if c.drain {
+			return len(p), nil
+		}
 		return 0, errors.New("output cap reached")
 	}
 	if room := c.limit - c.buf.Len(); len(p) > room {
 		c.buf.Write(p[:room])
 		c.over = true
+		if c.drain {
+			return len(p), nil
+		}
 		c.full()
 		return 0, errors.New("output cap reached")
 	}
@@ -415,7 +458,7 @@ func validGitPath(p string) bool {
 	return true
 }
 
-var gitDiffPrefixes = []string{"--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/"}
+var gitDiffPrefixes = []string{"--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--find-renames", "--ignore-submodules=dirty", "--src-prefix=a/", "--dst-prefix=b/"}
 
 // readGitDiff renders one status entry. The path must be present in the
 // checkout's current status under the requested group, which prevents the
@@ -468,7 +511,7 @@ func readGitDiff(ctx context.Context, dir, p, group string) (protocol.GitDiff, e
 	case nested:
 		return diff, failure("not_diffable", "untracked nested repository cannot be diffed")
 	case group == protocol.GitGroupUntracked:
-		return untrackedDiff(dir, p)
+		return untrackedDiff(g.dir, p)
 	}
 	var cmd []string
 	switch group {

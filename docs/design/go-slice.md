@@ -1021,6 +1021,16 @@ mutating control, not even a disabled one.
   Esc work as for attachments, and focus returns to the originating row. On
   the surface, Up/Down move focus between rows and keep the focused row in
   view.
+- **Server read policy** (`internal/server/git.go`). Global and system Git
+  config is honored. Repository-local config is treated as untrusted:
+  - **Local filters.** Any `filter.<name>.*` key in local or worktree scope
+    disables that driver entirely, even one defined globally. For example,
+    `git lfs install --local` makes LFS files read raw.
+  - **Global drivers** still run and may read repository files such as
+    `.lfsconfig`.
+  - **Redirection.** gitfile, alternates, replace refs and `core.worktree` are
+    honored as Git configures them. A checkout can therefore show another
+    repository's data, read-only; this is accepted for this slice.
 
 Tests: `internal/tui/git_surface_test.go`. `TestGitSurfaceCaptures` writes
 render captures (`TUI_GO_CAPTURE_DIR`), optionally from real reads supplied as
