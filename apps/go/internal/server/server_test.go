@@ -4,17 +4,53 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/muschterm/tui/apps/go/internal/agent"
 	"github.com/muschterm/tui/apps/go/internal/client"
 	"github.com/muschterm/tui/apps/go/internal/fixture"
 	"github.com/muschterm/tui/apps/go/internal/lifecycle"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 	"github.com/muschterm/tui/apps/go/internal/storage"
 )
+
+// isolateAgentDiscovery keeps a test server from ever launching the
+// developer's real installed `claude`/`codex` (or ACP adapter/node/npx)
+// binaries: it makes the built-in adapters' configured executables resolve
+// to a path that cannot exist, and puts stand-in recorder scripts first on
+// PATH so any bare-name launch attempt is caught (and fails the test) rather
+// than silently reaching a real CLI further down the developer's own PATH.
+// It intentionally leaves HOME untouched, since several tests set their own
+// HOME (for Git config isolation or terminal fixture assertions).
+func isolateAgentDiscovery(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	markers := filepath.Join(root, "launched")
+	fakes := filepath.Join(root, "fakebin")
+	for _, dir := range []string{markers, fakes} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"claude", "codex", "codex-acp", "claude-code-acp", "node", "npx"} {
+		script := "#!/bin/sh\ntouch " + filepath.Join(markers, name) + "\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(fakes, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(agent.EnvClaudeRuntime, filepath.Join(root, "missing", "claude"))
+	t.Setenv(agent.EnvCodexRuntime, filepath.Join(root, "missing", "codex"))
+	t.Cleanup(func() {
+		if launched, _ := os.ReadDir(markers); len(launched) > 0 {
+			t.Errorf("agent runtimes were started: %v", launched)
+		}
+	})
+}
 
 func testEngine(t *testing.T) *engine {
 	t.Helper()
@@ -98,6 +134,7 @@ func TestSlowSubscriberIsExplicitlyDisconnected(t *testing.T) {
 
 func startTestServer(t *testing.T, home string) (*client.Client, func()) {
 	t.Helper()
+	isolateAgentDiscovery(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, home) }()
