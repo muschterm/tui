@@ -37,6 +37,9 @@ import (
 // A running Git write (git_write.go) also holds the lease, as a non-thread
 // holder keyed by its repository toplevel and matched by path overlap, and a
 // Git write is refused outright while a thread holds an overlapping lease.
+// Git writes that change neither the index nor the working tree (fetch, push,
+// branch creation; ADR 0021) take only the repository's Git slot, not the
+// lease, so they neither wait for nor block agent turns.
 //
 // Known limits: between threads the lease key is the registered project path,
 // so nested projects in one working tree (/repo and /repo/sub) are not

@@ -17,9 +17,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// schemaVersion 2 adds artifact metadata; every upgrade first writes a
-// synced pre-migration backup next to the database.
-const schemaVersion = 2
+// schemaVersion 2 adds artifact metadata and 3 shared documents; every
+// upgrade first writes a synced pre-migration backup next to the database.
+const schemaVersion = 3
 
 // Store persists the authoritative snapshot, command receipts and client
 // views in one SQLite database. Artifact bytes live under artifactDir once
@@ -106,6 +106,9 @@ func Open(path string) (*Store, error) {
 			_, err = tx.Exec(artifactSchema)
 		}
 		if err == nil {
+			_, err = tx.Exec(documentSchema)
+		}
+		if err == nil {
 			_, err = tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion))
 		}
 		if err != nil {
@@ -119,6 +122,12 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Document tables are created idempotently so homes created during the
+	// unreleased v3 development gain later additions.
+	if _, err = db.Exec(documentSchema); err != nil {
 		db.Close()
 		return nil, err
 	}

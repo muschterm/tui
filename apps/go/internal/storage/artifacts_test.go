@@ -200,10 +200,10 @@ func TestMigrationFromVersionOneAddsArtifactsWithBackup(t *testing.T) {
 	var version, tables int
 	s.db.QueryRow("PRAGMA user_version").Scan(&version)
 	s.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE name='artifacts'").Scan(&tables)
-	if version != 2 || tables != 1 {
+	if version != 3 || tables != 1 {
 		t.Fatal("artifacts schema missing", version, tables)
 	}
-	backups, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "recovery-before-v2-*.sqlite"))
+	backups, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "recovery-before-v3-*.sqlite"))
 	if len(backups) != 1 {
 		t.Fatal("no pre-migration backup", backups)
 	}

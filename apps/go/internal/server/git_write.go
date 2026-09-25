@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,8 +22,9 @@ import (
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
 
-// Git writes: stage, unstage, discard and commit (ADR 0020; wire contract in
-// protocol/git_write.go).
+// Git writes: stage, unstage, discard and commit (ADR 0020), and the ref and
+// remote actions in git_ref.go and git_remote.go (ADR 0021); wire contract in
+// protocol/git_write.go.
 //
 // Flow. A git.* command reserves its identity (a concurrent retry waits for
 // it), resolves the checkout to its repository toplevel and, under e.mu,
@@ -75,10 +77,27 @@ type gitWriteState struct {
 	// unsaved keeps final receipts whose phase-two save failed; retries are
 	// answered from here and every later Git command retries the save.
 	unsaved map[string]gitUnsaved
-	wg      sync.WaitGroup
+	// userCancels is git.cancel's handle on a journaled command (ADR 0021).
+	userCancels map[string]*gitCancelState
+	wg          sync.WaitGroup
 }
 
-type gitHold struct{ top, threadID, projectID string }
+// gitHold is a running Git write. Every hold occupies its repository's Git
+// slot (git_busy); only a hold with lease also holds the checkout writer
+// lease against agent turns (ADR 0021: fetch, push and branch creation do
+// not).
+type gitHold struct {
+	top, common, threadID, projectID string
+	lease, refOp                     bool
+}
+
+// gitCancelState is guarded by e.mu. cancellable says whether git.cancel is
+// accepted now; requested records that it was.
+type gitCancelState struct {
+	cancel      context.CancelFunc
+	cancellable bool
+	requested   bool
+}
 
 type gitUnsaved struct {
 	c protocol.Command
@@ -89,6 +108,7 @@ func (e *engine) gitLocked() *gitWriteState {
 	g := &e.git
 	if g.holders == nil {
 		g.holders, g.inflight, g.cancels, g.unsaved = map[string]gitHold{}, map[string]chan struct{}{}, map[string]context.CancelFunc{}, map[string]gitUnsaved{}
+		g.userCancels = map[string]*gitCancelState{}
 	}
 	return g
 }
@@ -105,7 +125,7 @@ func pathsOverlap(a, b string) bool {
 // gitWriteHolderLocked returns the Git write holding a lease that overlaps key.
 func (e *engine) gitWriteHolderLocked(key string) string {
 	for id, h := range e.git.holders {
-		if pathsOverlap(key, h.top) {
+		if h.lease && pathsOverlap(key, h.top) {
 			return id
 		}
 	}
@@ -163,6 +183,12 @@ func validateGitWrite(c protocol.Command) error {
 	}
 	if (c.ThreadID == "") == (c.ProjectID == "") {
 		return failure("invalid", "select exactly one project or thread")
+	}
+	if gitRefOrSyncKind(c.Kind) {
+		return validateGitRefSync(c.Kind, w)
+	}
+	if w.Ref != nil || w.Sync != nil || w.Cancel != nil {
+		return failure("invalid", "ref, sync and cancel payloads are not accepted here")
 	}
 	switch c.Kind {
 	case protocol.GitKindStage, protocol.GitKindUnstage, protocol.GitKindDiscard:
@@ -250,6 +276,9 @@ func gitWriteTargetLocked(s *protocol.Snapshot, c protocol.Command) (string, err
 
 // gitWriteCommand handles every git.* command kind.
 func (e *engine) gitWriteCommand(ctx context.Context, c protocol.Command) (protocol.Receipt, error) {
+	if c.Kind == protocol.GitKindCancel {
+		return e.gitCancel(c)
+	}
 	if err := validateGitWrite(c); err != nil {
 		return protocol.Receipt{}, err
 	}
@@ -326,10 +355,33 @@ func (e *engine) persistUnsavedGitLocked() {
 	}
 }
 
-// gitPlan is a revalidated write ready to run.
+// gitPlan is a revalidated write ready to run. runGitWrite sets rt before
+// run; a plan reads it through runtime().
 type gitPlan struct {
 	paths []string
 	run   func(ctx context.Context) protocol.GitResult
+	rt    *gitRuntime
+}
+
+// gitRuntime connects a running plan to the engine (ADR 0021). cancelCtx is
+// run's context plus git.cancel; progress publishes a throttled GitOp
+// progress; setCancellable changes whether git.cancel is accepted and, when
+// disabling it, reports false if a cancel already arrived.
+type gitRuntime struct {
+	cancelCtx      context.Context
+	progress       func(phase string, percent int)
+	setCancellable func(bool) bool
+	// rewrite brackets a Git command that rewrites working-tree files
+	// (git_ref.go, beginWorktreeRewrite).
+	rewrite func(ctx context.Context, top string) (end func(), err error)
+}
+
+func (p *gitPlan) runtime(ctx context.Context) *gitRuntime {
+	if p.rt != nil {
+		return p.rt
+	}
+	return &gitRuntime{cancelCtx: ctx, progress: func(string, int) {}, setCancellable: func(bool) bool { return true },
+		rewrite: func(context.Context, string) (func(), error) { return func() {}, nil }}
 }
 
 // safePrepare and safeRun keep a panic in revalidation or Git handling from
@@ -353,6 +405,7 @@ func safeRun(ctx context.Context, plan *gitPlan) (r protocol.GitResult) {
 }
 
 func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string) (protocol.Receipt, error) {
+	kind := gitKindPolicy(c.Kind)
 	prepCtx, cancelPrep := context.WithTimeout(ctx, gitWriteBudget)
 	defer cancelPrep()
 	if !gitReadable(inspectWorkspace(prepCtx, dir)) {
@@ -379,17 +432,21 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 		e.mu.Unlock()
 		return protocol.Receipt{}, failure("not_found", "the target changed while the request was prepared")
 	}
-	if holder := e.gitThreadHolderLocked(w.top); holder != nil {
+	if holder := e.gitThreadHolderLocked(w.top); kind.lease && holder != nil {
 		e.mu.Unlock()
 		return protocol.Receipt{}, failure("checkout_busy", fmt.Sprintf("thread %q (%s) is working in this checkout; Git changes wait until it finishes", holder.Title, holder.ID))
 	}
+	// One Git write per worktree; ref and remote actions also serialize
+	// with every write in the repository's other linked worktrees, since
+	// they share refs.
+	refOp := gitRefOrSyncKind(c.Kind)
 	for id, h := range gs.holders {
-		if h.top == w.top {
+		if h.top == w.top || (h.common == w.commonDir && (refOp || h.refOp)) {
 			e.mu.Unlock()
 			return protocol.Receipt{}, failure("git_busy", "another Git change ("+id+") is running in this repository")
 		}
 	}
-	gs.holders[c.ID] = gitHold{top: w.top, threadID: c.ThreadID, projectID: c.ProjectID}
+	gs.holders[c.ID] = gitHold{top: w.top, common: w.commonDir, threadID: c.ThreadID, projectID: c.ProjectID, lease: kind.lease, refOp: refOp}
 	e.rebalanceWritersAndFlushLocked()
 	e.mu.Unlock()
 	release := func() {
@@ -424,7 +481,7 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 		return protocol.Receipt{}, failure("stopping", "server is shutting down")
 	}
 	op := protocol.GitOp{Checkout: w.top, CommandID: c.ID, Op: gitOpName(c.Kind), State: protocol.GitStateRunning, Paths: plan.paths,
-		ThreadID: c.ThreadID, ProjectID: c.ProjectID, StartedAt: time.Now().UTC().Format(time.RFC3339)}
+		ThreadID: c.ThreadID, ProjectID: c.ProjectID, StartedAt: time.Now().UTC().Format(time.RFC3339), Cancellable: kind.cancellable}
 	next := clone(e.snap)
 	putGitOp(&next, op)
 	next.Revision++
@@ -442,8 +499,11 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	if parent == nil {
 		parent = context.Background()
 	}
-	opCtx, cancel := context.WithTimeout(parent, gitWriteBudget)
+	opCtx, cancel := context.WithTimeout(parent, kind.budget)
+	userCtx, userCancel := context.WithCancel(opCtx)
 	gs.cancels[c.ID] = cancel
+	gs.userCancels[c.ID] = &gitCancelState{cancel: userCancel, cancellable: kind.cancellable}
+	plan.rt = e.gitRuntimeFor(c.ID, userCtx)
 	gs.wg.Add(1)
 	e.mu.Unlock()
 	defer gs.wg.Done()
@@ -451,17 +511,24 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	result := safeRun(opCtx, plan)
 	result.Op = op.Op
 	if opCtx.Err() != nil && result.State != protocol.GitStateSucceeded {
-		result.State, result.Code = protocol.GitStateOutcomeUnknown, "cancelled"
+		code := "cancelled"
+		if kind.network && errors.Is(opCtx.Err(), context.DeadlineExceeded) {
+			code = "timeout"
+		}
+		result.State, result.Code = protocol.GitStateOutcomeUnknown, code
 		result.Message = "Git was stopped before it finished; refresh status to see what changed"
 	}
+	userCancel()
 	cancel()
 
 	// Phase two: record the outcome and release the lease.
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(gs.cancels, c.ID)
+	delete(gs.userCancels, c.ID)
 	delete(gs.holders, c.ID)
 	op.State, op.Code, op.Message, op.Commit = result.State, result.Code, result.Message, result.Commit
+	op.Progress, op.Cancellable = nil, false
 	op.Output = result.Output
 	if len(op.Output) > gitOpOutputTail {
 		op.Output = strings.ToValidUTF8(op.Output[len(op.Output)-gitOpOutputTail:], "")
@@ -541,6 +608,9 @@ func putGitOp(s *protocol.Snapshot, op protocol.GitOp) {
 // recoverGitOps marks Git writes that were running when the server stopped.
 func recoverGitOps(s *protocol.Snapshot) {
 	for i := range s.GitOps {
+		// Progress is never journaled deliberately, but a snapshot saved for
+		// another reason can carry it.
+		s.GitOps[i].Progress, s.GitOps[i].Cancellable = nil, false
 		if s.GitOps[i].State == protocol.GitStateRunning {
 			s.GitOps[i].State, s.GitOps[i].Code = protocol.GitStateOutcomeUnknown, "interrupted"
 			s.GitOps[i].Message = gitInterruptedMessage
@@ -583,6 +653,7 @@ func (e *engine) stopGitWrites() {
 		if e.snap.GitOps[i].State == protocol.GitStateRunning {
 			e.snap.GitOps[i].State, e.snap.GitOps[i].Code = protocol.GitStateOutcomeUnknown, "interrupted"
 			e.snap.GitOps[i].Message = gitInterruptedMessage
+			e.snap.GitOps[i].Progress, e.snap.GitOps[i].Cancellable = nil, false
 		}
 	}
 	e.mu.Unlock()
@@ -591,7 +662,13 @@ func (e *engine) stopGitWrites() {
 // gitWriter runs mutating Git commands with CLI-parity configuration.
 type gitWriter struct {
 	top, gitDir string
-	restore     bool // `git restore` exists (Git 2.23+)
+	// commonDir is the repository's common directory (shared refs and
+	// objects); linked worktrees of one repository share it.
+	commonDir string
+	restore   bool // `git restore` exists (Git 2.23+)
+	// writeFetchHead: `git fetch --write-fetch-head` exists (Git 2.29+,
+	// alongside fetch.writeFetchHEAD).
+	writeFetchHead bool
 }
 
 var gitVersion = sync.OnceValues(func() ([2]int, error) {
@@ -623,7 +700,30 @@ func newGitWriter(ctx context.Context, g *gitReader) (*gitWriter, error) {
 	if !atLeast(2, 44) && partialClone(ctx, g) {
 		return nil, failure("not_supported", "Git 2.44 or newer is required to change a partial clone here")
 	}
-	return &gitWriter{top: g.dir, gitDir: strings.TrimSpace(string(out)), restore: atLeast(2, 23)}, nil
+	common, _, err := g.read(ctx, 4096, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, failure("unavailable", "Git common directory could not be resolved")
+	}
+	commonDir := strings.TrimSpace(string(common))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(g.dir, commonDir)
+	}
+	if real, err := filepath.EvalSymlinks(commonDir); err == nil {
+		commonDir = real
+	}
+	return &gitWriter{top: g.dir, gitDir: strings.TrimSpace(string(out)), commonDir: filepath.Clean(commonDir), restore: atLeast(2, 23), writeFetchHead: atLeast(2, 29)}, nil
+}
+
+// checkRefLocks refuses while another process holds a lock on one of refs
+// (full names such as refs/heads/main) or on packed-refs. Refs live in the
+// common directory, shared by linked worktrees.
+func (w *gitWriter) checkRefLocks(refs ...string) error {
+	for _, name := range append(refs, "packed-refs") {
+		if _, err := os.Lstat(filepath.Join(w.commonDir, filepath.FromSlash(name)+".lock")); err == nil {
+			return failure("ref_locked", "another Git process holds "+name+".lock; retry when it finishes")
+		}
+	}
+	return nil
 }
 
 // partialClone reports extensions.partialClone or any promisor remote; an
@@ -644,30 +744,148 @@ func partialClone(ctx context.Context, g *gitReader) bool {
 // run executes one write. stdout is returned when combined is false; the
 // bounded output always holds stderr, plus stdout when combined.
 func (w *gitWriter) run(ctx context.Context, stdin io.Reader, combined bool, args ...string) (stdout []byte, output *cappedOutput, err error) {
+	r := w.runWith(ctx, gitRunOpts{stdin: stdin, combined: combined}, args...)
+	return r.stdout, r.output, r.err
+}
+
+// gitRunOpts extends run for the ref and remote actions (git_remote.go).
+type gitRunOpts struct {
+	stdin    io.Reader
+	combined bool
+	// stall ends Git when it writes nothing for this long (0: never); the
+	// run then reports stalled.
+	stall time.Duration
+	// progress receives Git's --progress phases; progress lines themselves
+	// are kept out of the bounded output.
+	progress func(phase string, percent int)
+	// cMessages makes Git's messages untranslated so they can be parsed
+	// (would_overwrite paths, rejection reasons); other locale categories
+	// are kept.
+	cMessages bool
+	// network removes graphical display variables (gitWriteEnv).
+	network bool
+	// trace2 is a file that receives Git's trace2 events (push uses it to
+	// learn whether the pre-push hook refused).
+	trace2 string
+}
+
+type gitRunResult struct {
+	stdout  []byte
+	output  *cappedOutput
+	tail    *gitTail
+	err     error
+	stalled bool
+}
+
+// gitKeptEnv reports whether an inherited GIT_* variable is kept for writes:
+// variables that configure how the user's own git authenticates, connects,
+// finds its global/system configuration or identifies the author (CLI
+// parity, ADR 0021). Every other GIT_* variable is removed, in particular
+// those that redirect the repository (GIT_DIR, GIT_WORK_TREE,
+// GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES,
+// GIT_COMMON_DIR, GIT_NAMESPACE), inject configuration that must not
+// override ours (GIT_CONFIG_COUNT/KEY/VALUE, GIT_CONFIG_PARAMETERS), or
+// prompt, page, edit or trace (GIT_ASKPASS, GIT_TERMINAL_PROMPT, GIT_EDITOR,
+// GIT_PAGER, GIT_TRACE*).
+func gitKeptEnv(key string) bool {
+	switch key {
+	case "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND", "GIT_ALLOW_PROTOCOL", "GIT_PROTOCOL_FROM_USER",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CEILING_DIRECTORIES",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE":
+		return true
+	}
+	for _, prefix := range []string{"GIT_SSL_", "GIT_PROXY_SSL_", "GIT_HTTP_"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitWriteEnv is the environment of every Git write: GIT_* variables other
+// than gitKeptEnv's and pager settings are removed, no editor, prompt,
+// askpass or lazy fetch, and no terminal for pinentry (GPG_TTY, SSH_TTY).
+// Credential helpers, SSH_AUTH_SOCK and proxy variables are kept. network
+// runs (fetch, pull, push) also lose DISPLAY and WAYLAND_DISPLAY, so no
+// graphical prompt is started for them; commits keep DISPLAY for a
+// graphical pinentry (ADR 0020).
+func gitWriteEnv(cMessages, network bool) []string {
+	var env []string
+	lcAll := ""
+	for _, entry := range os.Environ() {
+		key, value, _ := strings.Cut(entry, "=")
+		switch {
+		case strings.HasPrefix(key, "GIT_") && !gitKeptEnv(key), key == "PAGER", key == "GPG_TTY", key == "SSH_TTY", key == "SSH_ASKPASS", key == "SSH_ASKPASS_REQUIRE", key == "GCM_INTERACTIVE":
+			continue
+		case network && (key == "DISPLAY" || key == "WAYLAND_DISPLAY"):
+			continue
+		case cMessages && (key == "LC_ALL" || key == "LANGUAGE" || key == "LC_MESSAGES"):
+			if key == "LC_ALL" {
+				lcAll = value
+			}
+			continue
+		}
+		env = append(env, entry)
+	}
+	if cMessages && lcAll != "" {
+		// LC_ALL overrode every category; keep that for all but messages.
+		env = slices.DeleteFunc(env, func(e string) bool { return strings.HasPrefix(e, "LANG=") })
+		env = append(env, "LANG="+lcAll)
+	}
+	if cMessages {
+		env = append(env, "LC_MESSAGES=C")
+	}
+	// An empty GIT_ASKPASS stops Git from consulting core.askPass and
+	// SSH_ASKPASS; SSH_ASKPASS_REQUIRE=never stops ssh from asking.
+	return append(env, "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS_REQUIRE=never", "GCM_INTERACTIVE=never",
+		"GIT_NO_LAZY_FETCH=1", "GIT_EDITOR=:", "GIT_SEQUENCE_EDITOR=:", "GIT_PAGER=cat", "PAGER=cat")
+}
+
+func (w *gitWriter) runWith(ctx context.Context, o gitRunOpts, args ...string) gitRunResult {
 	base := []string{
 		"--no-pager", "--literal-pathspecs", "-C", w.top,
 		"-c", "core.editor=:", "-c", "sequence.editor=:", "-c", "core.pager=cat", "-c", "color.ui=false",
 		"-c", "gc.auto=0", "-c", "maintenance.auto=false",
 	}
-	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
-	for _, entry := range os.Environ() {
-		// GPG_TTY/SSH_TTY would point pinentry-curses at a user's terminal.
-		if !strings.HasPrefix(entry, "GIT_") && !strings.HasPrefix(entry, "PAGER=") && !strings.HasPrefix(entry, "GPG_TTY=") && !strings.HasPrefix(entry, "SSH_TTY=") {
-			cmd.Env = append(cmd.Env, entry)
-		}
+	var watch *gitStallWatch
+	if o.stall > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		watch = newGitStallWatch(o.stall, cancel)
+		defer watch.stop()
 	}
-	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_EDITOR=:", "GIT_SEQUENCE_EDITOR=:", "GIT_PAGER=cat", "PAGER=cat")
+	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
+	// GPG_TTY/SSH_TTY would point pinentry-curses at a user's terminal.
+	cmd.Env = gitWriteEnv(o.cMessages, o.network)
 	configureGitWriteProcess(cmd)
-	output = &cappedOutput{limit: gitWriteOutputMax, drain: true}
+	if o.trace2 != "" {
+		cmd.Env = append(cmd.Env, "GIT_TRACE2_EVENT="+o.trace2)
+	}
+	output := &cappedOutput{limit: gitWriteOutputMax, drain: true}
+	tail := &gitTail{}
 	out := &cappedOutput{limit: gitStatusMaxBytes, drain: true}
-	cmd.Stdin, cmd.Stderr = stdin, output
-	if combined {
-		cmd.Stdout = output
-	} else {
+	var errSink io.Writer = io.MultiWriter(output, tail)
+	var lines *gitProgressLines
+	if o.progress != nil || watch != nil {
+		lines = &gitProgressLines{dst: errSink, progress: o.progress, watch: watch}
+		errSink = lines
+	}
+	cmd.Stdin, cmd.Stderr = o.stdin, errSink
+	switch {
+	case o.combined:
+		cmd.Stdout = errSink
+	case watch != nil:
+		cmd.Stdout = &gitTouchWriter{dst: out, watch: watch}
+	default:
 		cmd.Stdout = out
 	}
 	cmd.WaitDelay = 2 * time.Second
-	err = cmd.Run()
+	err := cmd.Run()
+	if lines != nil {
+		lines.flush()
+	}
 	// A hook's background job can keep stdout/stderr open after Git exits;
 	// Git's own exit status still decides, and leftovers are ended.
 	lingering := errors.Is(err, exec.ErrWaitDelay)
@@ -680,7 +898,40 @@ func (w *gitWriter) run(ctx context.Context, stdin io.Reader, combined bool, arg
 	if err == nil && out.truncated() {
 		err = errors.New("git output exceeded its bound")
 	}
-	return out.bytes(), output, err
+	return gitRunResult{stdout: out.bytes(), output: output, tail: tail, err: err, stalled: watch != nil && watch.fired()}
+}
+
+// gitTailMax bounds gitTail.
+const gitTailMax = 32 << 10
+
+// gitTail keeps the last gitTailMax bytes written, so markers printed after
+// a large hook output are still seen when the bounded output kept only the
+// head.
+type gitTail struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *gitTail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > gitTailMax {
+		t.buf = append([]byte(nil), t.buf[len(t.buf)-gitTailMax:]...)
+	}
+	return len(p), nil
+}
+
+// text is what classification reads: the kept head, plus the tail when the
+// head was truncated.
+func (r gitRunResult) text() string {
+	head := string(r.output.bytes())
+	if !r.output.truncated() || r.tail == nil {
+		return head
+	}
+	r.tail.mu.Lock()
+	defer r.tail.mu.Unlock()
+	return head + "\n" + string(r.tail.buf)
 }
 
 // lockFailure classifies Git's own lock refusal from its output.
@@ -881,9 +1132,22 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return prepareUnstage(ctx, g, w, c.Git.Paths[0])
 	case protocol.GitKindDiscard:
 		return prepareDiscard(ctx, g, w, c.Git.Paths[0])
-	default:
+	case protocol.GitKindCommit:
 		return prepareCommit(ctx, g, w, *c.Git)
+	case protocol.GitKindBranchCreate:
+		return prepareBranchCreate(ctx, g, w, *c.Git.Ref)
+	case protocol.GitKindSwitch:
+		return prepareSwitch(ctx, g, w, *c.Git.Ref)
+	case protocol.GitKindResetSoft:
+		return prepareResetSoft(ctx, g, w, *c.Git.Ref)
+	case protocol.GitKindFetch:
+		return prepareFetch(ctx, g, w, *c.Git.Sync)
+	case protocol.GitKindPull:
+		return preparePull(ctx, g, w, *c.Git.Sync)
+	case protocol.GitKindPush:
+		return preparePush(ctx, g, w, *c.Git.Sync)
 	}
+	return nil, failure("unsupported_command", fmt.Sprintf("unsupported command %q", c.Kind))
 }
 
 // prepareStage hashes the pinned worktree content as `git add` would
@@ -1011,14 +1275,23 @@ func prepareDiscard(ctx context.Context, g *gitReader, w *gitWriter, pin protoco
 		if kind := tokenKind(token); kind != "reg" && kind != "lnk" {
 			return nil, failure("not_supported", "only untracked regular files and symlinks can be discarded")
 		}
-		return &gitPlan{paths: []string{pin.Path}, run: func(context.Context) protocol.GitResult {
+		p := &gitPlan{paths: []string{pin.Path}}
+		p.run = func(ctx context.Context) protocol.GitResult {
+			// Open documents are saved and paused first (git_ref.go); a
+			// saved edit then makes the pinned token stale below.
+			end, refused := beginWorktreeRewrite(ctx, p.runtime(ctx), w.top)
+			defer end()
+			if refused != nil {
+				return *refused
+			}
 			if err := removeUntracked(w.top, pin.Path, token); err != nil {
 				var pe *protocol.Error
 				errors.As(err, &pe)
 				return gitResult(protocol.GitStateFailed, pe.Code, pe.Message, nil)
 			}
 			return gitResult(protocol.GitStateSucceeded, "", "Deleted untracked "+pin.Path, nil)
-		}}, nil
+		}
+		return p, nil
 	}
 	// Restoring over a directory would delete everything in it, and a path
 	// below a file or symlink would replace that node.
@@ -1031,7 +1304,17 @@ func prepareDiscard(ctx context.Context, g *gitReader, w *gitWriter, pin protoco
 	if err := w.checkLocks(false); err != nil {
 		return nil, err
 	}
-	return &gitPlan{paths: []string{pin.Path}, run: func(ctx context.Context) protocol.GitResult {
+	p := &gitPlan{paths: []string{pin.Path}}
+	p.run = func(ctx context.Context) protocol.GitResult {
+		// Open documents are saved and paused before Git rewrites the file
+		// and reconciled afterwards (git_ref.go, beginWorktreeRewrite). This
+		// runs before the last look, so an unsaved edit that the save
+		// writes makes the discard stale instead of being overwritten.
+		end, refused := beginWorktreeRewrite(ctx, p.runtime(ctx), w.top)
+		defer end()
+		if refused != nil {
+			return *refused
+		}
 		// Last look before overwriting: a newer edit must not be lost.
 		if r := recheckWorktree(w.top, pin.Path, token); r != nil {
 			return *r
@@ -1048,7 +1331,8 @@ func prepareDiscard(ctx context.Context, g *gitReader, w *gitWriter, pin protoco
 		} else {
 			return gitResult(protocol.GitStateSucceeded, "", "Discarded changes to "+pin.Path, output)
 		}
-	}}, nil
+	}
+	return p, nil
 }
 
 func prepareCommit(ctx context.Context, g *gitReader, w *gitWriter, req protocol.GitWrite) (*gitPlan, error) {

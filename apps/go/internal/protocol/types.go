@@ -21,6 +21,9 @@ type Snapshot struct {
 	Agents []Agent `json:"agents,omitempty"`
 	// GitOps holds the latest Git write per repository (git_write.go).
 	GitOps []GitOp `json:"git_ops,omitempty"`
+	// Documents lists loaded shared documents (document.go). It is a
+	// projection of the documents tables, rebuilt at server start.
+	Documents []DocumentStatus `json:"documents,omitempty"`
 }
 
 // Agent is one configured agent connection. Kind is "fixture" or "acp". For
@@ -308,6 +311,9 @@ type Command struct {
 	TerminalSize *TerminalSize `json:"TerminalSize,omitempty"`
 	// Git is the payload of the git.* write commands (git_write.go).
 	Git *GitWrite `json:"Git,omitempty"`
+	// DocumentDisk is document.resolve's reviewed disk version
+	// (DocumentVersions.DiskID); see document.go.
+	DocumentDisk string `json:"DocumentDisk,omitempty"`
 }
 
 // Receipt records the outcome of an accepted or rejected Command.

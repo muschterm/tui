@@ -72,6 +72,8 @@ type engine struct {
 	terminals terminalState
 	// git tracks running Git writes and their writer leases; see git_write.go.
 	git gitWriteState
+	// docs holds shared documents; see documents.go.
+	docs documentState
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -126,6 +128,9 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	}
 	if strings.HasPrefix(c.Kind, "git.") {
 		return e.gitWriteCommand(ctx, c)
+	}
+	if strings.HasPrefix(c.Kind, "document.") {
+		return e.documentCommand(ctx, c)
 	}
 	e.mu.Lock()
 	if r, err := e.store.Lookup(c); err != nil {
@@ -574,7 +579,10 @@ func Serve(ctx context.Context, home string) error {
 	if filesSupported && !slices.Contains(snap.Capabilities, "files-read") {
 		snap.Capabilities = append(snap.Capabilities, "files-read")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history"} {
+	if docsSupported && !slices.Contains(snap.Capabilities, "shared-documents") {
+		snap.Capabilities = append(snap.Capabilities, "shared-documents")
+	}
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
@@ -591,6 +599,12 @@ func Serve(ctx context.Context, home string) error {
 	// Interrupted publications, orphaned files and expired staging are
 	// reconciled before any client can reference an artifact.
 	e.sweepArtifacts()
+	// Stored documents load reconciling; nothing is written before each is
+	// compared with its file.
+	if err = e.startDocuments(); err != nil {
+		return err
+	}
+	defer e.stopDocuments()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -629,6 +643,8 @@ func Serve(ctx context.Context, home string) error {
 	mux.HandleFunc("GET /v1/git/branches", e.gitBranches)
 	mux.HandleFunc("GET /v1/git/compare", e.gitCompare)
 	mux.HandleFunc("GET /v1/terminals/{id}/stream", e.terminalStream)
+	mux.HandleFunc("GET /v1/documents/{id}/stream", e.documentStream)
+	mux.HandleFunc("GET /v1/documents/{id}/versions", e.documentVersionsHandler)
 	mux.HandleFunc("GET /v1/files/list", e.filesList)
 	mux.HandleFunc("GET /v1/files/read", e.filesRead)
 	mux.HandleFunc("GET /v1/files/stat", e.filesStat)
@@ -822,6 +838,7 @@ loop:
 	go func() { terminalsErr = e.stopTerminals(); close(terminalsDone) }()
 	e.stopAgents()
 	e.stopGitWrites()
+	e.stopDocuments()
 	<-terminalsDone
 	stopErr := <-httpDone
 	e.mu.Lock()

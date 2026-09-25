@@ -37,6 +37,29 @@ soft reset, pull/fetch/push, rebase and conflict resolution (manual and
 agent-assisted), context menus, turn comparisons, live-buffer coordination,
 and real-terminal/PTY validation of the surface.
 
+### Ref and remote actions — 2026-09-24
+
+The server, protocol and Go client (not yet the TUI) also implement branch
+creation, switching (including create-and-switch), soft reset with undo,
+fetch, fast-forward-only pull, plain push to the upstream and cancel
+([ADR 0021](../adr/0021-git-ref-and-remote-actions.md); wire contract in
+`apps/go/internal/protocol/git_write.go`, client helpers in
+`apps/go/internal/client/git_remote.go`). They use the same pinned,
+journaled commands. Switch carries local changes only with an explicit
+acknowledgement of the shown count and stops, naming the files, when Git
+would overwrite one, including ignored files. Pull fetches, then
+fast-forwards or reports up to date, ahead or diverged, with fetch and
+integration results kept separate. Push never forces and is refused while
+behind or when Git's `push.default` would not push to the upstream.
+Credentials are non-interactive only, failures are classified, and
+fetch, push and a pull's fetch can be cancelled. Fetch, push and branch
+creation run beside agent turns; switch, reset and pull hold the checkout
+lease. Switch and pull finish and pause open shared documents through the
+document coordinator before Git rewrites files, and reconcile them after.
+Verified with local bare repositories, a loopback HTTP server and fake SSH
+commands in `git_ref_test.go` and `git_remote_test.go`, not against real
+hosting services or in a terminal.
+
 ## Accepted scope
 
 Provide status, attractive diffs, file/hunk/line staging, commits, history, branch switching, a commit graph, and right-click context menus. Include soft reset to a chosen commit, fast-forward-only pull by default, and rebase. Conflicts can be resolved manually or with a selected connected agent; when multiple agents are available, the user can choose one.
