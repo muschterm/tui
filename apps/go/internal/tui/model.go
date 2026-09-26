@@ -309,12 +309,15 @@ type Model struct {
 	filesTicking bool
 	// Kitty graphics (graphics_model.go): per-connection capability, owned
 	// image ids and the composer's thumbnail loads.
-	graphics            graphicsProbe
-	images              *graphicsRegistry
-	thumbs              map[string]*thumbnail
-	thumbCache          thumbCache
-	graphicsSeq         uint64
-	keyboard            string
+	graphics    graphicsProbe
+	images      *graphicsRegistry
+	thumbs      map[string]*thumbnail
+	thumbCache  thumbCache
+	graphicsSeq uint64
+	keyboard    string
+	// shiftEnter records that Shift+Enter is distinguishable from Enter:
+	// keyboard disambiguation was negotiated or a Shift+Enter arrived.
+	shiftEnter          bool
 	activityPhase       int
 	activityTickPending bool
 	// Embedded terminals (terminal_session.go): per-terminal stream and
@@ -910,6 +913,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.resizeGraphics()
 	case tea.KeyboardEnhancementsMsg:
 		m.keyboard = "enhanced keyboard negotiated"
+		m.shiftEnter = m.shiftEnter || msg.SupportsKeyDisambiguation()
 	case connectionMsg:
 		m.paths.key = ""
 		m.connected = msg.err == nil
@@ -1235,6 +1239,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
+	if k.String() == "shift+enter" {
+		m.shiftEnter = true
+	}
 	if cmd, handled := m.terminalKey(k); handled {
 		return cmd
 	}

@@ -330,7 +330,7 @@ func (m *Model) renderRequest(f *frame, r shell.Rect, req protocol.Request) int 
 		if f.rows != nil {
 			f.put(f.answer, style(p.text, p.input).Width(f.answer.W).Height(f.answer.H).Render(m.answerView.View(&m.answer)))
 		}
-		f.hits = append(f.hits, hit{Rect: f.answer, Action: action{}, Label: "Answer · Enter next/submit · Shift+Enter newline · Esc back", Key: "answer"})
+		f.hits = append(f.hits, hit{Rect: f.answer, Action: action{}, Label: "Answer · Enter next/submit · " + m.newlineHint() + " newline · Esc back", Key: "answer"})
 		scroll := m.answerView.Metrics(m.answerMetrics)
 		f.scrollbar(m, shell.Rect{X: scrollX, Y: l.input.Y, W: 1, H: l.input.H}, "answer", scroll.Total, l.input.H, scroll.Offset, p.panel)
 	}

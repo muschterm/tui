@@ -83,6 +83,14 @@ and `report.json`. Base tmux options unless noted: `focus-events on`,
 
 Ranked by risk to user work. Not fixed here, per the brief.
 
+Follow-up (same day): defects 1 and 2 are fixed in commit 896137c (root
+causes: a zero-width keyboard selection left anchored by Backspace/Delete at a
+boundary, and `\r` stripped by sanitising before newline normalisation);
+`pty_defect_repros.py` now prints `ok` for both. Defect 3 is addressed by the
+honest newline hint (`go-slice.md`, “Honest newline hint — 2026-09-26”): the
+app advertises Ctrl+J unless keyboard disambiguation is negotiated or a
+Shift+Enter is observed. The matrix below was not re-run after these fixes.
+
 1. **Backspace on an empty composer misplaces the cursor.** After the draft
    becomes empty, one extra Backspace, then typing `ghijkl` and five Backspaces
    leaves `l` instead of `g`; a following Left+`X` gives `Xl`. Subsequent edits

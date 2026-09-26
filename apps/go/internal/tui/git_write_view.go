@@ -123,7 +123,7 @@ func (m *Model) gitComposeBlocks(key string, g *gitView) []surfaceBlock {
 	b := []surfaceBlock{row(&gitRow{compose: "top"})}
 	for i := range lines {
 		b = append(b, row(&gitRow{compose: "msg", line: i, lines: lines, key: gitMessageKey, action: action{Kind: "git-message"},
-			help: "Commit message · Enter commits · Shift+Enter newline", text: gitMessageLine(a.Value(), i)}))
+			help: "Commit message · Enter commits · " + m.newlineHint() + " newline", text: gitMessageLine(a.Value(), i)}))
 	}
 	id := s.Identity
 	switch {

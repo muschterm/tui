@@ -1811,6 +1811,20 @@ follow-up and end, viewer diff tabs, content-gate acknowledgement and
 review_pending). `TestGitJobCaptures` renders start, running, review and
 the continue review (dark and light).
 
+### Honest newline hint — 2026-09-26
+
+Under tmux's default `extended-keys off`, Shift+Enter arrives as plain Enter
+and sends ([terminal matrix](../research/go-terminal-matrix-2026-09-26.md),
+finding 3). The idle status line, the prompt and answer help and the commit
+message help therefore advertise **Shift+Enter** only after Bubble Tea
+reports key disambiguation (`KeyboardEnhancementsMsg` with nonzero flags) or
+a Shift+Enter key has actually arrived; otherwise they advertise **Ctrl+J**,
+which always inserts a newline. The idle status pads the Ctrl+J form at its
+end to the Shift+Enter width, so negotiation never shifts cells. The Settings
+keybinding reference still lists both keys. modifyOtherKeys has no
+negotiation reply, so a terminal that supports only it shows Ctrl+J until the
+first Shift+Enter arrives. Tests: `internal/tui/newline_hint_test.go`.
+
 ### Git partial staging (TUI) — 2026-09-26
 
 Go prototype binding for [ADR 0025](../adr/0025-partial-staging.md)

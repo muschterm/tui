@@ -254,7 +254,7 @@ func (m *Model) compose(paint bool) frame {
 	}
 	status := m.status
 	if status == "" {
-		status = "Enter Send  ·  Shift+Enter Newline  ·  F4 Commands  ·  Ctrl+Q Detach"
+		status = m.defaultStatus()
 	}
 	for _, h := range f.hits {
 		if (h.Key == m.hover && m.hover != "") || (m.hover == "" && h.Key == m.focus && m.focus != "prompt" && m.focus != "answer") {
@@ -754,7 +754,7 @@ func (m *Model) renderFooter(f *frame, r shell.Rect) {
 	if f.rows != nil {
 		f.put(f.prompt, style(p.text, p.input).Width(f.prompt.W).Height(f.prompt.H).Render(m.promptView.View(&m.prompt)))
 	}
-	f.hits = append(f.hits, hit{Rect: f.prompt, Action: action{}, Label: "Enter sends · Shift+Enter / Ctrl+J adds a line", Key: "prompt"})
+	f.hits = append(f.hits, hit{Rect: f.prompt, Action: action{}, Label: "Enter sends · " + m.newlineHint() + " adds a line", Key: "prompt"})
 	// Chips follow the prompt in Tab order.
 	m.renderAttachmentStrip(f, f.prompt.X, y+1, f.prompt.W, strip)
 	promptScroll := m.promptView.Metrics(m.promptMetrics)
