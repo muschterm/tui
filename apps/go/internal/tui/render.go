@@ -152,7 +152,7 @@ func (m *Model) compact() bool { return m.height < 28 }
 // The composer is its rounded outline (two rows), one padding row above the
 // typing area, the typing rows, the settings/actions rows and the checkout row.
 func (m *Model) baseFooterHeight(w int) int {
-	n := 4 + max(1, m.promptRows) + m.composerControlsHeight(w) + m.closedBannerHeight(w)
+	n := 3 + m.checkoutRows() + max(1, m.promptRows) + m.composerControlsHeight(w) + m.closedBannerHeight(w)
 	if m.conversationVisible() {
 		n += m.activityStripHeight(w) + m.queueHeight()
 	}
@@ -504,6 +504,8 @@ func (m *Model) transcriptLines(t protocol.Thread, w int) []contentLine {
 		lines = append(lines, contentLine{text: status, fg: p.text, bg: p.canvas, marker: marker, markerFG: markerFG})
 	} else if t.WriterWait != nil {
 		lines = append(lines, m.writerWaitLine(t, p))
+	} else if line, ok := m.worktreeWaitLine(t, p); ok {
+		lines = append(lines, line)
 	}
 	note := stopReasonNote(t)
 	if note == "" {
@@ -1027,6 +1029,8 @@ func menuPosition(items []menuItem, index int) (int, int) {
 // which keep red ink.
 func menuItemDestructive(item menuItem) bool {
 	switch item.Action.Kind {
+	case "worktree-remove-confirm", "worktree-prune-confirm", "worktree-forget-confirm":
+		return true
 	case "thread-delete", "thread-delete-confirm", "project-remove", "project-remove-confirm", "remove", "attachment-remove", "git-discard-confirm", "git-commit-ack", "git-ack-confirm", "git-reset-confirm":
 		return true
 	case "git-op-confirm":

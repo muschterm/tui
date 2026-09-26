@@ -224,6 +224,7 @@ func (m *Model) reconcileThreadMembership() {
 		}
 	}
 	m.reconcileStartedDraft()
+	m.followPendingStarts()
 	if m.state.Edit != nil && !live[m.state.Edit.ThreadID] {
 		m.state.Edit = nil
 		m.markDirty()

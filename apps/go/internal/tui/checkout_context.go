@@ -68,6 +68,21 @@ func (m *Model) checkoutLabels() (string, string) {
 	if info.Path != "" {
 		left += " · " + filepath.Base(info.Path)
 	}
+	if w, ok, found := m.threadWorktree(); ok {
+		// A managed worktree reads by its branch, and a state other than
+		// present is shown instead of an observation that cannot be made.
+		if !found {
+			return "Worktree", "Worktree record unavailable"
+		}
+		left = "Worktree · " + singleLine(w.Branch)
+		if w.State != protocol.WorktreePresent {
+			right := worktreeStateLabel(w)
+			if w.Detail != "" {
+				right += " · " + singleLine(w.Detail)
+			}
+			return left, right
+		}
+	}
 	right := "Branch unavailable"
 	if m.checkoutLoading {
 		right = "Reading branch…"
@@ -92,6 +107,10 @@ func (m *Model) checkoutLabels() (string, string) {
 // (unavailable, fixture) a neutral "?". None of these reads as success.
 func (m *Model) checkoutMark() (glyph, glyphInk, valueInk string) {
 	p := m.colors()
+	if w, ok, found := m.threadWorktree(); ok && (!found || w.State != protocol.WorktreePresent) {
+		glyph, glyphInk = panelStatusMark(m, worktreeMarkState(w.State))
+		return glyph, glyphInk, p.muted
+	}
 	if m.checkoutLoading {
 		glyph, glyphInk = panelStatusMark(m, "pending")
 		return glyph, glyphInk, p.muted
@@ -108,6 +127,10 @@ func (m *Model) checkoutMark() (glyph, glyphInk, valueInk string) {
 }
 
 func (m *Model) renderCheckoutContext(f *frame, r shell.Rect) {
+	if m.draftWorkspaceOffered() {
+		m.renderDraftWorkspace(f, r)
+		return
+	}
 	p := m.colors()
 	x, width := r.X+composerInset(r.W), max(1, r.W-2*composerInset(r.W))
 	left, right := m.checkoutLabels()
@@ -134,10 +157,25 @@ func (m *Model) openCheckoutInfo() {
 	if info.Error != "" {
 		items = append(items, menuItem{Label: info.Error, Action: action{Kind: "noop"}})
 	}
+	if m.draftWorkspaceOffered() && m.draftWorkspace() == workspaceWorktree {
+		start, _ := m.draftStartLabel(60)
+		items = append(items, menuItem{Label: start + " (new worktree start)", Action: action{Kind: "noop"}})
+		if m.draftStart.err != "" {
+			items = append(items, menuItem{Label: m.draftStart.err, Action: action{Kind: "noop"}})
+		}
+	}
 	if m.hasCapability("workspace-info") {
 		items = append(items, menuItem{Label: "Refresh checkout / branch", Action: action{Kind: "checkout-refresh"}})
 	} else {
 		items = append(items, menuItem{Label: "Update this server to inspect the branch", Action: action{Kind: "noop"}})
+	}
+	if w, ok, found := m.threadWorktree(); ok {
+		if found {
+			items = append(items, menuItem{Separator: true})
+			items = append(items, m.worktreeMenuItems(w, false)...)
+		} else {
+			items = append(items, menuItem{Note: "The application no longer lists this worktree; the thread cannot send"})
+		}
 	}
 	m.showMenu("Checkout", items)
 }

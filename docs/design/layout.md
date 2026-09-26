@@ -89,6 +89,22 @@ unborn branch, non-Git and unavailable metadata; a fixture has no real branch.
 Inspection is an asynchronous server read, never a renderer effect. No checkout
 or branch mutation is implied by opening these details.
 
+For a New-thread draft on a server that can create worktrees, this row is the
+draft Workspace row: a `Checkout | New worktree` choice initialised from the
+project's effective workspace default, with the observed branch at right.
+Choosing New worktree adds a required Branch field (no invented default name)
+and shows the read-only start `<branch> @ <short commit>` observed from the
+project checkout; Send captures that commit and refuses, keeping the draft,
+until a valid branch is named. The choice belongs to the client-local
+per-project draft. While the server is still creating the worktree the row shows
+its progress, locks the choice and offers Stop following behind a Cancel-first
+confirmation. A failed or unknown outcome keeps the draft and offers Worktrees
+(project settings) and Discard; an unattached one offers Retry and Discard.
+Changing the workspace choice while such a start is kept asks first. An existing worktree thread's row names its branch and shows
+unavailable states with their detail; its details offer the recovery and
+removal actions the [workspace contract](workspaces.md) allows. See the
+[Go prototype binding](go-slice.md#explicit-worktrees-tui--2026-09-26).
+
 Selecting a Closed thread opens its preserved conversation and draft without
 reopening it. Place “This thread is closed · Send a message to reopen” above the
 prompt with a separate far-right Reopen control; compact widths may split it

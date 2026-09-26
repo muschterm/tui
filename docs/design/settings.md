@@ -84,10 +84,15 @@ explicit workspace default and its effective value. Use app default clears the
 override, so later app-default changes update the effective project choice. A
 project can explicitly choose Current checkout or Worktree. These writes use the
 existing revisioned `project.update` contract and never edit the app default. Resolve the effective choice when creating a thread;
-never move an existing thread or reinterpret captured prompt settings. The Go
-slice persists both choices but **cannot provision worktrees yet**. Menus and
-settings explain the limitation, and creation with an effective Worktree default
-fails explicitly. A project override of Current checkout remains usable. No Git
+never move an existing thread or reinterpret captured prompt settings. The
+default only initialises a new draft's Workspace row; the draft may still choose
+either, and Send carries the explicit choice. A server without worktree creation
+says so in these settings, and a draft whose effective default is Worktree is
+refused at Send there. Project General also lists the project's managed
+worktrees with their state and attached thread, offering Remove, Forget,
+Relocate (which restarts the thread's agent session) and Prune, each behind a
+Cancel-first confirmation (see the
+[Go binding](go-slice.md#explicit-worktrees-tui--2026-09-26)). No Git
 mutation is performed by saving preferences. Worktree start-state, lifecycle and
 cleanup remain governed by the [workspace contract](workspaces.md).
 

@@ -1,7 +1,7 @@
 export GOTOOLCHAIN := go1.27.1
 
 BIN := bin/tui-go
-PTY_HARNESSES := pty_smoke pty_navigation pty_small_screen pty_sidebar_settings pty_steering pty_path_completion pty_colors pty_terminal pty_git
+PTY_HARNESSES := pty_smoke pty_navigation pty_small_screen pty_sidebar_settings pty_steering pty_path_completion pty_colors pty_terminal pty_git pty_worktree
 
 .PHONY: build test check fmt fmt-check vet lint vuln pty clean
 

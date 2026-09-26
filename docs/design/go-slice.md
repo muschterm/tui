@@ -1,6 +1,6 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-25. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. Explicit worktrees, hunk staging, interactive rebase, and a real-terminal/SSH/tmux compatibility matrix remain incomplete; most of the above is verified by unit/integration tests, fake agents and render captures rather than interactive terminal sessions. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; hunk staging, interactive rebase, and a real-terminal/SSH/tmux compatibility matrix remain incomplete; most of the above is verified by unit/integration tests, fake agents and render captures rather than interactive terminal sessions. This does not change the accepted product scope or settle later integration decisions.
 
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
@@ -427,8 +427,9 @@ using revisioned `project.update`. Project Keybindings reports inherited app
 bindings and unavailable overrides. Confirmed Remove project deletes its threads
 but keeps disk files; active work blocks it and stale confirmations are rejected.
 App General stores this server's
-workspace default and off-by-default restart continuation. Worktree preferences
-are saved but creation explicitly fails until provisioning exists. Recovery is
+workspace default and off-by-default restart continuation. A Worktree default
+now initialises the draft Workspace row (see [explicit worktrees](#explicit-worktrees-tui--2026-09-26));
+without `worktree-create` a draft whose default is Worktree is refused at Send. Recovery is
 verified only for eligible Demo work; unknown providers, manually stopped work
 and pending requests remain gated. Theme stays client-local.
 
@@ -1910,3 +1911,88 @@ tab close ends it). A foot review (about 144×49, dark and light) covered a live
 observer with Take control and the ended state; captures are not retained in
 the repository because shell titles show the local user and host.
 
+### Explicit worktrees (TUI) — 2026-09-26
+
+Go prototype binding within the approved outline (draft Workspace row,
+recovery/remove actions), over the [ADR 0024](../adr/0024-explicit-worktrees.md)
+server slice. Code: `internal/tui/worktrees.go`.
+
+- **Draft Workspace row.** With `worktree-create`, a New-thread draft's checkout
+  context row becomes a Workspace row: square-fill `Checkout | New worktree`
+  choices at the left, initialised from the project's effective workspace
+  default, and the observed branch at the right. New worktree adds a Branch row
+  whose field opens a centered name dialog (no default name; a client-side
+  subset of `git check-ref-format` plus the server's `refs/`, `HEAD` and
+  200-byte limits refuses invalid names there; the server stays
+  authoritative) and replaces the branch value with a read-only
+  `Start · <branch> @ <short oid>`; narrow rows truncate the branch first so
+  the commit stays visible. The start is read asynchronously from the project
+  checkout's Git status (full `HeadOid`) each time the draft is entered, only
+  while connected, and again on the checkout details' explicit Refresh; a
+  superseded read is dropped by sequence. The choice and branch belong to the
+  client-local per-project draft. First Send captures
+  `Workspace{Mode: "worktree", StartOid, Branch}`, or `Mode: "checkout"` for the
+  Checkout choice so a Worktree default never applies to a draft that chose
+  Checkout; existing-thread Sends never carry a workspace. Send is refused
+  inline, keeping the draft, without a valid branch or observed start commit.
+  Without the capability only the read-only checkout row remains and a Worktree
+  default is refused honestly at Send.
+- **Following an asynchronous start.** A worktree `thread.start` never holds the
+  client's global pending command. When the server answers `running` (after
+  about two seconds while `git worktree add` runs) or the request times out, the
+  draft keeps a pending start — the command and its captured payload — saved
+  with the per-project draft; mode, branch and Send are locked there and the row
+  shows "Creating worktree <branch>…". The client re-asks the same command ID
+  with backoff (1 s doubling to a 5 s cap) and also settles it from the
+  snapshot: the `ManagedWorktree` with that `CommandID` and the thread whose
+  `WorktreeID` names it, then navigates as for an accepted start. A relaunched
+  TUI resumes following it. The follow-up settles on the start's own
+  thread: the one the server named in its receipt, else an ordinary (non-job)
+  thread in that worktree. `outcome_unknown` is never acceptance: the draft,
+  prompt and branch stay, the row says the outcome is unknown and offers
+  Worktrees (project General) and Discard. A `failed` receipt keeps the command
+  identity in a failed state, with the failure message, Worktrees and Discard,
+  because the snapshot naming an unattached record can arrive after the HTTP
+  receipt; once a snapshot shows that record `unattached` and verified, the
+  start becomes retryable and Retry or Send re-asks under the same ID so the
+  server attaches it. A protocol rejection (for example `branch_exists`)
+  clears it. Only explicit user action releases a kept identity: Discard, or
+  changing the workspace choice or branch, which first asks through a
+  Cancel-first confirmation naming the worktree left behind and its branch
+  (re-selecting the current choice does nothing). While a start is running, Discard is
+  unavailable; Stop following (with a Cancel-first confirmation stating that
+  the server may still create the worktree) releases it, for example while the
+  server is unreachable. Every released or rejected start's branch joins a
+  small per-draft set of used names that Send refuses to reuse, until a start
+  with that name is accepted.
+- **Worktree threads.** The checkout row reads `Worktree · <branch>`; a state
+  other than present shows its label and Detail with a status mark instead of
+  a branch observation. A thread with queued prompts and an unavailable
+  worktree shows "Waiting for worktree · <state>" in its conversation status,
+  opening the checkout details. Those details list the worktree's path, start
+  and detail, and, with `worktree-manage`, Relocate… (moved), Forget… (missing,
+  moved, unregistered, removed) and Remove… (present, unattached).
+  `workspace_unavailable` Send refusals keep the prompt and point at that row.
+- **Project General › Worktrees.** One actionable row per managed worktree
+  record of the project, including removed ones that can still be forgotten
+  (branch; state, attached thread title or "no thread"; Detail beneath) opens
+  the same actions. A quiet prune preview runs when the page opens and after
+  each accepted worktree command; Prune N stale registrations… appears only when
+  it lists entries. Quiet previews never supersede an explicit one.
+- **Confirmations.** Remove and Prune fetch their preview asynchronously, then
+  show a confirmation with Cancel first: blockers listed with no confirm item,
+  "Branch <b> is kept", ignored-entry count, sample and "…and N more", and an
+  incomplete-count warning. Confirm sends the preview's fingerprint;
+  `stale_confirmation` previews again. Forget and Relocate have Cancel-first
+  confirmations (Forget changes nothing on disk; Relocate restarts the thread's
+  agent session in the new location). Project removal's confirmation counts the
+  worktree directories that may remain (not missing or removed) and notes they
+  and their branches are kept.
+- **Evidence and limits.** Unit tests and `TUI_GO_CAPTURE_DIR` captures
+  (`TestWorktreeCaptures`) cover these paths against fakes. `scripts/pty_worktree.py`
+  (in `make pty`) drives the real binary in an isolated home: Workspace row,
+  start observation, branch dialog, Send, attachment, then Remove from the
+  checkout details after closing the thread through the API; it is byte-level
+  PTY evidence, not a terminal/SSH/tmux matrix. The asynchronous `running` path
+  is exercised only by unit tests. The waiting reason appears in the
+  conversation status, while the thread card keeps its generic attention mark.

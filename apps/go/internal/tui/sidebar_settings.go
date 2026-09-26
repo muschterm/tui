@@ -73,6 +73,7 @@ func (m *Model) openSidebarSettings(page, projectID string) {
 	m.menu, m.projectMode = nil, ""
 	m.projectInput.Blur()
 	m.settingsPage, m.settingsProjectID, m.settingsScroll = page, projectID, 0
+	m.pruneKey = ""
 	if !slices.Contains(m.settingsCategories(), page) {
 		m.settingsPage = "general"
 	}
@@ -148,7 +149,7 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 		rev := m.snapshot.AppSettings.Revision
 		m.showMenu("Workspace default", []menuItem{
 			{Label: "Current checkout", Action: action{Kind: "app-workspace-set", Value: "checkout", Revision: rev}},
-			{Label: "Worktree · creation unavailable in this build", Action: action{Kind: "app-workspace-set", Value: "worktree", Revision: rev}},
+			{Label: m.worktreeDefaultLabel(), Action: action{Kind: "app-workspace-set", Value: "worktree", Revision: rev}},
 		})
 	case "app-workspace-set", "restart-toggle":
 		if m.settingsProjectID != "" {
@@ -215,7 +216,7 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 						label = "Use app default"
 					}
 					if value == "worktree" {
-						label += " · creation unavailable"
+						label = m.worktreeDefaultLabel()
 					}
 				}
 				if field == "icon" && value != "" {
@@ -265,6 +266,9 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 				{Label: label, Action: action{Kind: "project-remove-confirm", ID: p.ID, Revision: p.Revision}},
 				{Note: "Files on disk will be kept"},
 			})
+			if n := worktreeDirectories(m.snapshot, p.ID); n > 0 {
+				m.menu = append(m.menu, menuItem{Note: fmt.Sprintf("%d worktree %s and their branches are kept", n, pluralWord(n, "directory", "directories"))})
+			}
 			m.docDeleteNote(func(key string) bool {
 				if strings.HasPrefix(key, "project:"+p.ID+":") {
 					return true
@@ -302,6 +306,71 @@ func (m *Model) activateSidebarSettings(a action) (bool, tea.Cmd) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// worktreeDirectories counts a project's worktree records whose directory
+// may still exist on disk (not missing or removed).
+func worktreeDirectories(s protocol.Snapshot, projectID string) int {
+	n := 0
+	for _, w := range s.Worktrees {
+		if w.ProjectID == projectID && w.State != protocol.WorktreeMissing && w.State != protocol.WorktreeRemoved {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *Model) worktreeDefaultLabel() string {
+	if m.hasCapability("worktree-create") {
+		return "Worktree"
+	}
+	return "Worktree · creation unavailable"
+}
+
+// worktreeSettingsRows is project General's Worktrees section: each managed
+// worktree as one actionable row opening its actions, and Prune when the
+// last preview found stale registrations.
+func (m *Model) worktreeSettingsRows(p protocol.Project, width int, section, paragraph func(string), field func(label, value, key string, a action, fixed bool), button func(label, key string, a action)) {
+	// Removed records are listed too: they can still be forgotten.
+	var list []protocol.ManagedWorktree
+	for _, w := range m.snapshot.Worktrees {
+		if w.ProjectID == p.ID {
+			list = append(list, w)
+		}
+	}
+	offered := m.hasCapability("worktree-create") || m.hasCapability("worktree-manage")
+	if !offered && len(list) == 0 {
+		return
+	}
+	section("Worktrees")
+	if len(list) == 0 {
+		paragraph("No worktrees. Choose New worktree in a new thread's Workspace row.")
+	}
+	for _, w := range list {
+		label := singleLine(w.Branch)
+		if label == "" {
+			label = "(no branch)"
+		}
+		label = ansi.Truncate(label, max(8, width/2-2), "…")
+		value := worktreeStateLabel(w)
+		if title := m.worktreeThreadTitle(w.ID); title != "" {
+			value += " · " + title
+		} else if w.State != protocol.WorktreeRemoved {
+			value += " · no thread"
+		}
+		field(label, ansi.Truncate(value, settingsFieldValueRoom(width, label), "…"), "worktree:"+w.ID, action{Kind: "worktree-menu", ID: w.ID}, false)
+		if w.Detail != "" {
+			paragraph("  " + singleLine(w.Detail))
+		}
+	}
+	if !m.hasCapability("worktree-manage") {
+		paragraph("Update this server to remove or recover worktrees.")
+		return
+	}
+	if preview, ok := m.prunePreview[p.ID]; ok && len(preview.Entries) > 0 {
+		button(fmt.Sprintf("Prune %d stale %s…", len(preview.Entries), pluralWord(len(preview.Entries), "registration", "registrations")), "worktree-prune", action{Kind: "worktree-prune", ID: p.ID})
+	}
+	paragraph("Remove keeps the branch and needs every attached thread Closed.")
 }
 
 func workspaceLabel(value string) string {
@@ -473,12 +542,15 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 			} else {
 				paragraph("Using app default: " + workspaceLabel(m.snapshot.AppSettings.WorkspaceDefault) + ".")
 			}
-			paragraph("Applies to new threads in this project.")
-			paragraph("Worktree creation is unavailable in this build.")
+			paragraph("Applies to new threads in this project; each draft can still choose.")
+			if !m.hasCapability("worktree-create") {
+				paragraph("Worktree creation is unavailable on this server.")
+			}
 			if !m.hasCapability("project-settings") {
 				gap()
 				paragraph("Update this server to change project settings.")
 			}
+			m.worktreeSettingsRows(p, width, section, paragraph, field, button)
 			break
 		}
 		rev, current := m.snapshot.AppSettings.Revision, m.snapshot.AppSettings.WorkspaceDefault
@@ -491,7 +563,9 @@ func (m *Model) sidebarSettingsRows(width int) (string, []settingsRow) {
 			button(workspaceLabel(current), "workspace", action{Kind: "app-workspace"})
 		})
 		paragraph("Used for new threads unless a project overrides it.")
-		paragraph("Worktree creation is unavailable in this build.")
+		if !m.hasCapability("worktree-create") {
+			paragraph("Worktree creation is unavailable on this server.")
+		}
 		section("Project starting folder")
 		const directoryLabel = "Project starting folder"
 		directory := m.snapshot.AppSettings.ProjectDirectory

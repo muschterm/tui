@@ -38,6 +38,10 @@ func (m *Model) openProjectDialog(mode string) {
 		m.menuTitle = "Project name"
 		m.projectInput.Placeholder = "Display name…"
 	}
+	if mode == "worktree-branch" {
+		m.menuTitle = "New worktree branch"
+		m.projectInput.Placeholder = "New branch name…"
+	}
 	m.projectInput.SetWidth(max(1, min(68, max(20, m.width-6))-4))
 	m.projectInput.SetHeight(1)
 	m.setFocus("project-input")
@@ -48,6 +52,10 @@ func (m *Model) openProjectDialog(mode string) {
 func (m *Model) refreshProjectMenu() {
 	if m.projectMode == "rename" {
 		m.menu = []menuItem{{Label: "Save name", Action: action{Kind: "project-rename-submit"}}, {Label: "Cancel", Action: action{Kind: "project-cancel"}}}
+		return
+	}
+	if m.projectMode == "worktree-branch" {
+		m.menu = []menuItem{{Label: "Use branch name", Action: action{Kind: "worktree-branch-submit"}}, {Label: "Cancel", Action: action{Kind: "project-cancel"}}}
 		return
 	}
 	if m.projectMode == "add" || m.projectMode == "project-root" {

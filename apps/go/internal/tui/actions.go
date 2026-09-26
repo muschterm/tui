@@ -153,6 +153,9 @@ func (m *Model) activate(a action) tea.Cmd {
 	if strings.HasPrefix(a.Kind, "terminal-") {
 		return m.terminalAction(a)
 	}
+	if strings.HasPrefix(a.Kind, "worktree-") {
+		return m.worktreeAction(a)
+	}
 	if handled, cmd := m.activateSidebarSettings(a); handled {
 		m.configureInputs()
 		return cmd
@@ -196,7 +199,7 @@ func (m *Model) activate(a action) tea.Cmd {
 				return m.selectContextMenuItem(a.Index)
 			}
 			item := m.menu[a.Index]
-			if item.Action.Kind == "project-submit" || item.Action.Kind == "project-rename-submit" || item.Action.Kind == "project-no-match" || strings.HasPrefix(item.Action.Kind, "path-") {
+			if item.Action.Kind == "project-submit" || item.Action.Kind == "project-rename-submit" || item.Action.Kind == "worktree-branch-submit" || item.Action.Kind == "project-no-match" || strings.HasPrefix(item.Action.Kind, "path-") {
 				return m.activate(item.Action)
 			}
 			m.menu = nil
@@ -520,8 +523,14 @@ func (m *Model) activate(a action) tea.Cmd {
 		if m.busy != nil {
 			return m.dispatch(*m.busy, m.busyAction, true)
 		}
+		if cmd := m.retryPendingStart(); cmd != nil {
+			return cmd
+		}
 		m.status = "No uncertain command to retry"
 	case "send":
+		if cmd := m.retryPendingStart(); cmd != nil {
+			return cmd
+		}
 		if reason := m.sendBlocked(); reason != "" {
 			return m.showSendError(reason)
 		}
@@ -548,6 +557,7 @@ func (m *Model) activate(a action) tea.Cmd {
 		c := protocol.Command{Kind: "prompt.send", Text: v.Draft, Settings: &settings, Attachments: captures}
 		if m.creatingThread() {
 			c.Kind, c.ProjectID, c.Agent = "thread.start", m.state.DraftProjectID, m.agentCommandID(t)
+			c.Workspace = m.draftWorkspaceRequest()
 		} else if t.Closed {
 			c.Kind, c.Revision = "prompt.reopen-send", t.LifecycleRevision
 		}
@@ -644,8 +654,8 @@ func (m *Model) activate(a action) tea.Cmd {
 		m.openCheckoutInfo()
 		return nil
 	case "checkout-refresh":
-		m.checkoutKey = ""
-		return m.nextCheckoutInspection()
+		m.checkoutKey, m.draftStart.key = "", ""
+		return tea.Batch(m.nextCheckoutInspection(), m.nextDraftStartInspection())
 	case "composer-more":
 		m.openComposerOverflow()
 		return nil

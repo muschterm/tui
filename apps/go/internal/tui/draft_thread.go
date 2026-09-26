@@ -29,6 +29,8 @@ func (m *Model) beginThreadDraft(projectID string) {
 		m.viewState().RightVisible = m.state.Layout.Right
 	}
 	m.state.Active, m.state.DraftProjectID = "", projectID
+	m.draftGen++
+	m.draftStart = draftStart{}
 	if m.state.DraftThreads[projectID] == nil {
 		m.state.DraftThreads[projectID] = m.newDraftView()
 	}
@@ -70,7 +72,8 @@ func (m *Model) composerSelection() protocol.Settings {
 func (m *Model) configurationLocked() bool {
 	return activeTurn(m.thread()) ||
 		m.busy != nil && m.busy.Kind == "thread.start" && m.busy.ProjectID == m.state.DraftProjectID ||
-		m.state.StartedDraft != nil && m.state.StartedDraft.Command.ProjectID == m.state.DraftProjectID
+		m.state.StartedDraft != nil && m.state.StartedDraft.Command.ProjectID == m.state.DraftProjectID ||
+		m.creatingThread() && m.viewState().PendingStart != nil && m.viewState().PendingStart.State == pendingRunning
 }
 
 func (m *Model) sendBlocked() string {
@@ -101,6 +104,12 @@ func (m *Model) sendBlocked() string {
 		}
 		if !m.hasCapability("thread-start") {
 			return "Update this server to create a thread at first Send"
+		}
+		if reason := m.pendingStartBlocked(); reason != "" {
+			return reason
+		}
+		if reason := m.draftWorkspaceBlocked(); reason != "" {
+			return reason
 		}
 	}
 	if m.thread().Closed && !m.hasCapability("closed-thread-send") {

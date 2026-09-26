@@ -49,6 +49,17 @@ type threadView struct {
 	// messages (user/agent rows) already shown when the user scrolled away.
 	Pinned       bool `json:",omitempty"`
 	SeenActivity int  `json:",omitempty"`
+	// Workspace and WorktreeBranch are a New-thread draft's explicit
+	// workspace choice ("" follows the project's effective default) and the
+	// new worktree's branch name (worktrees.go).
+	Workspace      string `json:",omitempty"`
+	WorktreeBranch string `json:",omitempty"`
+	// UsedBranches are branches earlier failed or abandoned starts may have
+	// left behind; Send refuses to reuse them silently.
+	UsedBranches []string `json:",omitempty"`
+	// PendingStart is a worktree thread.start still being followed under
+	// its command identity (worktrees.go).
+	PendingStart *pendingStart `json:",omitempty"`
 }
 
 type savedView struct {
@@ -175,16 +186,26 @@ type editState struct {
 // Model is the Bubble Tea model for one attached client: the server snapshot,
 // client-local view state, focus, input widgets and pending effects.
 type Model struct {
-	paths                                pathCompletion
-	mentionDismissed                     string
-	mentionIndex                         int
-	projectAddThread                     bool
-	pendingProjectDraft                  bool
-	projectDirectoryRevision             int64
-	projectDirectoryConflicted           bool
-	checkoutKey                          string
-	checkoutInfo                         protocol.WorkspaceInfo
-	checkoutLoading                      bool
+	paths                      pathCompletion
+	mentionDismissed           string
+	mentionIndex               int
+	projectAddThread           bool
+	pendingProjectDraft        bool
+	projectDirectoryRevision   int64
+	projectDirectoryConflicted bool
+	checkoutKey                string
+	checkoutInfo               protocol.WorkspaceInfo
+	checkoutLoading            bool
+	// Worktree flows (worktrees.go).
+	draftStart                           draftStart
+	draftStartSeq                        uint64
+	draftGen                             uint64
+	worktreeReads                        worktreeAPI
+	worktreeSeq                          uint64
+	pruneKey                             string
+	startAttempts                        map[string]int
+	startInFlight                        map[string]bool
+	prunePreview                         map[string]protocol.WorktreePrune
 	emptyView                            threadView
 	projectMode                          string
 	projectError                         string
@@ -424,7 +445,7 @@ func (m *Model) markDirty() { m.dirty = true; m.generation++; m.state.Generation
 
 // Init focuses the composer and starts the activity, checkout and save tickers.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.prompt.Focus(), m.nextActivityTick(), m.nextCheckoutInspection(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
+	return tea.Batch(m.prompt.Focus(), m.nextActivityTick(), m.nextCheckoutInspection(), m.nextDraftStartInspection(), m.resumePendingStarts(), tea.Tick(time.Second, func(time.Time) tea.Msg { return saveTick{} }))
 }
 
 func (m *Model) requests() []protocol.Request {
@@ -688,6 +709,9 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	if c.Kind == "agent.probe" {
 		capability = "agent-probe"
 	}
+	if strings.HasPrefix(c.Kind, "worktree.") {
+		capability = "worktree-manage"
+	}
 	if !slices.Contains(m.snapshot.Capabilities, capability) {
 		m.status = "Server capability unavailable: " + capability
 		return nil
@@ -699,7 +723,7 @@ func (m *Model) command(c protocol.Command, a action) tea.Cmd {
 	}
 	c.Version = protocol.Version
 	c.ID = identity()
-	global := capability == "project-management" || capability == "project-settings" || capability == "app-settings" || capability == "thread-start" || capability == "agent-probe"
+	global := capability == "project-management" || capability == "project-settings" || capability == "app-settings" || capability == "thread-start" || capability == "agent-probe" || capability == "worktree-manage"
 	if c.ThreadID == "" && !global {
 		c.ThreadID = m.state.Active
 	}
@@ -783,6 +807,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	if cmd, handled := m.acceptWorktreeMsg(msg); handled {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case pathQueryReady:
 		cmd = m.runPathQuery(msg)
@@ -927,6 +954,13 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.inFlight = false
+		if isWorktreeStart(msg.command) && !(msg.err != nil && msg.saveFailed && !msg.retry) {
+			// A worktree start never holds the global pending command while
+			// Git runs; its draft follows it instead (worktrees.go).
+			m.busy, m.state.Pending = nil, nil
+			m.busyAction, m.state.PendingAction = action{}, action{}
+			return m, m.acceptWorktreeStart(msg.command, msg.receipt, msg.err)
+		}
 		if msg.err != nil && msg.saveFailed && !msg.retry {
 			m.busy, m.state.Pending = nil, nil
 			m.busyAction, m.state.PendingAction = action{}, action{}
@@ -970,6 +1004,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.projectRenameConflicted = true
 				m.projectError = "Project changed. Review the name, then Save again."
 			}
+			if rejected && err.Code == "workspace_unavailable" && (msg.command.Kind == "prompt.send" || msg.command.Kind == "prompt.reopen-send" || msg.command.Kind == "thread.resume") {
+				m.status = "This thread's worktree is unavailable; your prompt is kept. Open the Worktree row below the prompt to relocate or forget it."
+			}
 			if rejected && err.Code == "checkout_busy" && msg.command.Kind == "thread.resume" {
 				m.status = "Checkout busy: another thread is writing; Resume when it finishes"
 			}
@@ -982,6 +1019,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if rejected && (msg.command.Kind == "thread.start" && msg.command.ProjectID == m.state.DraftProjectID ||
 				(msg.command.Kind == "prompt.send" || msg.command.Kind == "prompt.reopen-send") && msg.command.ThreadID == m.state.Active) {
 				return m, m.showSendError(m.status)
+			}
+			if strings.HasPrefix(msg.command.Kind, "worktree.") {
+				if !rejected {
+					return m, m.showNoticeAs(noticeError, "Worktree: "+m.status)
+				}
+				return m, m.worktreeCommandFailed(msg.command, msg.err)
 			}
 			if msg.command.Kind == "queue.steer" {
 				message := m.status
@@ -999,9 +1042,19 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.receipt.State != "" {
 			m.status += " · " + msg.receipt.State
 		}
+		if strings.HasPrefix(msg.command.Kind, "worktree.") {
+			m.pruneKey = ""
+			m.markDirty()
+			m.configureInputs()
+			return m, m.showNoticeAs(noticeDone, worktreeDoneText(msg.command.Kind))
+		}
 		if msg.command.Kind == "thread.start" {
 			if v := m.state.DraftThreads[msg.command.ProjectID]; v != nil {
 				v.ContextError = ""
+				// The branch now exists; a later draft names its own.
+				if msg.command.Workspace != nil && msg.command.Workspace.Mode == workspaceWorktree && v.WorktreeBranch == msg.command.Workspace.Branch {
+					v.WorktreeBranch = ""
+				}
 			}
 		} else if msg.command.Kind == "prompt.send" || msg.command.Kind == "prompt.reopen-send" {
 			if v := m.state.Threads[msg.command.ThreadID]; v != nil {
@@ -1175,7 +1228,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if len(m.menu) > 0 {
 		m.menuOffset = m.menuStart(m.menuVisibleItems())
 	}
-	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextPathQuery(), m.nextGitRefresh(), m.nextFilesRefresh())
+	return m, tea.Batch(cmd, m.nextActivityTick(), m.nextCheckoutInspection(), m.nextDraftStartInspection(), m.nextPruneInspection(), m.nextPathQuery(), m.nextGitRefresh(), m.nextFilesRefresh())
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
