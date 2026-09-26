@@ -148,7 +148,7 @@ func TestGitOperationPanel(t *testing.T) {
 		t.Fatal("operation not read")
 	}
 	text := gitSurfaceText(m)
-	for _, want := range []string{"Rebase in progress · step 2/5 · started in a terminal", "Onto: origin/main eeeeeee Upstream work", "Current: ccccccc Local work",
+	for _, want := range []string{"Rebase in progress · step 2/5", "Started: in a terminal", "Onto: origin/main eeeeeee Upstream work", "Current: ccccccc Local work",
 		"UNMERGED 2", "UU img/logo.png binary", "DU gone.go", "Continue unavailable · Resolve and stage 2 conflicts first", "Skip commit…", "Abort rebase…"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q:\n%s", want, text)

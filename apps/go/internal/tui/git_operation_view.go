@@ -22,15 +22,19 @@ func (m *Model) gitOperationBlocks(g *gitView) []surfaceBlock {
 		return surfaceBlock{kind: surfacePairBlock, label: label, value: value}
 	}
 	title := gitOperationTitle(o.Kind)
-	state := "started here"
+	state := "here"
 	if o.Source == protocol.GitOperationSourceExternal {
-		state = "started in a terminal"
+		state = "in a terminal"
 	}
+	step := ""
 	if o.Steps > 0 {
-		title += " · step " + strconv.Itoa(o.Step) + "/" + strconv.Itoa(o.Steps)
+		step = "step " + strconv.Itoa(o.Step) + "/" + strconv.Itoa(o.Steps)
 	}
 	glyph, ink := panelStatusMark(m, "blocked")
-	b := []surfaceBlock{{kind: surfaceStatusBlock, label: title, value: state, glyph: glyph, ink: ink, bold: true}}
+	// The title stays short so it fits beside its state; the source is a
+	// pair of its own.
+	b := []surfaceBlock{{kind: surfaceStatusBlock, label: title, value: step, glyph: glyph, ink: ink, bold: true},
+		{kind: surfacePairBlock, label: "Started", value: state}}
 	commit := func(c *protocol.GitOperationCommit) string {
 		if c == nil {
 			return ""

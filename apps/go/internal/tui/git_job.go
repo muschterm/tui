@@ -32,10 +32,13 @@ const gitJobInputKey = "git:job-input"
 
 // gitJobStart is the open start form; it takes over the Git surface body.
 type gitJobStart struct {
-	key      string
-	target   client.GitTarget
-	state    protocol.GitOperationState
-	agentID  string
+	key     string
+	target  client.GitTarget
+	state   protocol.GitOperationState
+	agentID string
+	// settings are the job's model, effort and permissions, edited with the
+	// composer's option menus and validation.
+	settings protocol.Settings
 	paths    []string
 	selected map[string]bool
 }
@@ -161,6 +164,7 @@ func (m *Model) gitJobAction(a action) (tea.Cmd, bool) {
 			}
 		}
 		m.gitJ.start = &gitJobStart{key: key, target: target, state: *o, agentID: agentID, paths: paths, selected: sel}
+		m.gitJ.start.settings = m.gitJobInitialSettings(agentID)
 		m.gitJobInput().SetValue("")
 		m.gitJobInput().Placeholder = "Instructions (optional)"
 		m.gitJ.followup = false
@@ -174,8 +178,41 @@ func (m *Model) gitJobAction(a action) (tea.Cmd, bool) {
 	case "git-job-agent":
 		if s := m.gitJ.start; s != nil {
 			s.agentID = a.ID
+			s.settings = m.gitJobInitialSettings(a.ID)
 			m.markDirty()
 		}
+		return nil, true
+	case "git-job-setting":
+		s := m.gitJ.start
+		if s == nil {
+			return nil, true
+		}
+		ag, ok := m.agentByID(s.agentID)
+		if !ok {
+			return m.showNoticeAs(noticeUnavailable, "Choose an agent first"), true
+		}
+		s.settings = reconcileJobSettings(ag, s.settings)
+		c := agentConfigFor(ag).forModel(s.settings.Model)
+		o, has := c.option(a.ID)
+		if !has {
+			return m.showNoticeAs(noticeUnavailable, safe(ag.Name)+" offers no "+a.ID+" option"), true
+		}
+		m.showMenu("Resolution job · "+a.ID, m.optionValueMenuItems(o, a.ID, settingValue(s.settings, a.ID), "git-job-field"))
+		return nil, true
+	case "git-job-field":
+		s := m.gitJ.start
+		if s == nil {
+			return nil, true
+		}
+		ag, ok := m.agentByID(s.agentID)
+		if !ok {
+			return nil, true
+		}
+		s.settings = reconcileJobSettings(ag, s.settings)
+		if problem := agentConfigFor(ag).forModel(s.settings.Model).applySetting(&s.settings, a.ID, a.Value); problem != "" {
+			return m.showNoticeAs(noticeUnavailable, problem), true
+		}
+		m.markDirty()
 		return nil, true
 	case "git-job-path":
 		if s := m.gitJ.start; s != nil {
@@ -209,7 +246,7 @@ func (m *Model) gitJobAction(a action) (tea.Cmd, bool) {
 			m.gitJ.start = nil
 			return tea.Batch(m.showNoticeAs(noticeUnavailable, gitRefCopy(protocol.GitKindResolveJobStart, "stale_operation")), m.refreshGit()), true
 		}
-		cmd := client.GitResolveJobStartCommand(identity(), target, s.state, s.agentID, m.gitJobDefaults(s.agentID), paths, strings.TrimSpace(m.gitJobInput().Value()))
+		cmd := client.GitResolveJobStartCommand(identity(), target, s.state, s.agentID, m.gitJobSettings(s), paths, strings.TrimSpace(m.gitJobInput().Value()))
 		m.gitJ.start = nil
 		m.gitJobInput().SetValue("")
 		return tea.Batch(m.setFocus("git-refresh"), m.sendGitJob(key, g, cmd, "resolution job")), true
@@ -638,4 +675,60 @@ func (m *Model) refreshGitTranscript() {
 		m.viewer.att.Content = content
 		m.markDirty()
 	}
+}
+
+// gitJobInitialSettings starts the form from the saved new-thread defaults
+// when they are for this agent, else from the agent's current options,
+// reconciled against the options the agent offers now.
+func (m *Model) gitJobInitialSettings(agentID string) protocol.Settings {
+	a, ok := m.agentByID(agentID)
+	if !ok {
+		return protocol.Settings{}
+	}
+	if d := m.gitJobDefaults(agentID); d != nil {
+		return reconcileJobSettings(a, *d)
+	}
+	return reconcileJobSettings(a, initialAgentSettings(a))
+}
+
+// reconcileJobSettings keeps only values the agent offers now: an invalid
+// model falls back to the option's current or first value, dependent fields
+// are reconciled for that model, and every field the agent does not offer is
+// cleared, so the form shows "Agent default" exactly when nothing is sent.
+func reconcileJobSettings(a protocol.Agent, s protocol.Settings) protocol.Settings {
+	c := agentConfigFor(a)
+	if o, ok := c.option("model"); ok {
+		if _, valid := optionValue(o, s.Model); !valid {
+			s.Model = o.Current
+			if _, valid := optionValue(o, s.Model); !valid {
+				s.Model = ""
+				if len(o.Values) > 0 {
+					s.Model = o.Values[0].Value
+				}
+			}
+		}
+	} else {
+		s.Model = ""
+	}
+	c.reconcileModel(&s)
+	c = c.forModel(s.Model)
+	for _, f := range settingFieldOrder {
+		if _, ok := c.option(f); !ok {
+			setSettingValue(&s, f, "")
+		}
+	}
+	return s
+}
+
+// gitJobSettings are the settings the start command carries, reconciled
+// against the agent's current options (the form renders the same
+// reconciliation): nil (the agent's own) for an agent without selectable
+// options.
+func (m *Model) gitJobSettings(s *gitJobStart) *protocol.Settings {
+	a, ok := m.agentByID(s.agentID)
+	if !ok || a.Kind == "fixture" || len(a.Options) == 0 {
+		return nil
+	}
+	set := reconcileJobSettings(a, s.settings)
+	return &set
 }

@@ -97,7 +97,13 @@ func (m *Model) optionMenuItems(c agentConfig, field string) []menuItem {
 		}
 		return []menuItem{{Label: "Agent default · " + safe(a.Name) + " offers no " + field + " option", Action: action{Kind: "noop"}}}
 	}
-	selected := settingValue(m.composerSelection(), field)
+	return m.optionValueMenuItems(o, field, settingValue(m.composerSelection(), field), "setting-field")
+}
+
+// optionValueMenuItems lists one option's values with the selected one
+// marked; each item runs an action of kind with ID field and Value the
+// value. The composer and the resolution-job form share it.
+func (m *Model) optionValueMenuItems(o protocol.ConfigOption, field, selected, kind string) []menuItem {
 	var items []menuItem
 	if field == "speed" && o.Description != "" {
 		items = append(items, menuItem{Label: safe(o.Description), Action: action{Kind: "noop"}})
@@ -107,7 +113,7 @@ func (m *Model) optionMenuItems(c agentConfig, field string) []menuItem {
 		if description := strings.TrimSpace(singleLine(v.Description)); description != "" && field != "effort" {
 			label += " · " + ansi.Truncate(description, maxSettingHelp, "…")
 		}
-		items = append(items, menuItem{Label: label, Action: action{Kind: "setting-field", ID: field, Value: v.Value}})
+		items = append(items, menuItem{Label: label, Action: action{Kind: kind, ID: field, Value: v.Value}})
 	}
 	if len(items) == 0 {
 		items = append(items, menuItem{Label: "Agent default · " + safe(o.Name) + " offers no values", Action: action{Kind: "noop"}})

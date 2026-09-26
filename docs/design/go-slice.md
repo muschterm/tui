@@ -1765,9 +1765,9 @@ operation panel (offered with the server's `git-jobs` capability). Edit now maps
 
 - **Start**: "Resolve with agent…" on the panel (all paths) or a conflict
   row's menu (that path) opens a form in the Git surface body, Cancel
-  focused: the agent (radio rows), the settings it will use (the saved
-  new-thread defaults when they are for that agent, shown read-only, else
-  the agent's own defaults; changing them stays in Settings › Agents), a
+  focused: the agent (radio rows), the settings it will use (editable
+  model, effort and permissions; see "Git real-app harness and job
+  settings" below), a
   paths checklist and optional instructions (Enter starts, Esc cancels).
 - **Job section**: status ("<agent> working · thinking/waiting",
   interrupted, finished), one **Answer · …** / **Approve or deny · …** entry
@@ -1809,6 +1809,32 @@ subset, running section and transcript, accept/reject/stale/refresh,
 follow-up and end, viewer diff tabs, content-gate acknowledgement and
 review_pending). `TestGitJobCaptures` renders start, running, review and
 the continue review (dark and light).
+
+### Git real-app harness and job settings — 2026-09-25
+
+`scripts/pty_git.py` (part of `make pty`) drives the real binary and server
+in an OS PTY over a temporary repository with a local bare remote: open the
+Git surface on a project draft, stage from the diff viewer, commit, merge a
+conflicting branch from its row menu, Choose theirs, Mark resolved, Continue
+(checked with `git rev-list --parents`), then Fetch and fast-forward Pull.
+The resolution-job start form now edits model, effort and permissions with
+the composer's option menus and validation (`optionValueMenuItems`,
+`agentConfig.applySetting`, shared with the composer), starting from the
+new-thread defaults for that agent or the agent's current options. The
+values are reconciled against the agent's current options on open, on
+agent change, on every render and again at Start (`reconcileJobSettings`):
+a withdrawn model falls back to the option's current value, dependent
+fields follow the model, and fields the agent does not offer (including
+context and speed, which the form does not edit) are cleared, so the form
+shows "Agent default" exactly when nothing is sent for that field. Fixture
+agents and agents without options send no settings. The server validates
+the captured settings again at Start. The form exists only before Start,
+so settings cannot change once the job runs; the job section then shows
+the job thread's recorded settings once as a "Settings" pair (effective
+where acknowledged, else selected, with a mismatch labelled "selected
+…"). The
+operation panel's title keeps the step and shows the source as its own
+"Started" pair so it fits narrow hosts.
 
 ### Embedded terminals — 2026-09-24
 

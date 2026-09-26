@@ -18,6 +18,7 @@ SSH or tmux compatibility.
 | `pty_path_completion.py` | Project folder typeahead and inline `@` file mentions |
 | `pty_colors.py` | Color negotiation with synthetic terminal replies |
 | `pty_terminal.py` | Embedded terminal: F5 opens a real shell in the bottom panel, click enters input focus, typed `echo hello-$((6*7))` prints `hello-42`, Ctrl+] leaves, hide/show keeps the session, tab close ends it; the child shell gets a temporary `HOME` and `HISTFILE=/dev/null` |
+| `pty_git.py` | Git surface against the real server: a temporary repository with a local bare remote registered as a project; stage from the diff viewer (`s`), commit from the message editor, merge a conflicting branch from its row menu, Choose theirs, Mark resolved, Continue (verified with `git`), then Fetch and fast-forward Pull; Git identity comes from the temporary HOME |
 | `pty_clipboard.py` | Right-click Copy/Paste, forwarded paste shortcuts, cursor insertion and selected-range replacement through isolated clipboard utility stand-ins; never accesses the real OS clipboard |
 | `pty_acp.py` | Opt-in real ACP prompt, menus and cancel/resume; requires live login and consumes account quota |
 | `live_agent_recovery.py` | Opt-in live HTTP Claude native question / Codex prompt, exact answer retry, Stop/Resume and restart; selects an installed official runtime explicitly |

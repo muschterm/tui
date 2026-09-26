@@ -405,19 +405,44 @@ func (m *Model) chooseSetting(field, value string) tea.Cmd {
 	if !ok {
 		return m.showNotice("Choose an agent first")
 	}
-	o, has := c.option(field)
-	if !has {
-		return m.showNoticeAs(noticeUnavailable, safe(c.agent.Name)+" offers no "+field+" option")
-	}
-	if _, ok := optionValue(o, value); !ok {
-		return m.showNoticeAs(noticeUnavailable, "That "+field+" is no longer offered · reprobe "+safe(c.agent.Name))
-	}
-	v := m.viewState()
-	setSettingValue(&v.Settings, field, value)
-	if field == "model" {
-		c.reconcileModel(&v.Settings)
+	if problem := c.applySetting(&m.viewState().Settings, field, value); problem != "" {
+		return m.showNoticeAs(noticeUnavailable, problem)
 	}
 	return nil
+}
+
+// applySetting validates value against the agent's offered options and
+// sets it, reconciling the dependent fields after a model change; it
+// returns why it could not. The composer and the resolution-job form share
+// it.
+func (c agentConfig) applySetting(s *protocol.Settings, field, value string) string {
+	o, has := c.option(field)
+	if !has {
+		return safe(c.agent.Name) + " offers no " + field + " option"
+	}
+	if _, ok := optionValue(o, value); !ok {
+		return "That " + field + " is no longer offered · reprobe " + safe(c.agent.Name)
+	}
+	setSettingValue(s, field, value)
+	if field == "model" {
+		c.reconcileModel(s)
+	}
+	return ""
+}
+
+// initialAgentSettings are an agent's current option values, reconciled,
+// for a form that starts from the agent's own defaults.
+func initialAgentSettings(a protocol.Agent) protocol.Settings {
+	var s protocol.Settings
+	c := agentConfigFor(a)
+	if o, ok := c.option("model"); ok {
+		s.Model = o.Current
+		if _, valid := optionValue(o, s.Model); !valid && len(o.Values) > 0 {
+			s.Model = o.Values[0].Value
+		}
+	}
+	c.reconcileModel(&s)
+	return s
 }
 
 // deliveryConfirmed reports a server-confirmed answer delivery. Unknown values

@@ -270,6 +270,7 @@ func TestGitJobCaptures(t *testing.T) {
 			switch name {
 			case "start":
 				m, _ = conflictModel(t)
+				m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-jobs")
 				gitWriteSettle(t, m, m.activate(action{Kind: "git-job-open"}))
 			case "running":
 				m, _ = jobModel(t, protocol.GitReviewRunning)
@@ -462,5 +463,131 @@ func TestGitJobTranscriptLive(t *testing.T) {
 	gitWriteSettle(t, m, nil)
 	if m.viewer == nil || !strings.Contains(m.viewer.att.Content, "Ran the tests") {
 		t.Fatal("transcript not refreshed")
+	}
+}
+
+func TestGitJobStartSettingsEditable(t *testing.T) {
+	m, api := conflictModel(t)
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-jobs")
+	m.snapshot.Agents = append(m.snapshot.Agents, protocol.Agent{ID: "acp-x", Name: "ACP X", Kind: "acp", State: "ready",
+		Fields: protocol.SettingFields{Model: "model", Effort: "effort"},
+		Options: []protocol.ConfigOption{
+			{ID: "model", Name: "Model", Type: "select", Current: "m1", Values: []protocol.ConfigValue{{Value: "m1", Name: "One"}, {Value: "m2", Name: "Two"}}},
+			{ID: "effort", Name: "Effort", Type: "select", Current: "low", Values: []protocol.ConfigValue{{Value: "low", Name: "Low"}, {Value: "high", Name: "High"}}},
+		}})
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-open"}))
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-agent", ID: "acp-x"}))
+	if s := m.gitJ.start.settings; s.Model != "m1" || s.Effort != "low" {
+		t.Fatalf("initial settings %+v", s)
+	}
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-setting", ID: "model"}))
+	if !strings.Contains(menuText(m), "Two") {
+		t.Fatalf("model menu:\n%s", menuText(m))
+	}
+	for i, it := range m.menu {
+		if strings.Contains(it.Label, "Two") {
+			m.menuIndex = i
+		}
+	}
+	gitKey(t, m, "enter")
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-field", ID: "effort", Value: "bogus"}))
+	if !strings.Contains(m.notice.text, "no longer offered") || m.gitJ.start.settings.Effort != "low" {
+		t.Fatalf("validation: %q %+v", m.notice.text, m.gitJ.start.settings)
+	}
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-field", ID: "effort", Value: "high"}))
+	if !strings.Contains(gitSurfaceText(m), "Model · Two") {
+		t.Fatalf("form:\n%s", gitSurfaceText(m))
+	}
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-start"}))
+	j := lastSent(t, api).Git.ResolveJob
+	if j.AgentID != "acp-x" || j.Settings == nil || j.Settings.Model != "m2" || j.Settings.Effort != "high" {
+		t.Fatalf("start %+v %+v", j, j.Settings)
+	}
+}
+
+// jobACPAgent offers model and effort; withEffort false drops effort, as
+// after a reprobe.
+func jobACPAgent(withEffort bool) protocol.Agent {
+	a := protocol.Agent{ID: "acp-x", Name: "ACP X", Kind: "acp", State: "ready",
+		Fields: protocol.SettingFields{Model: "model"},
+		Options: []protocol.ConfigOption{
+			{ID: "model", Name: "Model", Type: "select", Current: "m1", Values: []protocol.ConfigValue{{Value: "m1", Name: "One"}, {Value: "m2", Name: "Two"}}},
+		}}
+	if withEffort {
+		a.Fields.Effort = "effort"
+		a.Options = append(a.Options, protocol.ConfigOption{ID: "effort", Name: "Effort", Type: "select", Current: "low",
+			Values: []protocol.ConfigValue{{Value: "low", Name: "Low"}, {Value: "high", Name: "High"}}})
+	}
+	return a
+}
+
+// Stale new-thread defaults (a dropped effort, a speed never offered, a
+// withdrawn model) are reconciled: the form shows "Agent default" and Start
+// sends nothing for them.
+func TestGitJobStartSettingsReconciled(t *testing.T) {
+	m, api := conflictModel(t)
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-jobs")
+	m.snapshot.Agents = append(m.snapshot.Agents, jobACPAgent(false))
+	m.snapshot.AppSettings.NewThreadDefaults = &protocol.NewThreadDefaults{AgentID: "acp-x",
+		Settings: protocol.Settings{Model: "gone", Effort: "high", Speed: "fast", Context: "1m"}}
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-open"}))
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-agent", ID: "acp-x"}))
+	text := gitSurfaceText(m)
+	if !strings.Contains(text, "Model · One") || !strings.Contains(text, "Effort") || strings.Contains(text, "High") {
+		t.Fatalf("form:\n%s", text)
+	}
+	// A reprobe between opening and Start is applied at Start too.
+	m.snapshot.Agents[len(m.snapshot.Agents)-1].Options[0].Values = m.snapshot.Agents[len(m.snapshot.Agents)-1].Options[0].Values[1:]
+	m.snapshot.Agents[len(m.snapshot.Agents)-1].Options[0].Current = "m2"
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-start"}))
+	j := lastSent(t, api).Git.ResolveJob
+	if j.Settings == nil || (*j.Settings != protocol.Settings{Model: "m2"}) {
+		t.Fatalf("start settings %+v", j.Settings)
+	}
+}
+
+// The job's setting buttons take focus in traversal order and respond to a
+// click.
+func TestGitJobStartSettingsReachable(t *testing.T) {
+	m, _ := conflictModel(t)
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-jobs")
+	m.snapshot.Agents = append(m.snapshot.Agents, jobACPAgent(true))
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-open"}))
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-job-agent", ID: "acp-x"}))
+	m.viewState().DetailScroll = 0
+	seen := map[string]bool{}
+	for i := 0; i < 60 && !(seen["git:job-setting:model"] && seen["git:job-setting:effort"]); i++ {
+		gitKey(t, m, "tab")
+		seen[m.focus] = true
+	}
+	if !seen["git:job-setting:model"] || !seen["git:job-setting:effort"] {
+		t.Fatalf("tab never focused the setting buttons: %v", seen)
+	}
+	h, ok := findHit(m.measure(), "git:job-setting:effort")
+	if !ok {
+		t.Fatalf("no effort hit:\n%s", gitSurfaceText(m))
+	}
+	_, cmd := m.Update(tea.MouseClickMsg{X: h.Rect.X, Y: h.Rect.Y, Button: tea.MouseLeft})
+	gitWriteSettle(t, m, cmd)
+	if !strings.Contains(menuText(m), "High") {
+		t.Fatalf("click did not open the effort menu:\n%s", menuText(m))
+	}
+}
+
+// The running job shows its recorded settings once, labelling a mismatch.
+func TestGitJobRecordedSettings(t *testing.T) {
+	m, _ := jobModel(t, protocol.GitReviewRunning)
+	m.snapshot.Agents = append(m.snapshot.Agents, jobACPAgent(true))
+	for i := range m.snapshot.Threads {
+		if m.snapshot.Threads[i].ID == jobThreadID {
+			m.snapshot.Threads[i].AgentID = "acp-x"
+			m.snapshot.Threads[i].Selected = protocol.Settings{Model: "m2", Effort: "high"}
+			m.snapshot.Threads[i].Effective = protocol.Settings{Model: "m2", Effort: "low"}
+		}
+	}
+	m.markDirty()
+	text := gitSurfaceText(m)
+	if !strings.Contains(text, "Two · Low (selected High)") || strings.Count(text, "Two") != 1 {
+		t.Fatalf("recorded settings:\n%s", text)
 	}
 }

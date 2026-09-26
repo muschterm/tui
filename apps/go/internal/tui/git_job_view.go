@@ -36,13 +36,16 @@ func (m *Model) gitJobStartBlocks(s *gitJobStart) []surfaceBlock {
 		b = append(b, button(safe(singleLine(a.Name)), glyph, "git:job-agent:"+a.ID, action{Kind: "git-job-agent", ID: a.ID}, "Use "+safe(singleLine(a.Name))))
 	}
 	if a, ok := m.agentByID(s.agentID); ok {
-		if set := m.gitJobDefaults(a.ID); set != nil {
-			for _, f := range []string{"model", "effort", "permissions"} {
-				b = append(b, surfaceBlock{kind: surfacePairBlock, label: title(f), value: m.newThreadDefaultFieldValue(a, f, *set)})
+		// Render the reconciliation Start sends, so what is shown is sent.
+		set := reconcileJobSettings(a, s.settings)
+		c := agentConfigFor(a).forModel(set.Model)
+		for _, f := range []string{"model", "effort", "permissions"} {
+			if _, has := c.option(f); has && a.Kind != "fixture" {
+				b = append(b, button(title(f)+" · "+m.newThreadDefaultFieldValue(a, f, set), m.icon("settings"), "git:job-setting:"+f,
+					action{Kind: "git-job-setting", ID: f}, "Choose the job's "+f))
+				continue
 			}
-			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: "From the new-thread defaults · change them in Settings › Agents", ink: p.muted})
-		} else {
-			b = append(b, surfaceBlock{kind: surfaceTextBlock, value: "Uses the agent's own default settings · set new-thread defaults in Settings › Agents", ink: p.muted})
+			b = append(b, surfaceBlock{kind: surfacePairBlock, label: title(f), value: "Agent default", ink: p.muted})
 		}
 	}
 	b = append(b, gap, surfaceBlock{kind: surfaceHeadingBlock, label: "Paths", value: strconv.Itoa(len(s.paths))})
@@ -101,6 +104,9 @@ func (m *Model) gitJobBlocks(o *protocol.GitOperationState) []surfaceBlock {
 		b = append(b, statusBlock(m, "Agent finished · review its changes", "ready", false))
 	}
 	if known {
+		if v := m.gitJobRecordedSettings(t); v != "" {
+			b = append(b, surfaceBlock{kind: surfacePairBlock, label: "Settings", value: v})
+		}
 		for _, req := range t.Requests {
 			if req.State == "pending" {
 				label := "Answer · "
@@ -237,4 +243,32 @@ func (m *Model) paintGitJobRow(f *frame, x, y, width int, r *gitRow, v component
 		}
 		f.hits = append(f.hits, hit{Rect: shell.Rect{X: x + 1, Y: y, W: width - 2, H: 1}, Action: r.action, Label: r.help, Key: r.key})
 	}
+}
+
+// gitJobRecordedSettings summarizes the job thread's settings once: the
+// effective (acknowledged) value where reported, else the selected one, with
+// a mismatch labelled.
+func (m *Model) gitJobRecordedSettings(t protocol.Thread) string {
+	a, _ := m.threadAgent(t)
+	var parts []string
+	for _, f := range []string{"model", "effort", "permissions"} {
+		sel, eff := settingValue(t.Selected, f), settingValue(t.Effective, f)
+		if eff == "unavailable" {
+			eff = ""
+		}
+		if sel == "unavailable" {
+			sel = ""
+		}
+		switch {
+		case eff != "":
+			label := m.newThreadDefaultFieldValue(a, f, t.Effective)
+			if sel != "" && sel != eff {
+				label += " (selected " + m.newThreadDefaultFieldValue(a, f, t.Selected) + ")"
+			}
+			parts = append(parts, label)
+		case sel != "":
+			parts = append(parts, m.newThreadDefaultFieldValue(a, f, t.Selected))
+		}
+	}
+	return strings.Join(parts, " · ")
 }
