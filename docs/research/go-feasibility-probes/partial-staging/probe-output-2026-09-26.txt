@@ -1,0 +1,210 @@
+git version 2.55.0
+
+== A1 whole-hunk stage: apply --cached of hunk 2 only
+exit=0
+hooks: post-index-change 0 0;
+ f | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+-l18
++L18
+hooks: none
+
+== B1 same result via hash-object -w --no-filters + update-index --cacheinfo
+predicted=c55780c99335dd0b885999b21911756e97b2321a
+hooks: none
+100644 c55780c99335dd0b885999b21911756e97b2321a 0	f
+hooks: post-index-change 0 1;
+-- no compare-and-swap: a concurrent change to the entry is overwritten silently
+exit=0
+100644 c55780c99335dd0b885999b21911756e97b2321a 0	f
+
+== A2 line selection inside a hunk: stage only the +L4 of a -l4/+L4 -l5/+L5 block
+-- without --recount:
+exit=0
+-- with --recount:
+exit=0
+l3 l5 L4 l6  <- l5 before L4: naive in-place context conversion reorders lines
+context moved after the block's + lines: exit=0
+l3 L4 l5 l6
+
+== A3 stale selection: index/worktree changed after the diff was computed
+-- default (exact context):
+error: patch failed: f:7
+error: f: patch does not apply
+exit=1
+-- -C1 (reduced context):
+error: patch failed: f:7
+error: f: patch does not apply
+exit=1
+-- --unidiff-zero -U0 patch built earlier would ignore context entirely:
+exit=0
+l9
+L10
+l11
+
+== A4 -3 on a failed context: falls back to 3-way and can leave a conflicted index
+Applied patch to 'f' with conflicts.
+U f
+exit=1
+100644 86bba901de6526d849fcca3181beda8cdd68551e 1	f
+100644 4159e6cc36db420a5ca60e88afbfd82e2c06420a 2	f
+100644 d56516178c343bc0ac470b7ac95d704c6e3ddb7d 3	f
+
+== A5 CRLF with core.autocrlf=true (worktree CRLF, index LF)
+100644 86bba901de6526d849fcca3181beda8cdd68551e 0	f
+0000000   l   1  \n
+0000003
+0
+stage exit=0
+0000000   L   3  \n
+-- discard hunk 2 via apply -R to worktree:
+exit=0
+0000000   l   1   7  \r  \n
+-- hash-object --path on worktree-space vs index-space bytes:
+78981922613b2afb6025042ff6bd878ac1994e85
+78981922613b2afb6025042ff6bd878ac1994e85
+
+== A6 .gitattributes text eol=crlf and a mixed-EOL file without attributes
+warning: in the working copy of 't.txt', LF will be replaced by CRLF the next time Git touches it
+0000000   a  \r  \n   b  \r  \n   c  \r  \n
+0
+discard exit=0
+0000000   a  \r  \n   b  \r  \n   c  \r  \n
+-y$
++Y$
+ z^M$
+stage exit=0
+0000000   x  \r  \n   Y  \n   z  \r  \n
+
+== A7 clean/smudge filter: which commands invoke it
+ONE TWO THREE
+diff: clean,clean,
+-TWO
+-THREE
++DEUX
++TROIS
+apply --cached exit=0 filter:
+ONE DEUX THREE
+9011196bbc7bb8a3f92f1713cee072e87c263f8d
+hash --no-filters filter:
+9011196bbc7bb8a3f92f1713cee072e87c263f8d
+hash --path filter: clean, (re-cleans index-space bytes)
+discard (apply -R) exit=0 filter: clean,smudge,
+one two three
+hooks: post-index-change 0 0;post-index-change 0 0;pre-commit ;reference-transaction preparing;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction aborted;reference-transaction prepared;reference-transaction committed;post-index-change 0 0;post-index-change 0 1;reference-transaction preparing;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction aborted;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction aborted;reference-transaction prepared;reference-transaction committed;
+
+== A8 LFS-like pointer filter: diff shows pointer text, so partial selection is meaningless
+@@ -1 +1 @@
+-ptr-oid-7523f91f
++ptr-oid-51afc27f
+
+== A9 no trailing newline
++A
+ b
+-c
+\ No newline at end of file
++C
+\ No newline at end of file
+ b$
+ c$
+\ No newline at end of file$
+\ No newline at end of file$
+exit=0
+0000000   A  \n   b  \n   c
+
+== A10 mode change plus content: header-only mode, hunk-only content
+diff --git i/f w/f
+old mode 100644
+new mode 100755
+index 86bba90..dbfa31c
+content-only exit=0
+100644 dbfa31c1ca1b14f16702a58b7af8d7d11be82e4c 0	f
+
+== A11 intent-to-add: git diff shows new-file patch; partial apply --cached
+diff --git i/n w/n
+new file mode 100644
+index 0000000..5804e55
+--- /dev/null
++++ w/n
+@@ -0,0 +1,3 @@
+exit=0
+100644 5f2331ebce56c1ac487eb54eb48ceefb04815a5e 0	n
+n1
+n3
+
+== A12 unmerged path: apply --cached and update-index --cacheinfo
+100644 86bba901de6526d849fcca3181beda8cdd68551e 1	f
+100644 f577b85a403bc9fa9403667dd9dcf7149e9d0515 2	f
+100644 852361952620563a527471ef7a282f62c179e6b1 3	f
+diff --cc f
+index f577b85,8523619..0000000
+--- i/f
+error: No valid patches in input (allow with "--allow-empty")
+apply exit=128
+cacheinfo exit=0
+100644 86bba901de6526d849fcca3181beda8cdd68551e 0	f
+(cacheinfo silently resolved the conflict)
+
+== A13 binary file
+diff --git i/z w/z
+index 8352675..1592e5c 100644
+Binary files i/z and w/z differ
+diff --git i/z w/z
+index 8352675d67aed6625ece79af41c27fdb4ee2e867..1592e5c60f1a460928916dc5681fee1a9bd10868 100644
+GIT binary patch
+
+== A14 non-UTF-8 (Latin-1) bytes
+exit=0
+0000000   C   A   F 351  \n   n   a 357   v   e  \n   x  \n
+
+== A15 staged rename: unstage one hunk with apply --cached -R
+diff --git c/old i/new
+similarity index 90%
+rename from old
+rename to new
+index 86bba90..7b4461e 100644
+--- c/old
++++ i/new
+@@ -1,5 +1,5 @@
+exit=0
+MD old
+(rename headers reversed the whole rename)
+diff --git c/new i/new
+new file mode 100644
+diff --git c/old i/old
+deleted file mode 100644
+error: removal patch leaves file contents
+error: new: patch does not apply
+no-renames partial unstage exit=1
+R  old -> new
+-- B: unstage L19 from the renamed entry by writing the computed blob
+RM old -> new
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+== B2 intent-to-add entry replaced by --cacheinfo
+AM n
+  size: 0	flags: 0
+
+== A16 submodule entry
+diff --git i/sub w/sub
+index 86c8ba7..fef08dc 160000
+--- i/sub
++++ w/sub
+@@ -1 +1 @@
+-Subproject commit 86c8ba7a77651695d657a7187deba26fcb3c0117
++Subproject commit fef08dc361a32bf9f982731724164e4a4a4925ae
+
+== A17 adjacent hunks: stage hunk 2 of a -U3 diff whose hunks are merged; split needs -U0/-U1
+hunks at -U3: 1  at -U1: 2
+exit=0
+l5
+L9
+
+== A18 large diff timing (100k lines, every 10th changed; stage half via apply vs cacheinfo)
+patch bytes 345641 hunks 10000
+apply --cached: 0.435s
+hash-object+cacheinfo: 0.007s
+same result: yes
+hooks: post-index-change 0 0;post-index-change 0 0;pre-commit ;reference-transaction preparing;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction aborted;reference-transaction prepared;reference-transaction committed;post-index-change 0 0;post-index-change 0 1;reference-transaction preparing;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction aborted;reference-transaction prepared;reference-transaction committed;reference-transaction preparing;reference-transaction aborted;reference-transaction prepared;reference-transaction committed;post-index-change 0 1;
+
+probe dir: $W
