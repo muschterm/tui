@@ -170,7 +170,7 @@ func (m *Model) acceptClipboardRead(msg clipboardReadMsg) tea.Cmd {
 		m.status = ""
 		return m.showNoticeAs(noticeUnavailable, "Paste unavailable · clipboard text exceeds the 1 MiB limit")
 	}
-	content := safe(msg.text)
+	content := safe(normalizeInputNewlines(msg.text))
 	if content == "" {
 		m.status = ""
 		return m.showNotice("Clipboard is empty")

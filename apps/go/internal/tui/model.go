@@ -1182,28 +1182,28 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = c
 		} else if c, handled := m.docPaste(msg.Content); handled {
 			cmd = c
-		} else if m.terminalTooSmall() || m.viewer != nil || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
+		} else if text := normalizeInputNewlines(msg.Content); m.terminalTooSmall() || m.viewer != nil || m.projectMode == "" && (len(m.menu) > 0 || m.settingsPage != "" && (m.focus == "prompt" || m.focus == "answer")) {
 			// Nothing behind a modal, the resize notice or settings accepts input.
 			cmd = m.showNoticeAs(noticeUnavailable, "Paste ignored · no visible input")
 		} else if m.projectMode != "" {
-			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: singleLine(msg.Content)})
+			cmd = updateInput(&m.projectInput, tea.PasteMsg{Content: singleLine(text)})
 			m.menuIndex = 0
 			m.refreshProjectMenu()
 		} else if m.focus == "thread-search" && len(m.menu) == 0 {
-			cmd = m.updateThreadSearch(tea.PasteMsg{Content: singleLine(msg.Content)})
+			cmd = m.updateThreadSearch(tea.PasteMsg{Content: singleLine(text)})
 		} else if m.focus == "answer" {
 			m.answerView.Reset()
-			cmd = updateInput(&m.answer, tea.PasteMsg{Content: safe(msg.Content)})
+			cmd = updateInput(&m.answer, tea.PasteMsg{Content: safe(text)})
 			m.storeAnswer(m.answer.Value())
 		} else if m.focus == gitMessageKey {
-			cmd = m.gitMessagePaste(msg.Content)
+			cmd = m.gitMessagePaste(text)
 		} else if m.focus == gitBranchNameKey {
-			cmd = m.gitBranchNamePaste(msg.Content)
+			cmd = m.gitBranchNamePaste(text)
 		} else if m.focus == gitJobInputKey {
-			cmd = m.gitJobInputPaste(msg.Content)
+			cmd = m.gitJobInputPaste(text)
 		} else if m.focus == "prompt" {
 			m.promptView.Reset()
-			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(msg.Content)})
+			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(text)})
 			m.viewState().Draft = m.prompt.Value()
 			m.markDirty()
 		}

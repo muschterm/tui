@@ -120,6 +120,16 @@ func updateInput(a *textarea.Model, msg tea.Msg) tea.Cmd {
 		*a, cmd = a.Update(msg)
 		return cmd
 	}
+	// A shift movement that could not move (Backspace's cluster selection at
+	// the start, Delete's at the end) leaves an empty but anchored selection.
+	// Upstream insertion keeps that anchor, so a later selection would span
+	// from the stale anchor and delete typed text. Drop empty selections.
+	if !a.HasSelection() {
+		a.ClearSelection()
+	}
+	if isPaste {
+		msg = tea.PasteMsg{Content: normalizeInputNewlines(msg.(tea.PasteMsg).Content)}
+	}
 	normalizeInputSelection(a)
 	// Upstream truncates incoming text by rune count. Trim only at cluster
 	// boundaries first, and never erase a selection when no cluster fits.
@@ -157,6 +167,7 @@ func updateInput(a *textarea.Model, msg tea.Msg) tea.Cmd {
 			}
 			moveInputCluster(a, inputKey(direction, true))
 			if !a.HasSelection() {
+				a.ClearSelection()
 				return nil
 			}
 			var cmd tea.Cmd
@@ -197,6 +208,15 @@ func updateInput(a *textarea.Model, msg tea.Msg) tea.Cmd {
 		normalizeInputSelection(a)
 	}
 	return cmd
+}
+
+// normalizeInputNewlines maps CRLF and lone CR to LF. Bracketed pastes from
+// tmux (paste-buffer -p) and many terminals carry CR line breaks, which the
+// control-character sanitisers would otherwise drop. Apply it before safe or
+// singleLine, and never to pastes forwarded to a terminal session.
+func normalizeInputNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
 }
 
 func moveInputCluster(a *textarea.Model, k tea.KeyPressMsg) tea.Cmd {

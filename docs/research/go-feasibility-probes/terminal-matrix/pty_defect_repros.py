@@ -44,12 +44,12 @@ def main():
             t.send(b'\x7f' * 5, 1)
             got = draft()
             print('1 backspace-on-empty:', 'DEFECT' if got != ['g'] else 'ok', got)
-            t.send(b'\x1b[3~', .6)  # Delete removes the leftover; the draft is empty again
-            print('  after Delete:', draft())
+            t.send(b'\x1b[F' + b'\x7f' * 8, .6)  # End, then Backspace clears the leftover wherever the cursor is
+            print('  after clearing:', draft())
             t.send(b'\x1b[200~d1\rd2\x1b[201~', 1)
             got = draft()
             print('2 bracketed paste with CR:', 'DEFECT' if got != ['d1', 'd2'] else 'ok', got)
-            t.send(b'\x7f' * 4, .6)
+            t.send(b'\x1b[F' + b'\x7f' * 8, .6)
             t.send(b'\x1b[200~e1\ne2\x1b[201~', 1)
             print('  bracketed paste with LF:', draft())
         finally:
