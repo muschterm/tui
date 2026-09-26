@@ -236,6 +236,9 @@ func prepareJobStart(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		thread := protocol.Thread{ID: id, ProjectID: project.ID, Project: project.Name, Title: "Resolve " + st.Kind + " conflicts", Checkout: w.top,
 			Agent: chosen.Name, AgentID: acpAgentID(*chosen), State: "idle", Selected: settings, Effective: settings, QueueRevision: 1, Job: &job,
 			Queue: []protocol.Prompt{{ID: "prompt-" + id, Text: jobPrompt(st, conflicts, req.Instructions), Revision: 1, Settings: settings}}}
+		// A job in a managed worktree belongs to it: dispatch is gated on
+		// the worktree and the job counts for removal (ADR 0024).
+		thread.WorktreeID = worktreeAt(s, w.top)
 		s.Threads = append(s.Threads, thread)
 		rec.JobThreadID, rec.State, rec.UpdatedAt, rec.LastCommandID = id, protocol.GitOperationAgentRunning, now, c.ID
 		// The first job of a stop sets the baseline; later jobs keep it, so

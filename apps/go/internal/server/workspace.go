@@ -23,11 +23,13 @@ func (e *engine) workspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path, found := "", false
+	var unavailable error
 	e.mu.Lock()
 	if threadID != "" {
 		for _, t := range e.snap.Threads {
 			if t.ID == threadID {
 				path, found = t.Checkout, true
+				_, unavailable = threadCheckout(&e.snap, &t)
 				break
 			}
 		}
@@ -43,6 +45,14 @@ func (e *engine) workspace(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(failure("not_found", "workspace target not found"))
+		return
+	}
+	if unavailable != nil {
+		// A managed worktree that is not present is reported without
+		// running Git there (ADR 0024).
+		var pe *protocol.Error
+		errors.As(unavailable, &pe)
+		_ = json.NewEncoder(w).Encode(protocol.WorkspaceInfo{Path: path, Kind: "unavailable", State: "unavailable", Error: pe.Message})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(inspectWorkspace(r.Context(), path))
@@ -75,6 +85,7 @@ func inspectWorkspace(parent context.Context, path string) protocol.WorkspaceInf
 			}
 		}
 		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+		cmd.Env = append(cmd.Env, gitCeilingEnv(path)...)
 		out := &workspaceOutput{}
 		cmd.Stdout = out
 		cmd.WaitDelay = 100 * time.Millisecond

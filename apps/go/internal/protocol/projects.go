@@ -42,6 +42,19 @@ func EffectiveWorkspaceDefault(app AppSettings, project Project) string {
 	return "checkout"
 }
 
+// ProjectWorktrees lists the managed worktrees of a project: removing the
+// project forgets them but keeps their directories and branches, and its
+// confirmation lists them (ADR 0024).
+func ProjectWorktrees(s Snapshot, projectID string) []ManagedWorktree {
+	var out []ManagedWorktree
+	for _, w := range s.Worktrees {
+		if w.ProjectID == projectID && w.State != WorktreeRemoved {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // ProjectRemoveBlocked checks current authoritative work, without cancelling it.
 func ProjectRemoveBlocked(s Snapshot, projectID string) string {
 	for _, t := range s.Threads {

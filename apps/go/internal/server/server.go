@@ -74,6 +74,10 @@ type engine struct {
 	git gitWriteState
 	// baselineDir keeps resolution jobs' index listings (git_resolve_job.go).
 	baselineDir string
+	// worktreeDir holds managed worktrees (worktrees.go); empty disables
+	// worktree creation. worktreesCheckedAt throttles detection.
+	worktreeDir        string
+	worktreesCheckedAt time.Time
 	// docs holds shared documents; see documents.go.
 	docs documentState
 }
@@ -98,6 +102,7 @@ func clientSnapshot(s protocol.Snapshot) protocol.Snapshot {
 }
 
 func (e *engine) publish() {
+	syncWorktreeCeilings(e.snap.Worktrees)
 	for ch := range e.subscribers {
 		select {
 		case ch <- clientSnapshot(e.snap):
@@ -127,6 +132,12 @@ func (e *engine) commandContext(ctx context.Context, c protocol.Command) (protoc
 	}
 	if c.Kind == "terminal.open" {
 		return e.openTerminal(ctx, c)
+	}
+	if c.Kind == "thread.start" && c.Workspace != nil && c.Workspace.Mode == "worktree" {
+		return e.worktreeStart(ctx, c)
+	}
+	if c.Kind == "worktree.remove" || c.Kind == "worktree.prune" {
+		return e.worktreeGitCommand(ctx, c)
 	}
 	if strings.HasPrefix(c.Kind, "git.") && !jobControlKind(c.Kind) {
 		return e.gitWriteCommand(ctx, c)
@@ -252,7 +263,7 @@ func (e *engine) tick() error {
 				// The finished turn releases the lease; the next queued prompt
 				// reacquires it only when no earlier waiter is eligible.
 				t.State = "idle"
-				if len(t.Queue) == 0 || !e.acquireWriter(&next, t) {
+				if len(t.Queue) == 0 || worktreeUnavailable(&next, t) != nil || !e.acquireWriter(&next, t) {
 					continue
 				}
 				startFixturePrompt(t)
@@ -561,6 +572,7 @@ func Serve(ctx context.Context, home string) error {
 		compactPromptDetails(&snap)
 		endLoadedTerminals(&snap)
 		recoverGitOps(&snap)
+		reconcileWorktrees(&snap)
 		if err = resolveInterruptedGitReceipts(st); err != nil {
 			return err
 		}
@@ -589,7 +601,7 @@ func Serve(ctx context.Context, home string) error {
 	if docsSupported && !slices.Contains(snap.Capabilities, "shared-documents") {
 		snap.Capabilities = append(snap.Capabilities, "shared-documents")
 	}
-	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs", "git-operations", "git-conflicts", "git-jobs"} {
+	for _, capability := range []string{"thread-start", "closed-thread-send", "workspace-info", "embedded-terminals", "acp-agents", "agent-probe", "acp-permissions", "acp-cancel", "approval-choice-ids", "git-writes", "git-history", "git-refs", "git-operations", "git-conflicts", "git-jobs", "worktree-create", "worktree-manage"} {
 		if !slices.Contains(snap.Capabilities, capability) {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
@@ -604,6 +616,7 @@ func Serve(ctx context.Context, home string) error {
 	e := newEngine(snap, st)
 	e.log = slog.Default()
 	e.baselineDir = filepath.Join(home, "git-baselines")
+	e.worktreeDir = filepath.Join(home, "worktrees")
 	e.sweepJobBaselines()
 	// Interrupted publications, orphaned files and expired staging are
 	// reconciled before any client can reference an artifact.
@@ -646,6 +659,8 @@ func Serve(ctx context.Context, home string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/workspace", e.workspace)
 	mux.HandleFunc("GET /v1/git/status", e.gitStatus)
+	mux.HandleFunc("GET /v1/worktrees/removal", e.worktreeRemoval)
+	mux.HandleFunc("GET /v1/worktrees/prune", e.worktreePruneRead)
 	mux.HandleFunc("GET /v1/git/diff", e.gitDiff)
 	mux.HandleFunc("GET /v1/git/log", e.gitLog)
 	mux.HandleFunc("GET /v1/git/show", e.gitShow)
@@ -822,6 +837,7 @@ loop:
 				runErr = fmt.Errorf("persist fixture tick: %w", err)
 				break loop
 			}
+			e.checkWorktrees()
 		}
 	}
 	cancel()

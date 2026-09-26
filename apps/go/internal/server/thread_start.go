@@ -29,7 +29,34 @@ func resolveAgent(s *protocol.Snapshot, requested string) (*protocol.Agent, erro
 
 // Construct both records on a candidate snapshot. Neither a rejected initial
 // prompt nor a failed durable commit exposes an empty thread to other clients.
+// A worktree start (ADR 0024) runs Git and is handled by the engine
+// (worktrees.go), which calls startThreadIn once the worktree exists.
 func startThread(s *protocol.Snapshot, c protocol.Command) (string, error) {
+	if c.Workspace != nil {
+		switch c.Workspace.Mode {
+		case "checkout":
+			if c.Workspace.StartOid != "" || c.Workspace.Branch != "" {
+				return "", failure("invalid", "a checkout workspace takes no start commit or branch")
+			}
+			return startThreadIn(s, c, threadPlace{explicit: true})
+		case "worktree":
+			return "", failure("unsupported_workspace", "worktree creation needs the server's worktree support")
+		default:
+			return "", failure("invalid", "workspace mode must be checkout or worktree")
+		}
+	}
+	return startThreadIn(s, c, threadPlace{})
+}
+
+// threadPlace is where a new thread works: the project's checkout unless
+// checkout is set (a managed worktree). explicit skips the workspace default,
+// which the client resolved.
+type threadPlace struct {
+	checkout, worktreeID string
+	explicit             bool
+}
+
+func startThreadIn(s *protocol.Snapshot, c protocol.Command, place threadPlace) (string, error) {
 	if _, err := resolveAgent(s, c.Agent); err != nil {
 		return "", err
 	}
@@ -40,7 +67,7 @@ func startThread(s *protocol.Snapshot, c protocol.Command) (string, error) {
 	create := c
 	create.Kind, create.Text = "thread.create", ""
 	create.Agent = c.Agent
-	id, err := applyProject(&next, create)
+	id, err := createThread(&next, create, place)
 	if err != nil {
 		return "", err
 	}

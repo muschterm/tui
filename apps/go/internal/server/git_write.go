@@ -301,7 +301,7 @@ var gitFullHash = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 func gitWriteTargetLocked(s *protocol.Snapshot, c protocol.Command) (string, error) {
 	if c.ThreadID != "" {
 		if t := threadByID(s, c.ThreadID); t != nil {
-			return t.Checkout, nil
+			return threadCheckout(s, t)
 		}
 		return "", failure("not_found", "thread does not exist")
 	}
@@ -974,6 +974,10 @@ func gitWriteEnv(cMessages, network bool) []string {
 		"GIT_NO_LAZY_FETCH=1", "GIT_EDITOR=:", "GIT_SEQUENCE_EDITOR=:", "GIT_PAGER=cat", "PAGER=cat")
 }
 
+// gitWriteArgsHook, when set by a test, observes each write-capable Git
+// invocation's arguments (after the fixed options).
+var gitWriteArgsHook func(top string, args []string)
+
 func (w *gitWriter) runWith(ctx context.Context, o gitRunOpts, args ...string) gitRunResult {
 	base := []string{
 		"--no-pager", "--literal-pathspecs", "-C", w.top,
@@ -988,9 +992,12 @@ func (w *gitWriter) runWith(ctx context.Context, o gitRunOpts, args ...string) g
 		watch = newGitStallWatch(o.stall, cancel)
 		defer watch.stop()
 	}
+	if gitWriteArgsHook != nil {
+		gitWriteArgsHook(w.top, args)
+	}
 	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
 	// GPG_TTY/SSH_TTY would point pinentry-curses at a user's terminal.
-	cmd.Env = gitWriteEnv(o.cMessages, o.network)
+	cmd.Env = append(gitWriteEnv(o.cMessages, o.network), gitCeilingEnv(w.top)...)
 	configureGitWriteProcess(cmd)
 	if o.trace2 != "" {
 		cmd.Env = append(cmd.Env, "GIT_TRACE2_EVENT="+o.trace2)

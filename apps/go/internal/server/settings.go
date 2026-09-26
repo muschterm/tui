@@ -117,6 +117,12 @@ func applySettingsResolved(s *protocol.Snapshot, c protocol.Command, resolved *r
 				}
 			}
 			s.Terminals = terminals
+			// Managed worktrees are forgotten with the project; their
+			// directories and branches stay on disk (ADR 0024).
+			s.Worktrees = slices.DeleteFunc(s.Worktrees, func(w protocol.ManagedWorktree) bool { return w.ProjectID == p.ID })
+			if len(s.Worktrees) == 0 {
+				s.Worktrees = nil
+			}
 			s.Projects = append(s.Projects[:i], s.Projects[i+1:]...)
 			return "", nil
 		}

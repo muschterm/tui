@@ -139,6 +139,16 @@ func (e *engine) applyCommand(next *protocol.Snapshot, c protocol.Command, resol
 	if c.Kind == "agent.probe" {
 		return e.applyProbe(next, c)
 	}
+	if c.Kind == "worktree.relocate" || c.Kind == "worktree.forget" {
+		return e.applyWorktreeState(next, c)
+	}
+	switch c.Kind {
+	case "prompt.send", "prompt.reopen-send", "thread.resume":
+		// A thread whose worktree is gone cannot work (ADR 0024).
+		if err := worktreeUnavailable(next, threadByID(next, c.ThreadID)); err != nil {
+			return "", err
+		}
+	}
 	if c.Kind == "thread.resume" {
 		// A fixture Resume continues its interrupted turn in place, so it needs
 		// the checkout writer lease now; it cannot wait in line.
@@ -206,6 +216,14 @@ func (e *engine) afterCommit(c protocol.Command, target string) {
 		e.resolveApproval(c)
 	case "thread.start":
 		e.ensureRunLocked(target)
+	case "worktree.relocate":
+		// Agent sessions of the relocated threads worked in the old path.
+		for _, t := range worktreeThreads(&e.snap, target) {
+			if r := e.runs[t.ID]; r != nil {
+				delete(e.runs, t.ID)
+				go r.stop()
+			}
+		}
 	default:
 		e.ensureRunLocked(c.ThreadID)
 	}
@@ -531,6 +549,14 @@ func (r *acpRun) claim() (dispatchWork, bool) {
 		e.rebalanceWritersLocked()
 		e.snap.Revision++
 		e.flushLocked()
+		return dispatchWork{}, false
+	}
+	if worktreeUnavailable(&e.snap, t) != nil {
+		// The thread stays idle with its queue; the worktree's state says
+		// why, and the writer rebalance claims again once the worktree is
+		// present (relocation or detection; ADR 0024).
+		r.busy = false
+		e.rebalanceWritersAndFlushLocked()
 		return dispatchWork{}, false
 	}
 	if !e.acquireWriter(&e.snap, t) {

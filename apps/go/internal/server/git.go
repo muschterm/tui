@@ -206,6 +206,7 @@ func (g *gitReader) command(ctx context.Context, args []string) *exec.Cmd {
 	}
 	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1", "GIT_PAGER=cat", "PAGER=cat")
 	cmd.Env = append(cmd.Env, g.env...)
+	cmd.Env = append(cmd.Env, gitCeilingEnv(g.dir)...)
 	configureGitProcess(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
 	return cmd
@@ -256,7 +257,12 @@ func (e *engine) gitTarget(w http.ResponseWriter, r *http.Request) (string, bool
 	defer e.mu.Unlock()
 	for _, t := range e.snap.Threads {
 		if threadID != "" && t.ID == threadID {
-			return t.Checkout, true
+			checkout, err := threadCheckout(&e.snap, &t)
+			if err != nil {
+				writeJSON(w, http.StatusConflict, err)
+				return "", false
+			}
+			return checkout, true
 		}
 	}
 	for _, p := range e.snap.Projects {

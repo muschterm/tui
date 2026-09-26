@@ -422,7 +422,11 @@ func documentRoot(s *protocol.Snapshot, c protocol.Command) (string, error) {
 	}
 	root := ""
 	if t := threadByID(s, c.ThreadID); c.ThreadID != "" && t != nil {
-		root = t.Checkout
+		checkout, err := threadCheckout(s, t)
+		if err != nil {
+			return "", err
+		}
+		root = checkout
 	} else {
 		for _, p := range s.Projects {
 			if c.ProjectID != "" && p.ID == c.ProjectID {

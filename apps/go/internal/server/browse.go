@@ -69,7 +69,7 @@ func browseRoot(s protocol.Snapshot, req protocol.BrowseRequest) (string, error)
 	}
 	for _, t := range s.Threads {
 		if req.ThreadID != "" && t.ID == req.ThreadID {
-			return t.Checkout, nil
+			return threadCheckout(&s, &t)
 		}
 	}
 	return "", failure("not_found", "workspace target not found")

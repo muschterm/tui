@@ -191,62 +191,71 @@ func applyProjectResolved(s *protocol.Snapshot, c protocol.Command, resolved *re
 		s.Projects = append(s.Projects, p)
 		return p.ID, nil
 	case "thread.create":
-		if len(s.Threads) >= 128 {
-			return "", failure("capacity", "at most 128 threads are supported")
-		}
-		var project *protocol.Project
-		for i := range s.Projects {
-			if s.Projects[i].ID == c.ProjectID {
-				project = &s.Projects[i]
-				break
-			}
-		}
-		if project == nil {
-			return "", failure("not_found", "project does not exist")
-		}
-		if protocol.EffectiveWorkspaceDefault(s.AppSettings, *project) == "worktree" {
-			return "", failure("unsupported_workspace", "worktree creation is unavailable in this server; select current checkout in settings")
-		}
-		title := strings.TrimSpace(c.Text)
-		if title == "" {
-			title = defaultThreadTitle
-		}
-		if len(title) > 256 {
-			return "", failure("invalid", "thread title exceeds 256 bytes")
-		}
-		// thread.create keeps its historical default so existing clients that
-		// create a thread without naming an agent still get the fixture.
-		requested := c.Agent
-		if requested == "" {
-			requested = agent.FixtureID
-		}
-		chosen, err := resolveAgent(s, requested)
-		if err != nil {
-			return "", err
-		}
-		settings := protocol.Settings{Model: "fixture-model", Effort: "medium", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}
-		if chosen.Kind == agent.KindACP {
-			settings = agent.DefaultSettings(*chosen)
-		}
-		if c.Settings != nil {
-			if err := validateSettings(s, acpAgentID(*chosen), *c.Settings); err != nil {
-				return "", err
-			}
-			settings = *c.Settings
-		}
-		if c.ID == "" {
-			return "", failure("invalid", "thread creation requires a command identity")
-		}
-		id := "thread-" + c.ID
-		for _, t := range s.Threads {
-			if t.ID == id {
-				return "", failure("conflict", "thread identity already exists")
-			}
-		}
-		project.Revision++
-		s.Threads = append(s.Threads, protocol.Thread{ID: id, ProjectID: project.ID, Project: project.Name, Title: title, Checkout: project.Path, Agent: chosen.Name, AgentID: acpAgentID(*chosen), State: "idle", Selected: settings, Effective: settings, QueueRevision: 1})
-		return id, nil
+		return createThread(s, c, threadPlace{})
 	default:
 		return "", failure("invalid", "unsupported project command")
 	}
+}
+
+// createThread adds an idle thread of c.ProjectID at place.
+func createThread(s *protocol.Snapshot, c protocol.Command, place threadPlace) (string, error) {
+	if len(s.Threads) >= 128 {
+		return "", failure("capacity", "at most 128 threads are supported")
+	}
+	var project *protocol.Project
+	for i := range s.Projects {
+		if s.Projects[i].ID == c.ProjectID {
+			project = &s.Projects[i]
+			break
+		}
+	}
+	if project == nil {
+		return "", failure("not_found", "project does not exist")
+	}
+	if !place.explicit && protocol.EffectiveWorkspaceDefault(s.AppSettings, *project) == "worktree" {
+		return "", failure("unsupported_workspace", "this request cannot create a worktree; choose Worktree or Current checkout explicitly when starting the thread")
+	}
+	checkout := project.Path
+	if place.checkout != "" {
+		checkout = place.checkout
+	}
+	title := strings.TrimSpace(c.Text)
+	if title == "" {
+		title = defaultThreadTitle
+	}
+	if len(title) > 256 {
+		return "", failure("invalid", "thread title exceeds 256 bytes")
+	}
+	// thread.create keeps its historical default so existing clients that
+	// create a thread without naming an agent still get the fixture.
+	requested := c.Agent
+	if requested == "" {
+		requested = agent.FixtureID
+	}
+	chosen, err := resolveAgent(s, requested)
+	if err != nil {
+		return "", err
+	}
+	settings := protocol.Settings{Model: "fixture-model", Effort: "medium", Permissions: "fixture-only", Context: "unavailable", Speed: "standard"}
+	if chosen.Kind == agent.KindACP {
+		settings = agent.DefaultSettings(*chosen)
+	}
+	if c.Settings != nil {
+		if err := validateSettings(s, acpAgentID(*chosen), *c.Settings); err != nil {
+			return "", err
+		}
+		settings = *c.Settings
+	}
+	if c.ID == "" {
+		return "", failure("invalid", "thread creation requires a command identity")
+	}
+	id := "thread-" + c.ID
+	for _, t := range s.Threads {
+		if t.ID == id {
+			return "", failure("conflict", "thread identity already exists")
+		}
+	}
+	project.Revision++
+	s.Threads = append(s.Threads, protocol.Thread{ID: id, ProjectID: project.ID, Project: project.Name, Title: title, Checkout: checkout, WorktreeID: place.worktreeID, Agent: chosen.Name, AgentID: acpAgentID(*chosen), State: "idle", Selected: settings, Effective: settings, QueueRevision: 1})
+	return id, nil
 }

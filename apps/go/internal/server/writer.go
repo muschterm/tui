@@ -109,7 +109,9 @@ func (e *engine) waitKey(t *protocol.Thread) uint64 {
 func (e *engine) candidates(s *protocol.Snapshot, key string) []*protocol.Thread {
 	var list []*protocol.Thread
 	for i := range s.Threads {
-		if t := &s.Threads[i]; t.Checkout == key && writerEligible(t) {
+		// A thread whose managed worktree is unavailable keeps its queue
+		// and waits outside the line until the worktree is back (ADR 0024).
+		if t := &s.Threads[i]; t.Checkout == key && writerEligible(t) && worktreeUnavailable(s, t) == nil {
 			e.waitKey(t)
 			list = append(list, t)
 		}
@@ -292,6 +294,9 @@ func demoteConcurrentWriters(s *protocol.Snapshot) {
 func (e *engine) startQueuedFixture(s *protocol.Snapshot, t *protocol.Thread) {
 	if t == nil || agent.IsACP(t.AgentID) || t.Closed || t.NeedsResume || t.State != "idle" || len(t.Queue) == 0 {
 		return
+	}
+	if worktreeUnavailable(s, t) != nil {
+		return // stays queued until its worktree is back (ADR 0024)
 	}
 	if e.acquireWriter(s, t) {
 		startFixturePrompt(t)

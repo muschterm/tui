@@ -260,8 +260,12 @@ func (e *engine) admitTerminalLocked(c protocol.Command) error {
 	if c.TerminalSize != nil && (c.TerminalSize.Cols < 0 || c.TerminalSize.Rows < 0) {
 		return failure("invalid", "terminal size must not be negative")
 	}
-	if threadByID(&e.snap, c.ThreadID) == nil {
+	t := threadByID(&e.snap, c.ThreadID)
+	if t == nil {
 		return failure("not_found", "thread does not exist")
+	}
+	if _, err := threadCheckout(&e.snap, t); err != nil {
+		return err
 	}
 	live := len(e.terminals.opening)
 	for _, s := range e.terminals.sessions {

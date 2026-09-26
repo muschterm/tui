@@ -31,6 +31,106 @@ type Snapshot struct {
 	// Documents lists loaded shared documents (document.go). It is a
 	// projection of the documents tables, rebuilt at server start.
 	Documents []DocumentStatus `json:"documents,omitempty"`
+	// Worktrees lists the Git worktrees the application created for
+	// threads (ADR 0024). Additive.
+	Worktrees []ManagedWorktree `json:"worktrees,omitempty"`
+}
+
+// Managed worktree states (ManagedWorktree.State, ADR 0024).
+const (
+	// WorktreeCreating: `git worktree add` was journaled and may be running.
+	WorktreeCreating = "creating"
+	// WorktreePresent: the directory and Git's registration agree.
+	WorktreePresent = "present"
+	// WorktreeMissing: the directory is gone (Git may still list it).
+	WorktreeMissing = "missing"
+	// WorktreeMoved: Git registers it at MovedTo, an existing directory
+	// that points back (git worktree move or repair).
+	WorktreeMoved = "moved"
+	// WorktreeUnregistered: the directory exists but Git no longer
+	// registers it there.
+	WorktreeUnregistered = "unregistered"
+	// WorktreeUnattached: present, but no thread uses it (creation could
+	// not attach its thread, or the thread was deleted).
+	WorktreeUnattached = "unattached"
+	// WorktreeRemoved: the application removed it; the branch is kept.
+	WorktreeRemoved = "removed"
+)
+
+// ManagedWorktree is one worktree the application created for a thread
+// (ADR 0024). Path is its real path (under the application home unless it
+// was relocated); CommonDir the repository's common Git directory and
+// AdminName its entry under CommonDir/worktrees. RelPath is the project
+// folder relative to the repository toplevel ("." for the toplevel): the
+// thread's checkout is Path joined with RelPath. Branch was created at
+// StartOid by the command CommandID. State is one of the Worktree*
+// constants; MovedTo is set while State is moved.
+type ManagedWorktree struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Path      string `json:"path"`
+	CommonDir string `json:"common_dir"`
+	AdminName string `json:"admin_name,omitempty"`
+	RelPath   string `json:"rel_path"`
+	Branch    string `json:"branch"`
+	StartOid  string `json:"start_oid"`
+	CommandID string `json:"command_id"`
+	CreatedAt string `json:"created_at"`
+	State     string `json:"state"`
+	MovedTo   string `json:"moved_to,omitempty"`
+	// Detail explains a failure that left the worktree unattached.
+	Detail string `json:"detail,omitempty"`
+	// Unverified marks a directory `git worktree add` left behind that
+	// failed verification (Git failed, it is not on the new branch at the
+	// start commit, or Git's initialization lock remains). No thread is ever
+	// attached to it; the user inspects it and removes or forgets it.
+	Unverified bool `json:"unverified,omitempty"`
+}
+
+// WorkspaceRequest is thread.start's explicit workspace choice (capability
+// worktree-create). Mode "checkout" uses the project's checkout whatever
+// the workspace default says; Mode "worktree" creates a new branch Branch
+// at the commit StartOid (a full object ID) in a new worktree under the
+// application home. An existing branch name is refused; there is no
+// detached mode.
+type WorkspaceRequest struct {
+	Mode     string `json:"mode"`
+	StartOid string `json:"start_oid,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+}
+
+// WorktreeAction is the payload of the worktree.* commands. ID names the
+// managed worktree (or, for worktree.prune, Command.ProjectID the
+// repository); Confirm is the Fingerprint of the removal or prune preview
+// the user confirmed.
+type WorktreeAction struct {
+	ID      string `json:"id,omitempty"`
+	Confirm string `json:"confirm,omitempty"`
+}
+
+// WorktreeRemoval is GET /v1/worktrees/removal: what worktree.remove would
+// do. Ignored counts the ignored entries (files or whole directories) that
+// removal deletes with the directory; Blockers lists why it is refused
+// now (empty when allowed). The branch is always kept.
+type WorktreeRemoval struct {
+	ID                string   `json:"id"`
+	Path              string   `json:"path"`
+	Branch            string   `json:"branch"`
+	Head              string   `json:"head,omitempty"`
+	Ignored           int      `json:"ignored"`
+	IgnoredIncomplete bool     `json:"ignored_incomplete,omitempty"`
+	IgnoredSample     []string `json:"ignored_sample,omitempty"`
+	Blockers          []string `json:"blockers"`
+	Fingerprint       string   `json:"fingerprint,omitempty"`
+}
+
+// WorktreePrune is GET /v1/worktrees/prune: the stale worktree
+// registrations `git worktree prune` would remove from the project's
+// repository (any worktree, not only managed ones).
+type WorktreePrune struct {
+	ProjectID   string   `json:"project_id"`
+	Entries     []string `json:"entries"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
 }
 
 // Agent is one configured agent connection. Kind is "fixture" or "acp". For
@@ -114,6 +214,9 @@ type Thread struct {
 	// another thread's checkout writer lease blocks. It is derived by the
 	// server and recomputed on load; a persisted value never blocks dispatch.
 	WriterWait *WriterWait `json:"writer_wait,omitempty"`
+	// WorktreeID (additive, ADR 0024) names the managed worktree this
+	// thread was created in; Checkout is then inside it.
+	WorktreeID string `json:"worktree_id,omitempty"`
 	// Job (additive, ADR 0023 S4) marks a job-kind thread: an agent working
 	// on one Git operation's conflicts. Job threads belong to the Git
 	// operation panel, not the ordinary thread list.
@@ -355,6 +458,10 @@ type Command struct {
 	TerminalSize *TerminalSize `json:"TerminalSize,omitempty"`
 	// Git is the payload of the git.* write commands (git_write.go).
 	Git *GitWrite `json:"Git,omitempty"`
+	// Workspace is thread.start's explicit workspace choice (ADR 0024).
+	Workspace *WorkspaceRequest `json:"Workspace,omitempty"`
+	// Worktree is the payload of the worktree.* commands (ADR 0024).
+	Worktree *WorktreeAction `json:"Worktree,omitempty"`
 	// DocumentDisk is document.resolve's reviewed disk version
 	// (DocumentVersions.DiskID); see document.go.
 	DocumentDisk string `json:"DocumentDisk,omitempty"`
@@ -367,6 +474,9 @@ type Receipt struct {
 	TargetID  string
 	// Git is the outcome of a git.* command; State then mirrors Git.State.
 	Git *GitResult `json:"Git,omitempty"`
+	// Error (additive) explains State "failed" of a two-phase command that
+	// is not a Git write (a worktree thread start, ADR 0024).
+	Error *Error `json:"Error,omitempty"`
 }
 
 // Error is a structured protocol failure with a stable Code.
