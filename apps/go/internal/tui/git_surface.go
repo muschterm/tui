@@ -267,6 +267,8 @@ func (m *Model) gitAction(a action) tea.Cmd {
 		return m.refreshGit()
 	case "git-open", "git-commit":
 		return m.openGitViewer(a)
+	case "git-partial-hunk":
+		return m.gitPartialSelectHunk(a.Index)
 	}
 	if cmd, ok := m.gitBranchesAction(a); ok {
 		return cmd

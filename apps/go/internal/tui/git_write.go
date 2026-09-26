@@ -334,6 +334,12 @@ func gitErrorCopy(code string) string {
 		return "Git was stopped before finishing · result unknown, refresh and check"
 	case "interrupted":
 		return "Server restarted during the write · result unknown, refresh and check"
+	case "index_changed":
+		return "Written · the index entry changed right after writing; review the staged diff"
+	case "too_large":
+		return "Selection too large · select whole hunks or stage the file"
+	case "stale_diff":
+		return "Diff changed since shown · reloaded, select again"
 	case "staged_newer_content":
 		return "File changed while staging · the newer content was staged"
 	case "hooks_changed_content":
@@ -345,7 +351,7 @@ func gitErrorCopy(code string) string {
 // gitStaleCode reports refusals that mean the shown status is out of date.
 func gitStaleCode(code string) bool {
 	switch code {
-	case "stale_entry", "stale_head", "stale_status", "nothing_staged", "conflicted", "not_supported", "published_commit", "operation_in_progress", "identity_missing", "checkout_busy", "git_busy":
+	case "stale_entry", "stale_head", "stale_status", "stale_diff", "nothing_staged", "conflicted", "not_supported", "published_commit", "operation_in_progress", "identity_missing", "checkout_busy", "git_busy":
 		return true
 	}
 	return false
@@ -713,7 +719,15 @@ func (m *Model) acceptGitWrite(msg gitWriteMsg) tea.Cmd {
 		// Refused before anything ran: nothing is recorded, so the command
 		// is dropped and a corrected attempt is a new one.
 		delete(m.gitW.writes, msg.key)
-		notice := m.showNoticeAs(noticeUnavailable, gitErrorCopy(pe.Code))
+		text := gitErrorCopy(pe.Code)
+		if msg.cmd.Git != nil && msg.cmd.Git.Partial != nil && pe.Code == "not_supported" {
+			verb := "staged"
+			if msg.cmd.Kind == protocol.GitKindUnstage {
+				verb = "unstaged"
+			}
+			text = "Selected lines cannot be " + verb + " here now · use whole-file actions"
+		}
+		notice := m.showNoticeAs(noticeUnavailable, text)
 		if gitStaleCode(pe.Code) {
 			return tea.Batch(notice, refresh())
 		}

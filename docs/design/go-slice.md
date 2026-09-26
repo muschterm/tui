@@ -1,6 +1,6 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; hunk staging, interactive rebase, and a real-terminal/SSH/tmux compatibility matrix remain incomplete; most of the above is verified by unit/integration tests, fake agents and render captures rather than interactive terminal sessions. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI; interactive rebase and a real-terminal/SSH/tmux compatibility matrix remain incomplete; most of the above is verified by unit/integration tests, fake agents and render captures rather than interactive terminal sessions. This does not change the accepted product scope or settle later integration decisions.
 
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
@@ -1810,6 +1810,79 @@ subset, running section and transcript, accept/reject/stale/refresh,
 follow-up and end, viewer diff tabs, content-gate acknowledgement and
 review_pending). `TestGitJobCaptures` renders start, running, review and
 the continue review (dark and light).
+
+### Git partial staging (TUI) — 2026-09-26
+
+Go prototype binding for [ADR 0025](../adr/0025-partial-staging.md)
+(`internal/tui/git_partial.go`). While the server has `git-partial-stage`
+and `git-writes`, the diff viewer of one pinned STAGED or CHANGES entry also
+reads `GET /v1/git/hunks` asynchronously (never while painting). While the
+reply has a Fingerprint and no Unsupported code, the body shows selectable
+hunk rows instead of the raw patch:
+
+- **Rows.** Column 0 is the cursor mark (accent while the body has keyboard
+  focus, muted otherwise), column 1 the selection mark (`●`, plain `*`, with
+  bold text), then the `+`/`-`/space prefix and the line; long lines truncate
+  at grapheme widths. Hunk headers are accent rows with a right-aligned
+  muted "Select hunk" label and hover fill. A line without a final
+  newline is followed by a muted `\ No newline at end of file` row. Text is
+  sanitized: CR shows as `␍`; escapes, other controls and bidi controls are
+  removed by `safe()`; a line from which sanitizing removed anything shows
+  a gold `␛` after its prefix, and a line cut at the right edge ends in `…`.
+- **Labels.** A `Compares` pair states the group: "index → working tree ·
+  lines here are not staged" or "HEAD → index · lines here are staged". The
+  hint row shows the selection count and keys, and a square-fill apply control
+  ("Stage 3 lines", "Unstage hunk") that is in the viewer's Tab order.
+- **Keyboard.** ↑/↓ (j/k), PgUp/PgDn and Home/End move over headers and
+  add/delete lines (context rows are skipped); `[`/`]` jump between hunks;
+  Space toggles a line (on a header, the hunk); `a` toggles the cursor's whole
+  hunk; `v` starts/ends a sticky range and Shift+↑/↓ (J/K) extends one; Enter
+  toggles like Space; Esc ends a range, then
+  clears the selection, then closes. `s` (CHANGES) / `u` (STAGED) applies the
+  selection, or the cursor's hunk when nothing is selected; the other key only
+  explains itself. `S`/`U` are the whole-file action in every state and `d` the
+  whole-file discard confirmation; partial discard is never offered. While
+  the first hunks load, `s`/`u` refuse with "Loading diff…"; after a hunk
+  read error they refuse and name `S`/`U`; for an Unsupported path they keep
+  their whole-file meaning. Esc layering (range, selection, close) applies
+  whichever viewer control has focus. A writable Git viewer is not labelled
+  read-only.
+- **Pointer.** Clicking a line toggles it; dragging from a newly selected
+  line extends the selection over every change between; clicking a hunk
+  header selects or clears that hunk like `a`. Applying is always `s`/`u` or
+  the apply control.
+- **Writes.** No confirmation (stage/unstage are non-destructive). The command
+  is `client.GitPartialCommand` with fully selected hunks as hunk indices,
+  the selected lines of partly selected hunks ascending (or the cursor's hunk
+  when nothing is selected) and the fetched Fingerprint, sent through the ordinary Git
+  write path (Retry, busy gating and result lines unchanged). After any reply
+  to a partial write the hunks are reread. When a status refresh shows a new
+  Pin for the same entry, the viewer stays "Changed since shown" (every
+  write refused) and rereads both the raw patch and the hunks; it adopts the
+  new Pin only after both were accepted and displayed, so whole-file stage,
+  unstage and discard always act on the pin of the content on screen. A hunk
+  read error drops the rows and selection and shows the raw patch with
+  "Hunks unavailable · …". If either reread fails, or the entry vanishes or
+  stops being writable meanwhile, the pending pin is dropped (the viewer
+  stays changed) and the next status arrival starts the rereads again; there
+  is no timer retry. On a reread the selection clears and the
+  cursor returns to the same line by kind and text, else the same hunk header,
+  else the nearest row. `stale_diff` reads "Diff changed since shown ·
+  reloaded, select again", `too_large` "Selection too large · select whole
+  hunks or stage the file"; a succeeded write with `index_changed` keeps the
+  gold warning "Written · the index entry changed right after writing; review
+  the staged diff".
+- **Unsupported.** One `Lines` pair "Whole file only · <reason>" per code;
+  the raw patch and whole-file actions remain. A mode change shows a `Mode`
+  pair noting it is left to whole-file actions. Cursor, selection and range
+  are client-local.
+
+Tests: `internal/tui/git_partial_test.go` (selection, ranges, mixed hunk and
+line selections, exact payloads, group to kind, unsupported rendering,
+stale_diff refetch with cursor preservation, status re-pin, keyboard/pointer
+reachability, hostile text, narrow width; `TestGitPartialCaptures` writes
+dark/light captures). `scripts/pty_git.py` stages one hunk and then one line
+in the real app and checks `git diff --cached`/`git diff`.
 
 ### Git real-app harness and job settings — 2026-09-25
 

@@ -264,6 +264,8 @@ func (m *Model) viewerAction(a action) tea.Cmd {
 	case "viewer-expand":
 		vw.expanded = !vw.expanded
 		return m.syncViewerImage()
+	case "viewer-partial-apply":
+		return m.gitPartialApply(-1)
 	}
 	return nil
 }
@@ -434,7 +436,7 @@ func (m *Model) viewerGutter() int {
 }
 
 func (m *Model) viewerBodyLines(l viewerLayout) []viewerLine {
-	if m.viewerState() != "" || l.body.W <= 0 {
+	if m.viewerState() != "" || l.body.W <= 0 || m.gitPartialActive() {
 		return nil
 	}
 	return m.viewerLines(l.body.W)
@@ -465,6 +467,9 @@ func (m *Model) renderViewer(f *frame) {
 		label := "Attachment · wheel / arrows to scroll · read-only"
 		if vw.git != nil {
 			label = "Diff · wheel / arrows to scroll · read-only"
+			if m.gitViewerWritable() {
+				label = "Diff · wheel / arrows to scroll"
+			}
 		}
 		f.hits = append(f.hits, hit{Rect: body, Label: label, Key: "viewer-body"})
 		f.viewerBody = shell.Rect{X: body.X + gutter, Y: body.Y, W: max(0, body.W-gutter), H: body.H}
@@ -522,7 +527,7 @@ func (m *Model) renderViewer(f *frame) {
 		panelPairRowStyled(f, l.x, y+2+i, l.w, pair[0], value, p.muted, p.text, p.input)
 	}
 	panelRuleOn(f, m, l.x, body.Y-1, l.w, p.input)
-	if m.focus == "viewer-body" && body.H > 0 && body.X > r.X {
+	if m.focus == "viewer-body" && body.H > 0 && body.X > r.X && !m.gitPartialActive() {
 		// The body has no reserved end cell: the mark takes the interior
 		// blank cell before its first row.
 		v := m.componentStyle(squareFill, componentState{Focused: true}, p.text, p.input)
@@ -536,6 +541,10 @@ func (m *Model) renderViewer(f *frame) {
 				f.text(body.X, body.Y+i, body.W, state, p.muted, p.input)
 			}
 		}
+	}
+	partial := m.gitPartialActive()
+	if partial {
+		m.renderGitPartial(f, body)
 	}
 	for i := 0; i < body.H && offset+i < len(lines); i++ {
 		line := lines[offset+i]
@@ -562,10 +571,14 @@ func (m *Model) renderViewer(f *frame) {
 			f.componentText(tx, yy, tw, line.text, componentVisual{foreground: ink, background: p.input, bold: line.bold})
 		}
 	}
-	if body.H > 0 {
+	if body.H > 0 && !partial {
 		f.scrollbar(m, shell.Rect{X: r.X + r.W - 2, Y: body.Y, W: 1, H: body.H}, "viewer", len(lines), body.H, offset, p.input)
 	}
 	panelRuleOn(f, m, l.x, r.Y+r.H-3, l.w, p.input)
+	if partial {
+		m.renderGitPartialHint(f, l.x, r.Y+r.H-2, l.w)
+		return
+	}
 	hint := ""
 	if len(lines) > body.H {
 		hint = "↑ ↓  PgUp PgDn  "
@@ -582,7 +595,10 @@ func (m *Model) renderViewer(f *frame) {
 	} else {
 		hint += "f Expand  "
 	}
-	hint += "Esc Close · read-only"
+	hint += "Esc Close"
+	if !m.gitViewerWritable() {
+		hint += " · read-only"
+	}
 	f.text(l.x, r.Y+r.H-2, l.w, hint, p.muted, p.input)
 }
 

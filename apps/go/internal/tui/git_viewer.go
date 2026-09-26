@@ -37,6 +37,9 @@ type gitViewerContent struct {
 	// compared against HEAD.
 	whole   bool
 	compare string
+	// partial is the selectable hunk state (git_partial.go), nil when the
+	// entry or server does not offer partial staging.
+	partial *gitPartialState
 }
 
 type gitViewerMsg struct {
@@ -119,7 +122,7 @@ func (m *Model) openGitViewer(a action) tea.Cmd {
 		diff, err := api.GitDiff(deadline, target, content.path, content.group)
 		return gitViewerMsg{id: id, diff: &diff, err: err}
 	}
-	return tea.Batch(release, m.setFocus("viewer-body"), load)
+	return tea.Batch(release, m.setFocus("viewer-body"), load, m.startGitPartial(m.viewer))
 }
 
 // acceptGitViewer applies a read to the viewer open that requested it.
@@ -133,6 +136,7 @@ func (m *Model) acceptGitViewer(msg gitViewerMsg) {
 	vw.clean, vw.cacheKey, vw.cacheLines = nil, "", nil
 	if msg.err != nil {
 		vw.loadErr = safe(singleLine(msg.err.Error()))
+		m.gitPartialRereadFailed()
 		return
 	}
 	g.loaded = true
@@ -163,7 +167,10 @@ func (m *Model) acceptGitViewer(msg gitViewerMsg) {
 		g.binary, g.truncated, g.bytes = d.Binary, d.Truncated, d.Bytes
 		if !d.Binary {
 			vw.att.Content = d.Text
+		} else {
+			vw.att.Content = ""
 		}
+		m.gitPartialDiffAccepted()
 	}
 }
 
@@ -200,9 +207,12 @@ func (m *Model) gitViewerPairs() [][2]string {
 		pairs = append(pairs, [2]string{"Group", gitGroupLabel(g.group)})
 	default:
 		pairs = append(pairs, [2]string{"Path", safe(singleLine(g.path))}, [2]string{"Group", gitGroupLabel(g.group)})
+		pairs = append(pairs, m.gitPartialPairs(g)...)
 		switch {
 		case g.changed:
 			pairs = append(pairs, [2]string{"Status", gitViewerChangedCopy})
+		case g.pinned && m.gitPartialActive():
+			pairs = append(pairs, [2]string{"Keys", gitPartialKeys(g.group)})
 		case g.pinned && m.gitWritesEnabled():
 			if k := gitViewerKeys(g.group); k != "" {
 				pairs = append(pairs, [2]string{"Keys", k})
@@ -219,6 +229,9 @@ func (m *Model) gitViewerPairs() [][2]string {
 func (m *Model) gitViewerState() []string {
 	vw := m.viewer
 	g := vw.git
+	if m.gitPartialActive() {
+		return nil
+	}
 	switch {
 	case vw.loading:
 		if g.commit {

@@ -123,6 +123,7 @@ def main():
             git('init', '-q', '-b', 'main')
             (repo / 'a.txt').write_text('one\n')
             (repo / 'b.txt').write_text('base\n')
+            (repo / 'p.txt').write_text(''.join(f'line {i}\n' for i in range(1, 21)))
             git('add', '.')
             git('commit', '-qm', 'Initial')
             git('remote', 'add', 'origin', str(bare))
@@ -151,10 +152,11 @@ def main():
             refresh()
             wait(lambda: visible('a.txt'), 'modified file listed')
             t.click_label('a.txt')
-            wait(lambda: visible('+two'), 'diff viewer')
+            wait(lambda: visible('+two') and visible('Stage hunk'), 'selectable diff viewer (hunks loaded)')
             t.send(b's', .8)
             wait(lambda: 'a.txt' in git('diff', '--cached', '--name-only'), 'staged through the viewer key', 10)
-            check(True, 's in the diff viewer stages the file (git diff --cached lists it)')
+            check(git('diff', '--name-only') == '',
+                  's in the diff viewer stages the hunk under the cursor, here all of a.txt (git diff --cached lists it)')
             t.send(b'\x1b', .5)
             wait(lambda: visible('Commit message'), 'composer')
             wait(lambda: visible('Harness <harness@example.invalid>'), 'isolated identity')
@@ -165,6 +167,40 @@ def main():
             wait(lambda: git('log', '-1', '--format=%s') == 'Add two', 'commit made')
             check(git('status', '--porcelain') == '' and git('log', '-1', '--format=%an') == 'Harness',
                   'Enter in the message commits; HEAD is the new commit, authored with the isolated identity')
+
+            # Partial staging: stage one hunk, then one line of another hunk,
+            # from the selectable diff viewer (ADR 0025).
+            lines = [f'line {i}\n' for i in range(1, 21)]
+            lines[1] = 'TWO\n'
+            lines[15:15] = ['new-a\n', 'new-b\n']
+            (repo / 'p.txt').write_text(''.join(lines))
+            refresh()
+            wait(lambda: visible('p.txt'), 'partially changed file listed')
+            t.click_label('p.txt')
+            # The hint row's "Stage hunk" and the headers' "Select hunk" exist
+            # only once the hunks loaded; before that s is refused.
+            wait(lambda: visible('+TWO') and visible('Stage hunk') and visible('Select hunk'), 'selectable diff')
+            t.send(b's', .8)  # the cursor starts on the first hunk header
+            wait(lambda: '+TWO' in git('diff', '--cached'), 'hunk staged', 10)
+            cached = git('diff', '--cached')
+            check('+new-a' not in cached and '+new-b' not in cached,
+                  's with no selection stages only the hunk under the cursor (git diff --cached)')
+            wait(lambda: not visible('+TWO') and not visible('Changed since shown'), 'patch and hunks reread after staging')
+            t.send(b'\x1b[B', .3)  # to +new-a
+            t.send(b' ', .3)
+            wait(lambda: visible('1 selected'), 'line selected')
+            t.send(b's', .8)
+            wait(lambda: '+new-a' in git('diff', '--cached'), 'line staged', 10)
+            cached, unstaged = git('diff', '--cached'), git('diff')
+            check('+TWO' in cached and '+new-b' not in cached and '+new-b' in unstaged and '+new-a' not in unstaged,
+                  'Space then s stages exactly the selected line; the rest stays unstaged')
+            wait(lambda: not visible('+new-a'), 'hunks refetched after line staging')
+            t.send(b'\x1b', .5)
+            # Restore the harness file (temporary repository) so the later
+            # flows see the same history and a clean tree.
+            git('reset', '-q', '--', 'p.txt')
+            git('checkout', '--', 'p.txt')
+            refresh()
 
             # A conflicting branch, merged from its branch-row menu.
             git('checkout', '-qb', 'side')

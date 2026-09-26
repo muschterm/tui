@@ -31,8 +31,7 @@ refused when status could not list the whole staged set. The TUI does not expose
 them yet; verified with real Git in `git_write_test.go`, not in a terminal.
 
 Remaining: TUI actions for these writes (including discard confirmation and
-the published-amend warning), graph actions, hunk/line staging,
-multi-select, conflicted-path staging, submodule changes, branch switching,
+the published-amend warning), graph actions, multi-select, conflicted-path staging, submodule changes, branch switching,
 soft reset, pull/fetch/push, rebase and conflict resolution (manual and
 agent-assisted), context menus, turn comparisons, live-buffer coordination,
 and real-terminal/PTY validation of the surface.
@@ -106,6 +105,32 @@ ignored files in their way, and never recurse into submodules; staged
 conflict markers are read from the staged content itself (second review). Manual resolution (S3), agent resolution (S4)
 and the TUI remain. Verified with real Git in temporary repositories in
 `git_operation_test.go`, not in a terminal.
+
+### Partial staging — 2026-09-26
+
+The server, protocol, Go client and Go TUI (the selectable diff viewer;
+[go-slice binding](go-slice.md#git-partial-staging-tui--2026-09-26)) stage and unstage
+selected hunks and lines of one file ([ADR 0025](../adr/0025-partial-staging.md);
+wire contract in `apps/go/internal/protocol/git_partial.go`, client helpers
+`Client.GitHunks` and `client.GitPartialCommand`, capability
+`git-partial-stage`). `GET /v1/git/hunks` serves an addressable diff with
+fixed diff options and a fingerprint; `git.stage`/`git.unstage` with a
+`Partial` selection compute the new index blob from the pinned pre-image
+and install it with `update-index`, never touching the worktree and
+leaving every other staged change, in the same file or elsewhere, as it
+was. Stale selections are refused (`stale_diff`) and never partly applied.
+Paths reported unsupported keep only whole-file actions: conflicted,
+submodule, symlink, binary, filter attribute, working-tree encoding,
+deleted, type change, worktree rename of an intent-to-add file, not a
+regular file, skip-worktree/assume-unchanged, no content (mode-only),
+too large and unparsable diffs (`GitHunks.Unsupported` codes `conflicted`,
+`submodule`, `symlink`, `binary`, `filter`, `encoding`, `deleted`,
+`type_change`, `rename`, `not_regular`, `skip_worktree`, `no_content`,
+`too_large`, `unparsable`); partial discard stays deferred (user decision
+2026-09-26). Verified with real Git in temporary repositories in
+`git_partial_test.go`, with the line-ordering rule checked against
+`git apply` over random diffs in `git_partial_select_test.go`, not in a
+terminal.
 
 ## Accepted scope
 

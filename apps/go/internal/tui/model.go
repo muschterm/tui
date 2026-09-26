@@ -851,12 +851,15 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.filesTick()
 	case gitStatusMsg:
 		m.acceptGitStatus(msg)
+		cmd = m.gitPartialStatus(msg.key)
 	case gitLogMsg:
 		m.acceptGitLog(msg)
 	case gitViewerMsg:
 		m.acceptGitViewer(msg)
+	case gitHunksMsg:
+		m.acceptGitHunks(msg)
 	case gitWriteMsg:
-		cmd = m.acceptGitWrite(msg)
+		cmd = tea.Batch(m.acceptGitWrite(msg), m.gitPartialAfterWrite(msg))
 	case gitHeadMsg:
 		cmd = m.acceptGitHead(msg)
 	case gitCancelMsg:
@@ -1245,6 +1248,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		}
 	}
 	if m.viewer != nil && m.contextMenu == nil {
+		if cmd, handled := m.gitPartialKey(k); handled {
+			return cmd
+		}
 		if cmd, handled := m.gitViewerWriteKey(s); handled {
 			return cmd
 		}
@@ -1581,6 +1587,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	if m.viewer != nil && m.contextMenu == nil {
+		if cmd, handled := m.gitPartialMouse(msg, f); handled {
+			return cmd
+		}
 		if cmd, handled := m.viewerMouse(msg, f); handled {
 			return cmd
 		}
