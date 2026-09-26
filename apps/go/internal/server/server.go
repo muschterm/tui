@@ -76,7 +76,10 @@ type engine struct {
 	baselineDir string
 	// worktreeDir holds managed worktrees (worktrees.go); empty disables
 	// worktree creation. worktreesCheckedAt throttles detection.
-	worktreeDir        string
+	worktreeDir string
+	// worktreeAsync holds worktree creations running in the background
+	// after their request returned (worktrees.go), by command ID.
+	worktreeAsync      map[string]worktreeInflight
 	worktreesCheckedAt time.Time
 	// docs holds shared documents; see documents.go.
 	docs documentState

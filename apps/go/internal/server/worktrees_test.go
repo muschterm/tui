@@ -279,13 +279,18 @@ func TestWorktreeRestartThenRetryAttaches(t *testing.T) {
 	isolateAgentDiscovery(t)
 	e, _, git := worktreeSetup(t)
 	c := worktreeStartCommand(e, "wt-restart", "p-git", "feat/s", git("rev-parse", "HEAD"))
-	worktreeAfterAdd = func(string) { panic("server stopped") }
-	t.Cleanup(func() { worktreeAfterAdd = nil })
-	func() {
-		defer func() { _ = recover() }()
-		_, _ = e.command(c)
-	}()
-	worktreeAfterAdd = nil
+	// The first server "stops" after Git ran: its creation never reports.
+	hold := make(chan struct{})
+	worktreeAfterAdd = func(string) { <-hold }
+	quickStartWait(t)
+	t.Cleanup(func() {
+		close(hold)
+		e.gitLocked().wg.Wait()
+		worktreeAfterAdd = nil
+	})
+	if r, err := e.command(c); err != nil || r.State != "running" {
+		t.Fatalf("first attempt: %v %+v", err, r)
+	}
 	// What a restart does with the stored state and receipts.
 	stored, _, err := e.store.Load()
 	if err != nil || len(stored.Worktrees) != 1 || stored.Worktrees[0].State != protocol.WorktreeCreating {
@@ -1072,5 +1077,201 @@ func TestWorktreeResolutionJobBelongsToTheWorktree(t *testing.T) {
 	e.mu.Unlock()
 	if !slices.ContainsFunc(blockers, func(b string) bool { return strings.HasPrefix(b, "worktree_in_use") }) {
 		t.Fatalf("the open job does not block removal: %v", blockers)
+	}
+}
+
+func quickStartWait(t *testing.T) {
+	t.Helper()
+	old := worktreeStartWait
+	worktreeStartWait = 150 * time.Millisecond
+	t.Cleanup(func() { worktreeStartWait = old })
+}
+
+func slowCheckoutHook(t *testing.T, root, seconds string) {
+	t.Helper()
+	hook := filepath.Join(root, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep "+seconds+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Creation is owned by the server: a slow checkout answers running at
+// once, a retry answers running without blocking, a cancelled request does
+// not stop Git, and the outcome is published and returned to the next retry.
+func TestWorktreeStartIsServerOwned(t *testing.T) {
+	e, root, git := worktreeSetup(t)
+	quickStartWait(t)
+	slowCheckoutHook(t, root, "1")
+	adds := 0
+	worktreeBeforeAdd = func(string) { adds++ }
+	t.Cleanup(func() { worktreeBeforeAdd = nil })
+	c := worktreeStartCommand(e, "wt-async", "p-git", "feat/async", git("rev-parse", "HEAD"))
+	ctx, cancel := context.WithCancel(context.Background())
+	began := time.Now()
+	r, err := e.commandContext(ctx, c)
+	cancel() // the client gives up; creation continues
+	if err != nil || r.State != "running" || time.Since(began) > 900*time.Millisecond {
+		t.Fatalf("first answer after %v: %v %+v", time.Since(began), err, r)
+	}
+	s := e.current()
+	if rec := worktreeByCommand(&s, c.ID); rec == nil || rec.State != protocol.WorktreeCreating {
+		t.Fatalf("the snapshot does not show the creation: %+v", s.Worktrees)
+	}
+	began = time.Now()
+	again, err := e.command(c)
+	if err != nil || again.State != "running" || time.Since(began) > 100*time.Millisecond {
+		t.Fatalf("retry while running after %v: %v %+v", time.Since(began), err, again)
+	}
+	waitFor(t, e, "attached", func(s protocol.Snapshot) bool {
+		rec := worktreeByCommand(&s, c.ID)
+		return rec != nil && rec.State == protocol.WorktreePresent && len(worktreeThreads(&s, rec.ID)) == 1
+	})
+	final, err := e.command(c)
+	if err != nil || final.State != "accepted" || ptrThread(e.current(), final.TargetID).WorktreeID == "" {
+		t.Fatalf("final receipt: %v %+v", err, final)
+	}
+	if adds != 1 {
+		t.Fatalf("git worktree add ran %d times", adds)
+	}
+}
+
+// Server stop during a slow checkout cancels Git and leaves an honest,
+// recoverable state: a failed receipt, and whatever Git left kept
+// Unverified (or nothing).
+func TestWorktreeServerStopMidCreation(t *testing.T) {
+	e, root, git := worktreeSetup(t)
+	quickStartWait(t)
+	slowCheckoutHook(t, root, "30")
+	c := worktreeStartCommand(e, "wt-stop", "p-git", "feat/stop", git("rev-parse", "HEAD"))
+	if r, err := e.command(c); err != nil || r.State != "running" {
+		t.Fatalf("start: %v %+v", err, r)
+	}
+	e.mu.Lock()
+	e.stopping = true
+	e.mu.Unlock()
+	began := time.Now()
+	e.stopGitWrites()
+	if time.Since(began) > 10*time.Second {
+		t.Fatal("stop waited for the checkout")
+	}
+	stored, _, err := e.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveInterruptedGitReceipts(e.store); err != nil {
+		t.Fatal(err)
+	}
+	reconcileWorktrees(&stored)
+	for _, w := range stored.Worktrees {
+		if w.CommandID == c.ID && (w.State == protocol.WorktreeCreating || !w.Unverified) {
+			t.Fatalf("after restart: %+v", w)
+		}
+	}
+	restarted := newEngine(stored, e.store)
+	restarted.worktreeDir = e.worktreeDir
+	r, err := restarted.command(c)
+	if err != nil || r.State != "failed" || r.Error == nil {
+		t.Fatalf("retry after restart: %v %+v", err, r)
+	}
+	for _, th := range restarted.current().Threads {
+		if th.WorktreeID != "" {
+			t.Fatal("a thread was attached to an interrupted creation")
+		}
+	}
+}
+
+// Port of the async verifier: a stop mid-creation says so and still reports
+// the branch Git left.
+func TestWorktreeStopKeepsTheBranchMessage(t *testing.T) {
+	e, root, git := worktreeSetup(t)
+	quickStartWait(t)
+	slowCheckoutHook(t, root, "30")
+	c := worktreeStartCommand(e, "wt-stop4", "p-git", "feat/stop4", git("rev-parse", "HEAD"))
+	if r, err := e.command(c); err != nil || r.State != "running" {
+		t.Fatalf("start: %v %+v", err, r)
+	}
+	time.Sleep(300 * time.Millisecond) // Git has created the branch
+	e.mu.Lock()
+	e.stopping = true
+	e.mu.Unlock()
+	e.stopGitWrites()
+	r, err := e.store.Lookup(c)
+	if err != nil || r == nil || r.Error == nil {
+		t.Fatalf("stored receipt: %v %+v", err, r)
+	}
+	if !strings.Contains(r.Error.Message, "server stopped") || !strings.Contains(r.Error.Message, "feat/stop4 exists and was kept") {
+		t.Fatalf("message: %s", r.Error.Message)
+	}
+}
+
+// A panic during creation releases everything and fails honestly.
+func TestWorktreeCreationPanicIsRecovered(t *testing.T) {
+	e, _, git := worktreeSetup(t)
+	worktreeAfterAdd = func(string) { panic("injected") }
+	t.Cleanup(func() { worktreeAfterAdd = nil })
+	c := worktreeStartCommand(e, "wt-panic", "p-git", "feat/panic", git("rev-parse", "HEAD"))
+	r, err := e.command(c)
+	if err != nil || r.State != "failed" || r.Error == nil || r.Error.Code != "worktree_failed" {
+		t.Fatalf("receipt: %v %+v", err, r)
+	}
+	worktreeAfterAdd = nil
+	s := e.current()
+	if len(s.Worktrees) != 1 || !s.Worktrees[0].Unverified || s.Worktrees[0].State == protocol.WorktreeCreating {
+		t.Fatalf("record: %+v", s.Worktrees)
+	}
+	e.mu.Lock()
+	gs := e.gitLocked()
+	leaked := len(gs.holders) + len(gs.cancels) + len(gs.inflight) + len(e.worktreeAsync)
+	e.mu.Unlock()
+	if leaked != 0 {
+		t.Fatalf("state left behind: %d entries", leaked)
+	}
+	gs.wg.Wait()
+	if again, err := e.command(c); err != nil || again.State != "failed" {
+		t.Fatalf("retry: %v %+v", err, again)
+	}
+	// Another creation in the repository proceeds.
+	mustStartWorktree(t, e, worktreeStartCommand(e, "wt-after", "p-git", "feat/after", git("rev-parse", "HEAD")))
+}
+
+// A retry that arrived while the first request was still preparing answers
+// running as soon as the creation is handed to the server.
+func TestWorktreeRetryDuringPreparationIsWoken(t *testing.T) {
+	e, root, git := worktreeSetup(t)
+	quickStartWait(t)
+	slowCheckoutHook(t, root, "2")
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	worktreePrepareHook = func() {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+			<-proceed
+		}
+	}
+	t.Cleanup(func() { worktreePrepareHook = nil })
+	c := worktreeStartCommand(e, "wt-wake", "p-git", "feat/wake", git("rev-parse", "HEAD"))
+	first := make(chan protocol.Receipt, 1)
+	go func() { r, _ := e.command(c); first <- r }()
+	<-entered
+	second := make(chan protocol.Receipt, 1)
+	go func() { r, _ := e.command(c); second <- r }()
+	time.Sleep(100 * time.Millisecond) // the retry now waits on the reservation
+	close(proceed)
+	select {
+	case r := <-second:
+		if r.State != "running" {
+			t.Fatalf("woken retry: %+v", r)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("the retry was not woken at the handoff")
+	}
+	<-first
+	waitFor(t, e, "attached", func(s protocol.Snapshot) bool {
+		rec := worktreeByCommand(&s, c.ID)
+		return rec != nil && rec.State == protocol.WorktreePresent
+	})
+	if n := len(e.current().Worktrees); n != 1 {
+		t.Fatalf("%d records", n)
 	}
 }

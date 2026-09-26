@@ -49,7 +49,16 @@ records the Go server, protocol and client slice; the Go TUI binding is in
 - **Two-phase, journaled creation.** Phase one takes the repository's Git
   slot (shared with linked worktrees and ref operations), saves the
   `creating` record with a `running` receipt, and only then runs Git; a
-  storage failure means Git never runs. Git then runs and the result is
+  storage failure means Git never runs. From then on the server owns the
+  creation: Git, verification and attachment run in the background under
+  the server's context (10-minute budget; server stop cancels it like a Git
+  write), never the request's, so a client timeout or disconnect does not
+  stop it. The request waits about two seconds for the outcome and
+  otherwise answers with the `running` receipt; a retry of the same command
+  ID while it runs answers `running` at once. The snapshot's record (found
+  by `CommandID`) shows the progress, `creating` then `present` with its
+  thread (or `unattached`), and the final receipt is persisted, published
+  and returned to the next retry. Git then runs and the result is
   verified: a `.git` link, no remaining Git `initializing` lock, HEAD on the
   new branch at the start commit. The receipt fails (`worktree_failed`) when
   Git or verification fails; if no directory was left the record is
@@ -63,7 +72,14 @@ records the Go server, protocol and client slice; the Go TUI binding is in
   `failed`; clients must re-ask under the same command ID for the outcome
   rather than issue a new command. At startup a `creating` record is dropped only when its
   directory does not exist; otherwise it is verified as above and becomes
-  `unattached` (retry attaches) or `Unverified`.
+  `unattached` (retry attaches) or `Unverified`. A server stop mid-creation
+  kills Git; the receipt fails saying the server stopped (and whether the
+  new branch was kept), and anything left is kept `Unverified`, even when
+  Git had already finished, since verification could not complete. A
+  same-ID request that waited while the first was still preparing is
+  answered `running` as soon as creation is handed to the server. A panic
+  in the background creation is recovered: the Git slot is released, the
+  receipt fails (`worktree_failed`) and anything left is kept `Unverified`.
 - **Unavailable workspaces are refused, not redirected.** For a thread
   whose worktree is not `present` (or whose record is gone), Send, Resume,
   Files/browse and context capture, documents, Git reads and writes

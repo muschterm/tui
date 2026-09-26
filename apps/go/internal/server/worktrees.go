@@ -448,7 +448,12 @@ func (e *engine) worktreeStart(ctx context.Context, c protocol.Command) (protoco
 	if err != nil || r != nil {
 		return deref(r), err
 	}
-	defer release()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			release()
+		}
+	}()
 
 	e.mu.Lock()
 	captureState := clone(e.snap)
@@ -486,6 +491,9 @@ func (e *engine) worktreeStart(ctx context.Context, c protocol.Command) (protoco
 
 	prepCtx, cancel := context.WithTimeout(ctx, gitWriteBudget)
 	defer cancel()
+	if worktreePrepareHook != nil {
+		worktreePrepareHook()
+	}
 	plan, err := prepareWorktree(prepCtx, *project, root, c)
 	if err != nil {
 		return protocol.Receipt{}, err
@@ -531,12 +539,66 @@ func (e *engine) worktreeStart(ctx context.Context, c protocol.Command) (protoco
 	if parent == nil {
 		parent = context.Background()
 	}
+	// From here the server owns the creation: Git, verification and the
+	// attachment run under the server's context, not the request's, and
+	// the request waits only briefly for the outcome.
 	gs.wg.Add(1)
-	e.mu.Unlock()
-	defer gs.wg.Done()
-
+	if e.worktreeAsync == nil {
+		e.worktreeAsync = map[string]worktreeInflight{}
+	}
+	e.worktreeAsync[c.ID] = worktreeInflight{c: c, r: running}
+	// Server stop cancels it like a Git write (stopGitWrites).
 	runCtx, cancelRun := context.WithTimeout(parent, worktreeBudget)
-	defer cancelRun()
+	gs.cancels[c.ID] = cancelRun
+	handedOff = true
+	// Same-ID requests that waited during preparation wake now and are
+	// answered from worktreeAsync; the reservation itself continues.
+	if ch, ok := gs.inflight[c.ID]; ok {
+		gs.inflight[c.ID] = make(chan struct{})
+		close(ch)
+	}
+	e.mu.Unlock()
+	done := make(chan protocol.Receipt, 1)
+	go func() {
+		defer gs.wg.Done()
+		defer release()
+		defer cancelRun()
+		defer func() {
+			if p := recover(); p != nil {
+				done <- e.abortWorktree(gs, c, rec, p)
+			}
+		}()
+		done <- e.createWorktree(runCtx, gs, c, captured, plan, rec)
+	}()
+	wait := time.NewTimer(worktreeStartWait)
+	defer wait.Stop()
+	select {
+	case final := <-done:
+		return final, nil
+	case <-wait.C:
+	case <-ctx.Done():
+	}
+	return running, nil
+}
+
+// worktreeInflight is a creation running in the background; a retry of its
+// command ID is answered with the running receipt.
+type worktreeInflight struct {
+	c protocol.Command
+	r protocol.Receipt
+}
+
+// worktreeStartWait is how long a worktree thread.start request waits for
+// the creation before answering with its running receipt.
+var worktreeStartWait = 2 * time.Second
+
+// worktreePrepareHook, when set by a test, runs before a creation is
+// prepared (while its command ID is reserved).
+var worktreePrepareHook func()
+
+// createWorktree runs `git worktree add`, verifies and attaches the thread
+// (phase two) under the server's context, and commits the final receipt.
+func (e *engine) createWorktree(runCtx context.Context, gs *gitWriteState, c, captured protocol.Command, plan *worktreePlan, rec protocol.ManagedWorktree) protocol.Receipt {
 	if worktreeBeforeAdd != nil {
 		worktreeBeforeAdd(plan.path)
 	}
@@ -546,21 +608,30 @@ func (e *engine) worktreeStart(ctx context.Context, c protocol.Command) (protoco
 		worktreeAfterAdd(plan.path)
 	}
 	branchLeft := false
+	stopped := runCtx.Err() != nil
 	if runErr != nil || verifyErr != nil {
-		branchLeft = branchExists(runCtx, plan.writer, plan.branch)
+		// The run context may be cancelled (server stop, budget): inspect
+		// what was left with a short context of its own.
+		checkCtx, cancelCheck := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
+		branchLeft = branchExists(checkCtx, plan.writer, plan.branch)
+		cancelCheck()
 	}
 
 	// Phase two: attach the thread, or keep the worktree unattached.
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(gs.holders, c.ID)
-	next = clone(e.snap)
+	delete(e.worktreeAsync, c.ID)
+	delete(gs.cancels, c.ID)
+	next := clone(e.snap)
 	recp := worktreeByID(&next, rec.ID)
 	var final protocol.Receipt
 	switch {
 	case runErr != nil || verifyErr != nil:
 		msg := "Git could not create the worktree"
-		if runErr != nil {
+		if stopped {
+			msg = "the server stopped while the worktree was being created"
+		} else if runErr != nil {
 			if text := strings.TrimSpace(string(output.bytes())); text != "" {
 				msg += ": " + gitSummary(text)
 			}
@@ -592,7 +663,41 @@ func (e *engine) worktreeStart(ctx context.Context, c protocol.Command) (protoco
 	next.Revision++
 	final.Revision = next.Revision
 	e.commitWorktreeReceiptLocked(next, c, final)
-	return final, nil
+	return final
+}
+
+// abortWorktree records a creation that panicked: the Git slot and
+// cancellation are released, anything left on disk is kept Unverified and
+// the receipt fails. A record that was already settled is left alone.
+func (e *engine) abortWorktree(gs *gitWriteState, c protocol.Command, rec protocol.ManagedWorktree, p any) protocol.Receipt {
+	e.logf("worktree creation panicked", "command", c.ID, "panic", fmt.Sprint(p))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(gs.holders, c.ID)
+	delete(e.worktreeAsync, c.ID)
+	delete(gs.cancels, c.ID)
+	next := clone(e.snap)
+	recp := worktreeByID(&next, rec.ID)
+	if recp == nil || recp.State != protocol.WorktreeCreating {
+		e.rebalanceWritersAndFlushLocked()
+		return protocol.Receipt{ID: c.ID, State: "failed", Error: &protocol.Error{Code: "internal_error", Message: "worktree creation failed unexpectedly; refresh to see its state"}}
+	}
+	msg := "worktree creation failed unexpectedly"
+	if _, err := os.Lstat(rec.Path); err != nil {
+		next.Worktrees = slices.DeleteFunc(next.Worktrees, func(w protocol.ManagedWorktree) bool { return w.ID == rec.ID })
+	} else {
+		msg += "; the directory was kept for inspection"
+		if link, ok := gitdirLink(filepath.Join(rec.Path, ".git"), rec.Path); ok {
+			recp.AdminName = filepath.Base(link)
+		}
+		recp.State, recp.Unverified, recp.Detail = protocol.WorktreeUnattached, true, msg
+		refreshWorktreesIn(&next, detectAll([]protocol.ManagedWorktree{*recp}))
+	}
+	final := protocol.Receipt{ID: c.ID, State: "failed", Error: &protocol.Error{Code: "worktree_failed", Message: msg}}
+	next.Revision++
+	final.Revision = next.Revision
+	e.commitWorktreeReceiptLocked(next, c, final)
+	return final
 }
 
 func deref(r *protocol.Receipt) protocol.Receipt {
@@ -609,6 +714,15 @@ func (e *engine) reserveWorktreeCommand(ctx context.Context, c protocol.Command)
 	e.mu.Lock()
 	gs := e.gitLocked()
 	for {
+		if a, ok := e.worktreeAsync[c.ID]; ok {
+			// Creation continues in the background: answer at once.
+			e.mu.Unlock()
+			if !sameCommand(a.c, c) {
+				return nil, nil, false, failure("identity_conflict", "command ID was already used with different content")
+			}
+			r := a.r
+			return nil, &r, false, nil
+		}
 		wait, busy := gs.inflight[c.ID]
 		if !busy {
 			break
@@ -651,12 +765,15 @@ func (e *engine) reserveWorktreeCommand(ctx context.Context, c protocol.Command)
 		}
 		attach = true
 	}
-	done := make(chan struct{})
-	gs.inflight[c.ID] = done
+	gs.inflight[c.ID] = make(chan struct{})
 	return func() {
+		// The channel may have been replaced at the handoff to the
+		// background creation; close the current one.
 		e.mu.Lock()
-		delete(gs.inflight, c.ID)
-		close(done)
+		if ch, ok := gs.inflight[c.ID]; ok {
+			delete(gs.inflight, c.ID)
+			close(ch)
+		}
 		e.mu.Unlock()
 	}, nil, attach, nil
 }
