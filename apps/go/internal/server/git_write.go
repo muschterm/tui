@@ -205,6 +205,12 @@ func validateGitWrite(c protocol.Command) error {
 	if (c.ThreadID == "") == (c.ProjectID == "") {
 		return failure("invalid", "select exactly one project or thread")
 	}
+	if w.Partial != nil {
+		if w.Integrate != nil || w.Operation != nil || w.Conflict != nil || w.ResolveJob != nil || w.Ref != nil || w.Sync != nil || w.Cancel != nil {
+			return failure("invalid", "a partial selection carries only its partial payload")
+		}
+		return validatePartial(c.Kind, w)
+	}
 	if gitOperationKind(c.Kind) {
 		if w.Conflict != nil || w.ResolveJob != nil {
 			return failure("invalid", "conflict payloads are not accepted for "+c.Kind)
@@ -896,6 +902,9 @@ type gitRunOpts struct {
 	// trace2 is a file that receives Git's trace2 events (push uses it to
 	// learn whether the pre-push hook refused).
 	trace2 string
+	// stdoutPrefix, when set, keeps only that many bytes of stdout and does
+	// not treat more as an error (a diff read only for its header).
+	stdoutPrefix int
 	// env is added after the policy environment (git_operation.go uses it
 	// for a private GIT_INDEX_FILE when writing a backup).
 	env []string
@@ -1005,7 +1014,11 @@ func (w *gitWriter) runWith(ctx context.Context, o gitRunOpts, args ...string) g
 	cmd.Env = append(cmd.Env, o.env...)
 	output := &cappedOutput{limit: gitWriteOutputMax, drain: true}
 	tail := &gitTail{}
-	out := &cappedOutput{limit: gitStatusMaxBytes, drain: true}
+	limit := gitStatusMaxBytes
+	if o.stdoutPrefix > 0 {
+		limit = o.stdoutPrefix
+	}
+	out := &cappedOutput{limit: limit, drain: true}
 	var errSink io.Writer = io.MultiWriter(output, tail)
 	var lines *gitProgressLines
 	if o.progress != nil || watch != nil {
@@ -1035,7 +1048,7 @@ func (w *gitWriter) runWith(ctx context.Context, o gitRunOpts, args ...string) g
 	if lingering || ctx.Err() != nil {
 		endGitGroup(cmd)
 	}
-	if err == nil && out.truncated() {
+	if err == nil && out.truncated() && o.stdoutPrefix == 0 {
 		err = errors.New("git output exceeded its bound")
 	}
 	return gitRunResult{stdout: out.bytes(), output: output, tail: tail, err: err, stalled: watch != nil && watch.fired()}
@@ -1266,11 +1279,16 @@ func recheckWorktree(top, path, token string) *protocol.GitResult {
 
 func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol.Command) (*gitPlan, error) {
 	switch c.Kind {
-	case protocol.GitKindStage:
+	case protocol.GitKindStage, protocol.GitKindUnstage:
+		if sel := c.Git.Partial; sel != nil {
+			p, err := preparePartial(ctx, g, w, *sel)
+			return withIndexDecision(p, err, g, w, sel.Path)
+		}
+		if c.Kind == protocol.GitKindUnstage {
+			p, err := prepareUnstage(ctx, g, w, c.Git.Paths[0])
+			return withIndexDecision(p, err, g, w, c.Git.Paths[0].Path)
+		}
 		p, err := prepareStage(ctx, g, w, c.Git.Paths[0])
-		return withIndexDecision(p, err, g, w, c.Git.Paths[0].Path)
-	case protocol.GitKindUnstage:
-		p, err := prepareUnstage(ctx, g, w, c.Git.Paths[0])
 		return withIndexDecision(p, err, g, w, c.Git.Paths[0].Path)
 	case protocol.GitKindDiscard:
 		return prepareDiscard(ctx, g, w, c.Git.Paths[0])
@@ -1332,11 +1350,23 @@ func prepareStage(ctx context.Context, g *gitReader, w *gitWriter, pin protocol.
 			defer content.file.Close()
 			stdin, args = content.file, append(args, "--path="+pin.Path)
 		}
-		out, output, err := w.run(ctx, stdin, false, args...)
-		if err != nil {
-			return nil, failure("unavailable", "the file could not be hashed: "+strings.TrimSpace(string(output.bytes())))
+		if tracked := pin.Group == protocol.GitGroupUnstaged && !content.symlink; tracked {
+			// `hash-object --path` does not consult the index, so it misses
+			// Git's rule that keeps CRLF under core.autocrlf when the index
+			// blob already has CR, and would report staged_newer_content
+			// for every such file (ADR 0025 review d). Git's own diff
+			// computes the object ID exactly as `git add` will.
+			if oid, ok := worktreeDiffOid(ctx, w, pin.Path, entry.IndexOid); ok {
+				expect = oid
+			}
 		}
-		expect = strings.TrimSpace(string(out))
+		if expect == "" {
+			out, output, err := w.run(ctx, stdin, false, args...)
+			if err != nil {
+				return nil, failure("unavailable", "the file could not be hashed: "+strings.TrimSpace(string(output.bytes())))
+			}
+			expect = strings.TrimSpace(string(out))
+		}
 	}
 	return &gitPlan{paths: []string{pin.Path}, run: func(ctx context.Context) protocol.GitResult {
 		if r := recheckWorktree(w.top, pin.Path, token); r != nil {
@@ -1365,6 +1395,25 @@ func prepareStage(ctx context.Context, g *gitReader, w *gitWriter, pin protocol.
 		}
 		return gitResult(protocol.GitStateSucceeded, "staged_newer_content", "Staged "+pin.Path+", but its content changed after review; the newer content is staged", output)
 	}}, nil
+}
+
+// worktreeDiffOid is the object ID `git add` would store for a tracked
+// path, read from the "index" header of Git's own diff (write policy, so
+// filters apply as for add; no optional index refresh). A diff without that
+// header (only the mode changed) means the content equals the index blob.
+func worktreeDiffOid(ctx context.Context, w *gitWriter, p, indexOid string) (string, bool) {
+	r := w.runWith(ctx, gitRunOpts{stdoutPrefix: 64 << 10}, "--no-optional-locks", "diff", "--full-index", "--no-color",
+		"--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "--src-prefix=a/", "--dst-prefix=b/", "--", p)
+	if r.err != nil {
+		return "", false
+	}
+	if oid := diffPostOid(r.stdout); oid != "" {
+		return oid, true
+	}
+	if len(r.stdout) > 0 && !bytes.Contains(r.stdout, []byte("\n@@ ")) && gitFullHash.MatchString(indexOid) {
+		return indexOid, true
+	}
+	return "", false
 }
 
 func prepareUnstage(ctx context.Context, g *gitReader, w *gitWriter, pin protocol.GitPathPin) (*gitPlan, error) {

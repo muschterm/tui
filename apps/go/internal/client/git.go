@@ -57,6 +57,19 @@ func (c *Client) GitDiff(ctx context.Context, target GitTarget, path, group stri
 	return out, err
 }
 
+// GitHunks fetches the addressable diff of one path for partial staging
+// (capability git-partial-stage, ADR 0025): group is protocol.GitGroupUnstaged
+// (what can be staged) or protocol.GitGroupStaged (what can be unstaged). A
+// reply with Unsupported set has no Fingerprint; offer whole-file actions.
+func (c *Client) GitHunks(ctx context.Context, target GitTarget, path, group string) (protocol.GitHunks, error) {
+	q := target.query()
+	q.Set("path", path)
+	q.Set("group", group)
+	var out protocol.GitHunks
+	err := c.git().request(ctx, "GET", "/v1/git/hunks?"+q.Encode(), nil, &out)
+	return out, err
+}
+
 // GitLog fetches up to limit commits in topological order; limit <= 0 uses
 // the server default (50) and the server caps it at 200. scope is
 // protocol.GitLogScopeHead (HEAD plus its upstream; also used when empty)
@@ -138,6 +151,21 @@ func GitStageCommand(id string, target GitTarget, entry protocol.GitStatusEntry)
 // GitUnstageCommand unstages one staged status entry (both sides of a rename).
 func GitUnstageCommand(id string, target GitTarget, entry protocol.GitStatusEntry) protocol.Command {
 	return gitCommand(id, protocol.GitKindUnstage, target, protocol.GitWrite{Paths: gitPin(entry)})
+}
+
+// GitPartialCommand stages (diff.Group unstaged) or unstages (diff.Group
+// staged) the selected hunks and lines of diff, which must come from
+// GitHunks with a Fingerprint. hunks are GitHunk.Index values, lines
+// GitHunkLine.Index values of add/delete lines. Send it with GitWrite; a
+// stale_diff refusal means fetching GitHunks again.
+func GitPartialCommand(id string, target GitTarget, diff protocol.GitHunks, hunks, lines []int) protocol.Command {
+	kind := protocol.GitKindStage
+	if diff.Group == protocol.GitGroupStaged {
+		kind = protocol.GitKindUnstage
+	}
+	return gitCommand(id, kind, target, protocol.GitWrite{Partial: &protocol.GitPartial{
+		Path: diff.Path, Group: diff.Group, Fingerprint: diff.Fingerprint, Hunks: hunks, Lines: lines,
+	}})
 }
 
 // GitDiscardCommand permanently discards one unstaged or untracked entry.

@@ -79,9 +79,15 @@ var errGitNotRepository = errors.New("not a git checkout")
 //     remotes; missing objects surface as unavailable. Nothing here fetches.
 //
 // Inherited GIT_* variables (GIT_DIR, GIT_INDEX_FILE, GIT_CONFIG_PARAMETERS,
-// ...) are removed, optional index refreshes are suppressed so reads never
-// take index.lock, stdin is empty, prompts are disabled and pathspecs are
-// literal. git runs in its own process group, which is killed on output cap,
+// ...) are removed, optional index refreshes are suppressed
+// (--no-optional-locks, GIT_OPTIONAL_LOCKS=0), stdin is empty, prompts are
+// disabled and pathspecs are literal. That does not make every read
+// lock-free: `git diff` against the worktree still refreshes stat data for
+// stat-dirty but unchanged paths under Git's own index.lock
+// (refresh_index_quietly ignores optional locks; observed with
+// GIT_TRACE2_PERF on Git 2.55), so readGitDiff, the partial-staging stage
+// diff and worktreeDiffOid can briefly hold index.lock and rewrite stat data
+// only (ADR 0025, Known limits). git runs in its own process group, which is killed on output cap,
 // deadline or cancellation so filter children are not orphaned.
 type gitReader struct {
 	dir string

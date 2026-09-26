@@ -147,6 +147,9 @@ const GitUnbornHead = "unborn"
 //     A deletion is staged as a removal.
 //   - git.unstage: exactly one staged entry; a staged rename unstages both
 //     sides. Works on an unborn branch.
+//   - git.stage and git.unstage with Partial set and no Paths stage or
+//     unstage selected hunks and lines of one path (ADR 0025,
+//     git_partial.go; capability git-partial-stage).
 //   - git.discard: exactly one unstaged (restored from the index) or untracked
 //     entry (deleted permanently: regular files and symlinks only, never a
 //     symlink target, directory or nested repository). Requires Confirmed; the
@@ -182,6 +185,9 @@ type GitWrite struct {
 	Conflict *GitConflictWrite `json:"conflict,omitempty"`
 	// Additive (S4).
 	ResolveJob *GitResolveJob `json:"resolve_job,omitempty"`
+	// Additive (ADR 0025): hunk/line selection for git.stage and
+	// git.unstage (git_partial.go); Paths is then empty.
+	Partial *GitPartial `json:"partial,omitempty"`
 }
 
 // GitPathPin names one status entry exactly as GitStatus showed it.

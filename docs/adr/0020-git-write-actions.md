@@ -80,7 +80,12 @@ same checkout and must not be repeated by a retry or a restart.
   - Stage hashes the pinned file as `git add` would (`hash-object --path`, from
     a descriptor opened without following symlinks and re-checked against the
     token), runs `git add`, and reports `staged_newer_content` when the staged
-    object differs. Nothing is rolled back.
+    object differs. Nothing is rolled back. For a tracked regular file the
+    expected object ID comes from the `index` header of Git's own
+    `--full-index` diff instead (2026-09-26): `hash-object --path` does not
+    consult the index, so under `core.autocrlf` it normalized CRLF that Git
+    keeps when the index blob already has CR and reported
+    `staged_newer_content` falsely (ADR 0025).
   - Unstage uses `restore --staged` (`reset HEAD` before Git 2.23; `rm
     --cached` when unborn) and unstages both sides of a staged rename.
   - Stage and discard of an unstaged path act only when its worktree node is
@@ -161,10 +166,12 @@ The wire contract, including every code, is documented in
 
 ## Deferred
 
-Hunk and line staging, multi-path selection, staging or resolving conflicted
-paths, submodule operations, remote operations (fetch, pull, push), Git write
+Multi-path selection, staging or resolving conflicted paths, submodule
+operations, remote operations (fetch, pull, push), Git write
 coordination with live editor buffers and autosave, and an explicit
-client-initiated cancel of a running write.
+client-initiated cancel of a running write. Hunk and line stage and unstage
+are decided in [ADR 0025](0025-partial-staging.md); hunk and line discard
+remain deferred by user decision (2026-09-26).
 
 ## Alternatives considered
 

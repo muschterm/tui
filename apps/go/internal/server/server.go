@@ -609,6 +609,12 @@ func Serve(ctx context.Context, home string) error {
 			snap.Capabilities = append(snap.Capabilities, capability)
 		}
 	}
+	// Partial staging depends on the installed Git (ADR 0025); a stored
+	// capability from a newer Git is withdrawn.
+	snap.Capabilities = slices.DeleteFunc(snap.Capabilities, func(c string) bool { return c == "git-partial-stage" })
+	if gitPartialSupported() {
+		snap.Capabilities = append(snap.Capabilities, "git-partial-stage")
+	}
 	// Agent definitions are server-owned: an existing home gains the configured
 	// connections on start and a changed executable invalidates its probe.
 	agent.Ensure(&snap, os.Getenv)
@@ -665,6 +671,7 @@ func Serve(ctx context.Context, home string) error {
 	mux.HandleFunc("GET /v1/worktrees/removal", e.worktreeRemoval)
 	mux.HandleFunc("GET /v1/worktrees/prune", e.worktreePruneRead)
 	mux.HandleFunc("GET /v1/git/diff", e.gitDiff)
+	mux.HandleFunc("GET /v1/git/hunks", e.gitHunks)
 	mux.HandleFunc("GET /v1/git/log", e.gitLog)
 	mux.HandleFunc("GET /v1/git/show", e.gitShow)
 	mux.HandleFunc("GET /v1/git/branches", e.gitBranches)
