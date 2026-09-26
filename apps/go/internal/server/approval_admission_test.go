@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
@@ -27,7 +28,17 @@ func TestNativeApprovalAdmissionRejectsWithoutMutation(t *testing.T) {
 			e, _, _ := acpEngine(t)
 			id, _ := pendingApprovalThread(t, e, "ask permission")
 			p := approvalAdmissionWire(t)
-			e.mu.Lock()
+			// Streamed updates before the approval are persisted by a coalesced
+			// flush timer that republishes the unchanged snapshot; wait for it
+			// so the subscription below observes only the refused admission.
+			quiescent := time.Now().Add(5 * time.Second)
+			for e.mu.Lock(); e.dirty || e.flushScheduled; e.mu.Lock() {
+				e.mu.Unlock()
+				if time.Now().After(quiescent) {
+					t.Fatal("pending coalesced flush did not complete")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 			r := e.runs[id]
 			thread := threadByID(&e.snap, id)
 			switch reason {
