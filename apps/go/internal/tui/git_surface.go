@@ -450,7 +450,7 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	if s := m.gitJ.start; s != nil && s.key == key {
 		return append(b, m.gitJobStartBlocks(s)...)
 	}
-	if f := m.gitPl.form; f != nil && f.key == key {
+	if f := m.gitPlanFormFor(key); f != nil {
 		return append(b, m.gitPlanFormBlocks(f)...)
 	}
 	if e := m.gitRB.edits[key]; e != nil {

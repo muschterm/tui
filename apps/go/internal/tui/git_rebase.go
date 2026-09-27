@@ -277,7 +277,11 @@ func (d *gitRebaseDraft) chainParts(start, end int, raw bool) ([]string, bool) {
 			continue
 		}
 		if e.Action == protocol.GitRebaseReword && e.Message != "" {
-			parts = append(parts, e.Message)
+			if raw {
+				parts = append(parts, e.Message)
+			} else {
+				parts = append(parts, safeKeepTabs(e.Message))
+			}
 			continue
 		}
 		c, found := d.commit(e.Commit)
@@ -1368,7 +1372,7 @@ func (m *Model) openGitRebaseMessage(d *gitRebaseDraft, i int, revert *protocol.
 			storedWarn = "This message has characters the editor cannot keep (tabs, carriage returns or control characters) · unchanged it is kept exactly; an edit is sent as shown"
 		}
 	}
-	a.SetValue(e.orig)
+	a.SetValue(safeKeepTabs(e.orig))
 	switch {
 	case !e.exact:
 		// Never prefill a cut or missing original: anything sent is text

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/muschterm/tui/apps/go/internal/client"
 	"github.com/muschterm/tui/apps/go/internal/protocol"
 )
@@ -243,8 +245,9 @@ func TestGitPlanVInstructionLostOnRefusal(t *testing.T) {
 	}
 	api.wmu.Unlock()
 	gitKey(t, m, "enter")
-	t.Logf("form %v input %q", m.gitPl.form != nil, m.gitPlanInput().Value())
-	if m.gitPl.form == nil || m.gitPlanInput().Value() != "Keep my long careful instruction" || !strings.Contains(m.gitPl.form.err, "4 KiB") {
+	key, _ := m.gitTarget()
+	f := m.gitPlanFormFor(key)
+	if f == nil || m.gitPlanInput().Value() != "Keep my long careful instruction" || !strings.Contains(f.err, "4 KiB") {
 		t.Errorf("instruction text discarded when the start is refused")
 	}
 	// The byte limit is enforced locally (runes are not bytes).
@@ -254,5 +257,67 @@ func TestGitPlanVInstructionLostOnRefusal(t *testing.T) {
 	gitKey(t, m, "enter")
 	if len(api.sent()) != sent || !strings.Contains(gitSurfaceText(m), "4200 / 4096 bytes") {
 		t.Errorf("over-long instruction sent or not counted")
+	}
+}
+
+func TestGitPlanChainEditorSanitized(t *testing.T) {
+	m, api := planModel(t)
+	addPlanJob(m, protocol.GitRebaseProposalSummary{Revision: 1, State: protocol.GitProposalProposed, Fingerprint: "fp-1", Branch: "feature/init", HeadOid: rb4})
+	evil := "Evil \u202e txt.exe\x1b]0;x\x07 end"
+	api.rbProposal = protocol.GitRebaseProposal{Base: rb0, State: protocol.GitProposalProposed, CurrentFingerprint: "fp-1",
+		Summary: protocol.GitRebaseProposalSummary{Revision: 1, Fingerprint: "fp-1"},
+		Entries: []protocol.GitRebaseEntry{{Action: "reword", Commit: rb1, Message: evil}, {Action: "squash", Commit: rb2}, {Action: "pick", Commit: rb3}, {Action: "pick", Commit: rb4}}}
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-plan-load", ID: "rebase-plan-1"}))
+	d := rbDraft(t, m)
+	m.setFocus(gitRebaseRowKey(1))
+	gitKey(t, m, "m")
+	if m.focus != gitRebaseMsgKey {
+		t.Fatalf("chain editor not open: %s", m.focus)
+	}
+	out := m.View().Content
+	if strings.Contains(out, "\u202e") || strings.Contains(out, "]0;x") || strings.Contains(m.gitRebaseMsg().Value(), "\u202e") {
+		t.Fatalf("unsafe chain display %q", m.gitRebaseMsg().Value())
+	}
+	gitKey(t, m, "esc")
+	if got := d.build()[1].Message; !strings.HasPrefix(got, evil) {
+		t.Fatalf("raw chain message altered: %q", got)
+	}
+}
+
+func TestGitPlanFormKeptAcrossThreadSwitch(t *testing.T) {
+	m, api := planModel(t)
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-plan-open", ID: rb0}))
+	keyA, _ := m.gitTarget()
+	m.setFocus(gitPlanInputKey)
+	rbType(t, m, "Typed in A")
+	cur := m.state.Active
+	var other string
+	for _, th := range m.snapshot.Threads {
+		if th.ID != cur && th.Job == nil {
+			other = th.ID
+		}
+	}
+	gitWriteSettle(t, m, m.activate(action{Kind: "thread", ID: other}))
+	if keyB, _ := m.gitTarget(); keyB == keyA {
+		t.Skip("threads share a Git target")
+	}
+	gitWriteSettle(t, m, m.activate(action{Kind: "thread", ID: cur}))
+	if f := m.gitPlanFormFor(keyA); f == nil || m.gitPlanInput().Value() != "Typed in A" {
+		t.Fatalf("form or text lost across a thread switch: %q", m.gitPlanInput().Value())
+	}
+	// A refusal that arrives while another thread is shown returns to A's
+	// form.
+	api.wmu.Lock()
+	api.reply = func(c protocol.Command) (protocol.Receipt, error) {
+		return protocol.Receipt{}, &protocol.Error{Code: "stale_plan", Message: "moved"}
+	}
+	api.wmu.Unlock()
+	m.setFocus(gitPlanInputKey)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	gitWriteSettle(t, m, m.activate(action{Kind: "thread", ID: other}))
+	gitWriteSettle(t, m, cmd)
+	gitWriteSettle(t, m, m.activate(action{Kind: "thread", ID: cur}))
+	if f := m.gitPlanFormFor(keyA); f == nil || f.err == "" || m.gitPlanInput().Value() != "Typed in A" {
+		t.Fatalf("refused form lost: %+v input %q", f, m.gitPlanInput().Value())
 	}
 }

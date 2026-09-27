@@ -50,14 +50,18 @@ type gitPlanForm struct {
 }
 
 type gitPlanUI struct {
-	form  *gitPlanForm
-	input textarea.Model
-	ready bool
-	seq   uint64
+	// forms are the open forms per Git target, kept across thread switches
+	// like rebase drafts; inputFor is the form whose text the shared input
+	// holds.
+	forms    map[string]*gitPlanForm
+	inputFor *gitPlanForm
+	input    textarea.Model
+	ready    bool
+	seq      uint64
 	// end is the job whose End confirmation is shown.
 	end string
-	// sent is a form whose command awaits the server's reply.
-	sent *gitPlanForm
+	// sent are forms whose command awaits the server's reply, by command.
+	sent map[string]*gitPlanForm
 }
 
 // gitPlanInstructionMax is the server's instruction limit in bytes.
@@ -159,9 +163,33 @@ func (m *Model) gitPlanPickAgent(f *gitPlanForm) {
 	f.settings = m.gitJobInitialSettings(f.agentID)
 }
 
+// gitPlanFormFor is key's open form, or nil.
+func (m *Model) gitPlanFormFor(key string) *gitPlanForm { return m.gitPl.forms[key] }
+
+// gitPlanSyncInput loads key's form text into the shared input, storing
+// the previous owner's text first.
+func (m *Model) gitPlanSyncInput(key string) {
+	f := m.gitPl.forms[key]
+	if f == nil || m.gitPl.inputFor == f {
+		return
+	}
+	if o := m.gitPl.inputFor; o != nil {
+		o.text = m.gitPlanInput().Value()
+	}
+	m.gitPl.inputFor = f
+	m.gitPlanInput().SetValue(f.text)
+}
+
 func (m *Model) showGitPlanForm(f *gitPlanForm) tea.Cmd {
-	m.gitPl.form = f
-	m.gitPlanInput().SetValue("")
+	if m.gitPl.forms == nil {
+		m.gitPl.forms = map[string]*gitPlanForm{}
+	}
+	if o := m.gitPl.inputFor; o != nil {
+		o.text = m.gitPlanInput().Value()
+	}
+	m.gitPl.forms[f.key] = f
+	m.gitPl.inputFor = f
+	m.gitPlanInput().SetValue(f.text)
 	m.viewState().DetailScroll = 0
 	m.markDirty()
 	return m.setFocus("git:plan-cancel")
@@ -188,7 +216,8 @@ func (m *Model) gitPlanAction(a action) (tea.Cmd, bool) {
 		return nil, false
 	}
 	key, target := m.gitTarget()
-	f := m.gitPl.form
+	m.gitPlanSyncInput(key)
+	f := m.gitPl.forms[key]
 	switch a.Kind {
 	case "git-plan-open":
 		return m.openGitPlanForm(a.ID, a.Value, ""), true
@@ -203,7 +232,7 @@ func (m *Model) gitPlanAction(a action) (tea.Cmd, bool) {
 		}
 		return m.openGitPlanForm(d.base, d.onto, fp), true
 	case "git-plan-cancel-form":
-		m.gitPl.form = nil
+		m.dropGitPlanForm(key)
 		m.markDirty()
 		return m.setFocus("git-refresh"), true
 	case "git-plan-input":
@@ -268,7 +297,11 @@ func (m *Model) gitPlanAction(a action) (tea.Cmd, bool) {
 		// The form hides while the command is in flight and returns with
 		// the instruction and the reason if the server refuses it.
 		f.sentID, f.text, f.err = cmd.ID, m.gitPlanInput().Value(), ""
-		m.gitPl.sent, m.gitPl.form = f, nil
+		m.dropGitPlanForm(key)
+		if m.gitPl.sent == nil {
+			m.gitPl.sent = map[string]*gitPlanForm{}
+		}
+		m.gitPl.sent[cmd.ID] = f
 		m.clearGitWarning(key)
 		return tea.Batch(m.setFocus("git-refresh"), send), true
 	case "git-plan-revise":
@@ -487,22 +520,45 @@ func (m *Model) gitPlanInputKeyPress(k tea.KeyPressMsg) tea.Cmd {
 	case "shift+enter", "ctrl+j", "tab", "shift+tab", "up", "down":
 		return nil
 	}
+	key, _ := m.gitTarget()
+	m.gitPlanSyncInput(key)
 	c := updateInput(m.gitPlanInput(), k)
+	if f := m.gitPl.forms[key]; f != nil && m.gitPl.inputFor == f {
+		f.text = m.gitPlanInput().Value()
+	}
 	m.markDirty()
 	return c
 }
 
 func (m *Model) gitPlanInputPaste(content string) tea.Cmd {
+	key, _ := m.gitTarget()
+	m.gitPlanSyncInput(key)
 	c := updateInput(m.gitPlanInput(), tea.PasteMsg{Content: singleLine(safe(content))})
+	if f := m.gitPl.forms[key]; f != nil && m.gitPl.inputFor == f {
+		f.text = m.gitPlanInput().Value()
+	}
 	m.markDirty()
 	return c
 }
 
-// gitPlanReply returns a refused start or revision to its form, with the
-// instruction and the reason; an accepted one clears the instruction.
+// dropGitPlanForm closes key's form.
+func (m *Model) dropGitPlanForm(key string) {
+	if f := m.gitPl.forms[key]; f != nil {
+		delete(m.gitPl.forms, key)
+		if m.gitPl.inputFor == f {
+			m.gitPl.inputFor = nil
+			m.gitPlanInput().SetValue("")
+		}
+	}
+}
+
+// gitPlanReply returns a refused start or revision to its form (on its
+// own target, whichever is shown), with the instruction and the reason.
+// When another form is open there meanwhile, that form shows the refusal
+// and the earlier instruction, so neither is lost.
 func (m *Model) gitPlanReply(msg gitWriteMsg) {
-	f := m.gitPl.sent
-	if f == nil || f.sentID != msg.cmd.ID {
+	f := m.gitPl.sent[msg.cmd.ID]
+	if f == nil {
 		return
 	}
 	reason := ""
@@ -521,29 +577,32 @@ func (m *Model) gitPlanReply(msg gitWriteMsg) {
 			reason += " · " + s
 		}
 	}
-	m.gitPl.sent = nil
+	delete(m.gitPl.sent, msg.cmd.ID)
 	if reason == "" {
-		if m.gitPl.form == nil {
-			m.gitPlanInput().SetValue("")
-		}
 		return
 	}
-	if m.gitPl.form == nil {
+	if o := m.gitPl.forms[f.key]; o != nil {
+		o.err = "An earlier request was refused: " + reason
+		if t := strings.TrimSpace(f.text); t != "" {
+			o.err += " · its instruction: " + safe(singleLine(t))
+		}
+	} else {
 		f.sentID, f.err = "", reason
-		m.gitPl.form = f
-		m.gitPlanInput().SetValue(f.text)
-		m.markDirty()
+		if m.gitPl.forms == nil {
+			m.gitPl.forms = map[string]*gitPlanForm{}
+		}
+		m.gitPl.forms[f.key] = f
 	}
+	m.markDirty()
 }
 
-// gitPlanSettle drops a form whose target is not shown and dialog state
-// whose menu is gone.
+// gitPlanSettle loads the shown target's form into the input, leaves the
+// input when that target has none, and drops dialog state whose menu is
+// gone. Forms of other targets are kept.
 func (m *Model) gitPlanSettle(key string) {
-	if f := m.gitPl.form; f != nil && f.key != key {
-		m.gitPl.form = nil
-		if m.focus == gitPlanInputKey {
-			m.setFocus("git-refresh")
-		}
+	m.gitPlanSyncInput(key)
+	if m.gitPl.forms[key] == nil && m.focus == gitPlanInputKey {
+		m.setFocus("git-refresh")
 	}
 	if len(m.menu) == 0 {
 		m.gitPl.end = ""
