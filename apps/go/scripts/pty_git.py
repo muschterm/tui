@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Git surface via OS PTY against the real server: stage and commit, merge a
 conflicting branch and resolve it through the operation panel, then pull a
-fast-forward from a local bare remote. Byte-level evidence only, not GUI
+fast-forward from a local bare remote and Fetch & prune a deleted branch. Byte-level evidence only, not GUI
 terminal compatibility. Everything runs in temporary homes; git is invoked
 with the isolated environment, so no user or system Git configuration applies
 beyond what the harness sets in the repository."""
@@ -262,6 +262,18 @@ def main():
             wait(lambda: git('rev-parse', 'HEAD') == remote_head, 'fast-forward')
             wait(lambda: visible('Fast-forwarded main'), 'pull result')
             check(True, 'Pull fast-forwards main to the remote commit and says so')
+
+            # Fetch & prune: a branch deleted on the remote loses its
+            # remote-tracking ref, and the notice names it.
+            git('push', '-q', 'origin', 'main:gone', cwd=other)
+            git('fetch', '-q', 'origin')
+            check(git('for-each-ref', 'refs/remotes/origin/gone') != '', 'origin/gone fetched before pruning')
+            git('update-ref', '-d', 'refs/heads/gone', cwd=bare)
+            refresh()
+            t.send(b'F', .5)
+            wait(lambda: visible('pruned origin/gone'), 'fetch & prune result')
+            check(git('for-each-ref', 'refs/remotes/origin/gone') == '',
+                  'Fetch & prune removes origin/gone and the notice names it')
             report['result'] = 'PASS'
         except Exception as error:
             report['result'], report['error'] = 'FAIL', str(error)

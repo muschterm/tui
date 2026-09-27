@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -451,6 +452,325 @@ func prepareFetch(ctx context.Context, g *gitReader, w *gitWriter, s protocol.Gi
 			res = gitResult(protocol.GitStateFailed, code, "Fetch from "+remote+" failed: "+message+"; your branch and files are unchanged", run.output)
 		}
 		res.Fetch = &fr
+		return res
+	}
+	return p, nil
+}
+
+// listRemotes is `git remote`, in its order.
+func listRemotes(ctx context.Context, g *gitReader) ([]string, error) {
+	out, truncated, err := g.read(ctx, 1<<20, "remote")
+	if err != nil || truncated {
+		return nil, failure("unavailable", "remotes could not be listed")
+	}
+	var names []string
+	for _, r := range strings.Split(string(out), "\n") {
+		if r != "" {
+			names = append(names, r)
+		}
+	}
+	return names, nil
+}
+
+// allRefs is the set of full ref names under refs/; ok is false when they
+// could not be read in full.
+func allRefs(ctx context.Context, g *gitReader) (map[string]bool, bool) {
+	out, truncated, err := g.read(ctx, 32<<20, "for-each-ref", "--format=%(refname)", "refs/")
+	if err != nil || truncated {
+		return nil, false
+	}
+	refs := map[string]bool{}
+	for _, r := range strings.Split(string(out), "\n") {
+		if r != "" {
+			refs[r] = true
+		}
+	}
+	return refs, true
+}
+
+// gitRemoteConfig is what fetching all remotes needs from remote.<name>.*.
+type gitRemoteConfig struct {
+	fetch        []string
+	skipFetchAll bool
+}
+
+// readRemoteConfig reads remote.<name>.fetch and remote.<name>.skipFetchAll
+// for every remote from the effective configuration.
+func readRemoteConfig(ctx context.Context, g *gitReader) (map[string]*gitRemoteConfig, error) {
+	out, truncated, err := g.read(ctx, 1<<20, "config", "-z", "--get-regexp", `^remote\..*\.fetch$`)
+	if truncated || (err != nil && gitExitCode(err) != 1) {
+		return nil, failure("unavailable", "remote configuration could not be read")
+	}
+	// Git itself normalizes skipFetchAll to true or false (so 2 is true); an
+	// invalid value fails the read, as it would fail `git fetch --all`.
+	bools, truncated, err := g.read(ctx, 1<<20, "config", "-z", "--type=bool", "--get-regexp", `^remote\..*\.skipfetchall$`)
+	if truncated || (err != nil && gitExitCode(err) != 1) {
+		return nil, failure("unavailable", "remote.<name>.skipFetchAll could not be read as a boolean")
+	}
+	cfg := map[string]*gitRemoteConfig{}
+	for _, rec := range strings.Split(string(out)+"\x00"+string(bools), "\x00") {
+		key, value, _ := strings.Cut(rec, "\n")
+		rest, ok := strings.CutPrefix(key, "remote.")
+		if !ok {
+			continue
+		}
+		i := strings.LastIndexByte(rest, '.')
+		if i <= 0 {
+			continue
+		}
+		name, variable := rest[:i], strings.ToLower(rest[i+1:])
+		c := cfg[name]
+		if c == nil {
+			c = &gitRemoteConfig{}
+			cfg[name] = c
+		}
+		switch variable {
+		case "fetch":
+			c.fetch = append(c.fetch, value)
+		case "skipfetchall":
+			c.skipFetchAll = value == "true"
+		}
+	}
+	return cfg, nil
+}
+
+// unsafeRefspec explains why fetching remote with its configured refspecs
+// could write or prune outside its own refs/remotes/<remote>/ namespace
+// ("" when it cannot). A refspec without a destination (FETCH_HEAD only) and
+// a negative refspec write nothing; every other destination must lie in the
+// remote's namespace, and that namespace must not overlap another
+// configured remote's. Namespaces are compared case-insensitively: Origin
+// and origin share loose-ref directories on case-insensitive filesystems.
+func unsafeRefspec(remote string, specs []string, remotes []string) string {
+	ns := "refs/remotes/" + remote + "/"
+	lns := strings.ToLower(ns)
+	for _, other := range remotes {
+		ons := strings.ToLower("refs/remotes/" + other + "/")
+		if other != remote && (strings.HasPrefix(ons, lns) || strings.HasPrefix(lns, ons)) {
+			return "its remote-tracking namespace overlaps remote " + other + "'s"
+		}
+	}
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" || strings.HasPrefix(spec, "^") {
+			continue
+		}
+		_, dst, ok := strings.Cut(strings.TrimPrefix(spec, "+"), ":")
+		if !ok || dst == "" {
+			continue
+		}
+		if !strings.HasPrefix(dst, ns) || strings.Contains(dst, "..") {
+			return "its fetch refspec " + spec + " writes outside " + ns
+		}
+	}
+	return ""
+}
+
+// readFetchConfig reads the remote configuration and the configured
+// remotes under a short request budget, independent of cancellation.
+func readFetchConfig(ctx context.Context, g *gitReader) (map[string]*gitRemoteConfig, []string, error) {
+	vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitRequestBudget)
+	defer cancel()
+	cfg, err := readRemoteConfig(vctx, g)
+	if err != nil {
+		return nil, nil, err
+	}
+	names, err := listRemotes(vctx, g)
+	return cfg, names, err
+}
+
+// prepareFetchAll fetches every configured remote in turn (git.fetch with
+// All), like `git fetch --all` honouring remote.<name>.skipFetchAll, with
+// --no-prune-tags always and --prune or --no-prune. A remote whose fetch
+// refspecs could write or prune outside its own refs/remotes/<remote>/
+// namespace, or whose namespace overlaps another remote's, is refused
+// (unsafe_refspec) so that only remote-tracking refs are ever deleted.
+//
+// Removed refs are found by comparing all of refs/ before and after each
+// remote's fetch rather than parsing `git fetch --porcelain` (Git 2.41+):
+// the comparison needs no minimum Git version and does not depend on
+// separating porcelain stdout from progress. A ref is reported when it
+// existed before the whole run and not at its end, under the remote whose
+// fetch removed it; a ref another process deletes meanwhile is attributed
+// to the fetch running then.
+func prepareFetchAll(ctx context.Context, g *gitReader, w *gitWriter, s protocol.GitSync) (*gitPlan, error) {
+	remotes, err := listRemotes(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	if len(remotes) == 0 {
+		return nil, failure("no_remote", "no remotes are configured")
+	}
+	if _, err := readRemoteConfig(ctx, g); err != nil {
+		return nil, err
+	}
+	var up gitUpstream
+	cur, err := readHead(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	if cur.branch != "" {
+		if up, err = readUpstream(ctx, g, cur.branch); err != nil {
+			return nil, err
+		}
+	}
+	upstream, upBefore := "", ""
+	if up.remote != "" && strings.HasPrefix(up.ref, "refs/remotes/") {
+		upstream = strings.TrimPrefix(up.ref, "refs/remotes/")
+		if upBefore, err = refOid(ctx, g, up.ref); err != nil {
+			return nil, err
+		}
+	}
+	options := []string{"--no-prune", "--no-prune-tags"}
+	if s.Prune {
+		options[0] = "--prune"
+	}
+	p := &gitPlan{}
+	p.run = func(ctx context.Context) protocol.GitResult {
+		rt := p.runtime(ctx)
+		readRefs := func() (map[string]bool, bool) {
+			vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitRequestBudget)
+			defer cancel()
+			return allRefs(vctx, g)
+		}
+		results := make([]protocol.GitFetchResult, 0, len(remotes))
+		removedBy := map[string]int{} // ref -> index in results
+		start, refsOK := readRefs()
+		prev := start
+		var output *cappedOutput
+		cancelled := false
+		for _, remote := range remotes {
+			f := protocol.GitFetchResult{Remote: remote}
+			if up.remote == remote {
+				f.Upstream, f.UpstreamBefore = upstream, upBefore
+			}
+			// Configuration is read again right before each remote's fetch,
+			// so a refspec changed during the run is still refused; only a
+			// change between this read and Git's own remains possible.
+			c, unsafe, unreadable := &gitRemoteConfig{}, "", false
+			if !cancelled && rt.cancelCtx.Err() == nil {
+				if now, names, err := readFetchConfig(ctx, g); err != nil {
+					unreadable = true
+				} else {
+					if now[remote] != nil {
+						c = now[remote]
+					}
+					unsafe = unsafeRefspec(remote, c.fetch, names)
+				}
+			}
+			switch {
+			case cancelled || rt.cancelCtx.Err() != nil:
+				cancelled = true
+				f.State, f.Code, f.Message = protocol.GitFetchCancelled, "cancelled", "not started"
+			case c.skipFetchAll:
+				f.State, f.Message = protocol.GitFetchSkipped, "remote."+remote+".skipFetchAll is set"
+			case !validRemoteName(remote):
+				f.State, f.Code, f.Message = protocol.GitFetchFailed, "not_supported", "this remote name cannot be used here; fetch from a terminal"
+			case unreadable:
+				f.State, f.Code, f.Message = protocol.GitFetchFailed, "unavailable", "remote configuration could not be read"
+			case unsafe != "":
+				f.State, f.Code, f.Message = protocol.GitFetchFailed, "unsafe_refspec", unsafe+"; fetch it from a terminal"
+			default:
+				run := w.fetch(rt, options, remote)
+				output = joinOutputs(output, run.output)
+				code, message := fetchOutcome(ctx, g, rt, run, &f)
+				if code == "upstream_gone" && f.Upstream == "" {
+					// Not the upstream: a configured refspec names a
+					// branch the remote does not have.
+					code, message = "remote_ref_missing", "a configured fetch refspec names a ref the remote does not have"
+					f.Code = code
+				}
+				f.Message = message
+				if code == "cancelled" {
+					cancelled = true
+				}
+				after, ok := readRefs()
+				if refsOK && ok {
+					for r := range prev {
+						if !after[r] {
+							removedBy[r] = len(results)
+						}
+					}
+					prev = after
+				} else {
+					refsOK = false
+				}
+			}
+			results = append(results, f)
+		}
+		end, ok := readRefs()
+		if !refsOK || !ok {
+			for i := range results {
+				if results[i].State == protocol.GitFetchSucceeded && results[i].Message == "" {
+					results[i].Message = "removed refs could not be listed"
+				}
+			}
+		} else {
+			var gone []string
+			for r := range removedBy {
+				if start[r] && !end[r] {
+					gone = append(gone, r)
+				}
+			}
+			slices.Sort(gone)
+			for _, r := range gone {
+				f := &results[removedBy[r]]
+				short, remoteRef := strings.CutPrefix(r, "refs/remotes/")
+				switch {
+				case !remoteRef:
+					// Never expected: unsafe refspecs are refused.
+					f.RemovedOther = append(f.RemovedOther, r)
+				case len(f.Pruned) < protocol.GitFetchPrunedMax:
+					f.Pruned = append(f.Pruned, short)
+				default:
+					f.PrunedMore++
+				}
+			}
+		}
+		var fetched, failed, notStarted []string
+		codes := map[string]bool{}
+		for _, f := range results {
+			switch {
+			case f.State == protocol.GitFetchSucceeded:
+				fetched = append(fetched, f.Remote)
+			case f.State == protocol.GitFetchCancelled && f.Message == "not started":
+				notStarted = append(notStarted, f.Remote)
+			case f.State != protocol.GitFetchSkipped:
+				failed = append(failed, f.Remote)
+				codes[f.Code] = true
+			}
+		}
+		var res protocol.GitResult
+		switch {
+		case cancelled:
+			msg := "Fetch cancelled"
+			if len(notStarted) > 0 {
+				msg += "; not started: " + strings.Join(notStarted, ", ")
+			}
+			res = gitResult(protocol.GitStateFailed, "cancelled", msg, output)
+		case len(failed) == 0:
+			msg := "Fetched " + strings.Join(fetched, ", ")
+			if len(fetched) == 0 {
+				msg = "Every remote is skipped by remote.<name>.skipFetchAll"
+			}
+			res = gitResult(protocol.GitStateSucceeded, "", msg, output)
+		default:
+			code := "partial_fetch"
+			if len(fetched) == 0 {
+				code = "fetch_failed"
+				if len(codes) == 1 {
+					code = results[slices.IndexFunc(results, func(f protocol.GitFetchResult) bool { return slices.Contains(failed, f.Remote) })].Code
+				}
+			}
+			res = gitResult(protocol.GitStateFailed, code, "Fetch failed for "+strings.Join(failed, ", ")+"; your branch and files are unchanged", output)
+		}
+		res.Fetches = results
+		for i := range results {
+			if results[i].Upstream != "" {
+				fr := results[i]
+				res.Fetch = &fr
+			}
+		}
 		return res
 	}
 	return p, nil

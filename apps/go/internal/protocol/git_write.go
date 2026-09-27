@@ -220,8 +220,10 @@ type GitResult struct {
 	PathsIncomplete bool            `json:"paths_incomplete,omitempty"`
 	Ref             *GitRefResult   `json:"ref,omitempty"`
 	Fetch           *GitFetchResult `json:"fetch,omitempty"`
-	Integration     *GitIntegration `json:"integration,omitempty"`
-	Push            *GitPushResult  `json:"push,omitempty"`
+	// Fetches is git.fetch with All: one entry per configured remote.
+	Fetches     []GitFetchResult `json:"fetches,omitempty"`
+	Integration *GitIntegration  `json:"integration,omitempty"`
+	Push        *GitPushResult   `json:"push,omitempty"`
 	// Operation (additive, ADR 0023) reports git.merge, git.rebase and the
 	// git.operation_* commands.
 	Operation *GitOperationResult `json:"operation,omitempty"`
@@ -432,6 +434,24 @@ type GitRefWrite struct {
 //   - git.fetch: Remote, or empty for the current branch's upstream remote.
 //     Fetches that remote's configured refspecs (fetch.prune applies as in
 //     the CLI) without submodules.
+//   - git.fetch with All (capability git-fetch-all): every configured remote
+//     in `git remote` order, one `git fetch --prune|--no-prune
+//     --no-prune-tags <remote>` each; Remote must be empty. Prune removes
+//     remote-tracking refs whose branch is gone; without it
+//     fetch.prune/remote.*.prune are overridden, and tags are never pruned
+//     (fetch.pruneTags is overridden). Like `git fetch --all`, a remote with
+//     remote.<name>.skipFetchAll is not fetched (state skipped). Checked
+//     immediately before each remote's fetch, a remote whose fetch refspecs
+//     have a destination outside refs/remotes/<name>/, or whose namespace
+//     overlaps another remote's (case-insensitively), is refused (code
+//     unsafe_refspec), so only remote-tracking refs are removed barring a
+//     configuration change in the window before Git reads it (any other
+//     removed ref is reported in RemovedOther). GitResult.Fetches lists every remote (a failed remote never
+//     hides the others); Fetch is a copy of the upstream remote's entry,
+//     whatever its state. State is succeeded when no remote failed or was
+//     cancelled; otherwise failed with code cancelled, partial_fetch (some
+//     remote succeeded), the failures' shared code when every attempted
+//     remote failed with the same code, or fetch_failed.
 //   - git.pull: ExpectedBranch, ExpectedHead and Upstream (GitStatus.Upstream)
 //     as shown. Like `git pull`, fetches exactly the upstream branch
 //     (FETCH_HEAD; the remote-tracking ref is updated when the remote's
@@ -451,6 +471,8 @@ type GitRefWrite struct {
 //     forward of what it has now (code rejected).
 type GitSync struct {
 	Remote              string `json:"remote,omitempty"`
+	All                 bool   `json:"all,omitempty"`
+	Prune               bool   `json:"prune,omitempty"`
 	Upstream            string `json:"upstream,omitempty"`
 	ExpectedBranch      string `json:"expected_branch,omitempty"`
 	ExpectedHead        string `json:"expected_head,omitempty"`
@@ -483,6 +505,8 @@ const (
 	GitFetchSucceeded = "succeeded"
 	GitFetchFailed    = "failed"
 	GitFetchCancelled = "cancelled"
+	// GitFetchSkipped: all-remotes fetch only, remote.<name>.skipFetchAll.
+	GitFetchSkipped = "skipped"
 
 	GitIntegrationUpToDate    = "up_to_date"
 	GitIntegrationAhead       = "ahead"
@@ -503,7 +527,22 @@ type GitFetchResult struct {
 	Upstream       string `json:"upstream,omitempty"`
 	UpstreamBefore string `json:"upstream_before,omitempty"`
 	UpstreamAfter  string `json:"upstream_after,omitempty"`
+	// All-remotes fetch only. Message explains a failed, skipped or not
+	// started remote. Pruned lists refs/remotes/ refs (short form,
+	// origin/topic) that existed before the whole run, were removed during
+	// this remote's fetch and are absent at its end, sorted and capped at
+	// GitFetchPrunedMax; PrunedMore counts the rest.
+	Message    string   `json:"message,omitempty"`
+	Pruned     []string `json:"pruned,omitempty"`
+	PrunedMore int      `json:"pruned_more,omitempty"`
+	// RemovedOther lists full names of refs outside refs/remotes/ that
+	// disappeared during this remote's fetch. Unsafe refspecs are refused,
+	// so it is a safety net that should stay empty.
+	RemovedOther []string `json:"removed_other,omitempty"`
 }
+
+// GitFetchPrunedMax bounds GitFetchResult.Pruned.
+const GitFetchPrunedMax = 100
 
 // GitIntegration is the integration part of git.pull. From is HEAD before;
 // To is the upstream tip it was compared with (HEAD after a fast forward).

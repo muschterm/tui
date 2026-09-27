@@ -62,9 +62,10 @@ func menuText(m *Model) string {
 
 func TestGitRefHeadingControlsOrderAndSlots(t *testing.T) {
 	m, _ := refModel(t, 120, 60)
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-fetch-all")
 	f := m.measure()
 	var xs []int
-	for _, k := range []string{"git:sync:fetch", "git:sync:pull", "git:sync:push", "git-refresh"} {
+	for _, k := range []string{"git:sync:fetch", "git:sync:fetch-prune", "git:sync:pull", "git:sync:push", "git-refresh"} {
 		h, ok := findHit(f, k)
 		if !ok || h.Rect.W != 2 || h.Slot.W != gitSlotWidth || h.Rect.X != h.Slot.X+1 {
 			t.Fatalf("%s hit %+v", k, h)
@@ -98,6 +99,123 @@ func TestGitFetchKeyboardAndPointerParity(t *testing.T) {
 	}
 	if !strings.Contains(m.notice.text, "Fetched") {
 		t.Fatalf("notice %q", m.notice.text)
+	}
+}
+
+func TestGitFetchAllAndPruneActions(t *testing.T) {
+	// Without git-fetch-all, Fetch keeps the upstream-only command and Fetch
+	// & prune is unavailable.
+	m, api := refModel(t, 120, 60)
+	if h, _ := findHit(m.measure(), "git:sync:fetch-prune"); !strings.Contains(h.Label, "Needs a newer server") {
+		t.Fatalf("old server prune help %q", h.Label)
+	}
+	m.setFocus("git-refresh")
+	gitKey(t, m, "f")
+	if s := lastSent(t, api).Git.Sync; s.All || s.Prune {
+		t.Fatalf("old server fetch %+v", s)
+	}
+
+	for _, prune := range []bool{false, true} {
+		key, hit := "f", "git:sync:fetch"
+		if prune {
+			key, hit = "F", "git:sync:fetch-prune"
+		}
+		m, api := refModel(t, 120, 60)
+		m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-fetch-all")
+		m2, api2 := refModel(t, 120, 60)
+		m2.snapshot.Capabilities = append(m2.snapshot.Capabilities, "git-fetch-all")
+		pruned := []string{"origin/a", "origin/b", "origin/c", "origin/d", "origin/e", "origin/f"}
+		for _, a := range []*fakeGitWriter{api, api2} {
+			refReply(a, protocol.GitResult{State: protocol.GitStateSucceeded, Fetches: []protocol.GitFetchResult{
+				{Remote: "origin", State: protocol.GitFetchSucceeded, Pruned: pruned, PrunedMore: 3},
+				{Remote: "second", State: protocol.GitFetchSucceeded},
+			}})
+		}
+		m.setFocus("git-refresh")
+		gitKey(t, m, key)
+		h, _ := findHit(m2.measure(), hit)
+		if !strings.Contains(h.Label, "all remotes ("+key+")") {
+			t.Fatalf("%s help %q", hit, h.Label)
+		}
+		_, cmd := m2.Update(tea.MouseClickMsg{X: h.Rect.X, Y: h.Rect.Y, Button: tea.MouseLeft})
+		gitWriteSettle(t, m2, cmd)
+		a, b := lastSent(t, api), lastSent(t, api2)
+		if a.Kind != protocol.GitKindFetch || !a.Git.Sync.All || a.Git.Sync.Prune != prune || a.Git.Sync.Remote != "" || fmt.Sprint(*a.Git.Sync) != fmt.Sprint(*b.Git.Sync) {
+			t.Fatalf("prune=%v keyboard %+v pointer %+v", prune, a.Git.Sync, b.Git.Sync)
+		}
+		want := "Fetched origin, second"
+		if prune {
+			want += " · pruned origin/a, origin/b, origin/c, origin/d, origin/e +4 more"
+		}
+		if m.notice.text != want || m2.notice.text != want {
+			t.Fatalf("prune=%v notice %q / %q", prune, m.notice.text, m2.notice.text)
+		}
+	}
+
+	// A failing remote is named beside the successful one and its pruned refs.
+	m, api = refModel(t, 120, 60)
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-fetch-all")
+	refReply(api, protocol.GitResult{State: protocol.GitStateFailed, Code: "partial_fetch", Fetches: []protocol.GitFetchResult{
+		{Remote: "origin", State: protocol.GitFetchSucceeded, Pruned: []string{"origin/gone"}},
+		{Remote: "broken", State: protocol.GitFetchFailed, Code: "auth_required"},
+	}})
+	m.setFocus("git-refresh")
+	gitKey(t, m, "F")
+	want := "Fetched origin · pruned origin/gone · broken failed: " + gitRefCopy(protocol.GitKindFetch, "auth_required")
+	if m.notice.text != want || !strings.Contains(gitSurfaceText(m), "broken failed") {
+		t.Fatalf("failure notice %q\n%s", m.notice.text, gitSurfaceText(m))
+	}
+	// Nothing pruned is said explicitly.
+	refReply(api, protocol.GitResult{State: protocol.GitStateSucceeded, Fetches: []protocol.GitFetchResult{{Remote: "origin", State: protocol.GitFetchSucceeded}}})
+	m.setFocus("git-refresh")
+	gitKey(t, m, "F")
+	if m.notice.text != "Fetched origin · nothing pruned" {
+		t.Fatalf("nothing pruned notice %q", m.notice.text)
+	}
+}
+
+func TestGitFetchAllOutcomeCopy(t *testing.T) {
+	m, api := refModel(t, 120, 60)
+	m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-fetch-all")
+	refReply(api, protocol.GitResult{State: protocol.GitStateFailed, Code: "cancelled", Fetches: []protocol.GitFetchResult{
+		{Remote: "origin", State: protocol.GitFetchSucceeded},
+		{Remote: "mirror", State: protocol.GitFetchFailed, Code: "unsafe_refspec"},
+		{Remote: "sshremote", State: protocol.GitFetchFailed, Code: "host_key_unknown"},
+		{Remote: "slow", State: protocol.GitFetchCancelled, Code: "cancelled"},
+		{Remote: "zlast", State: protocol.GitFetchCancelled, Code: "cancelled", Message: "not started"},
+		{Remote: "archive", State: protocol.GitFetchSkipped},
+	}})
+	m.setFocus("git-refresh")
+	gitKey(t, m, "f")
+	want := "Fetched origin · mirror failed: " + gitRefCopy(protocol.GitKindFetch, "unsafe_refspec") +
+		" · sshremote failed: " + gitRefCopy(protocol.GitKindFetch, "host_key_unknown") +
+		" · cancelled slow, zlast · skipped archive (skipFetchAll)"
+	if m.notice.text != want {
+		t.Fatalf("notice %q\nwant   %q", m.notice.text, want)
+	}
+	// Credential advice appears for a per-remote credential failure even
+	// though the overall code is not a credential code.
+	if text := gitSurfaceText(m); !strings.Contains(text, gitCredentialAdvice) || strings.Contains(text, "failed: cancelled") {
+		t.Fatalf("surface:\n%s", text)
+	}
+}
+
+func TestGitFetchPruneControlNarrowHeading(t *testing.T) {
+	for _, width := range []int{80, 60} {
+		m, _ := refModel(t, width, 40)
+		m.snapshot.Capabilities = append(m.snapshot.Capabilities, "git-fetch-all")
+		f := m.measure()
+		prev := -1
+		for _, k := range []string{"git:sync:fetch", "git:sync:fetch-prune", "git:sync:pull", "git:sync:push", "git-refresh"} {
+			h, ok := findHit(f, k)
+			if !ok || h.Rect.X <= prev {
+				t.Fatalf("width %d: %s hit %+v ok=%v after %d", width, k, h, ok, prev)
+			}
+			prev = h.Rect.X
+		}
+		if text := gitSurfaceText(m); !strings.Contains(text, "Git") && !strings.Contains(text, "GIT") {
+			t.Fatalf("width %d heading lost:\n%s", width, text)
+		}
 	}
 }
 

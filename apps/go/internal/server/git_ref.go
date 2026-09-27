@@ -151,8 +151,14 @@ func validateGitRefSync(kind string, w *protocol.GitWrite) error {
 			if s.Upstream != "" || s.ExpectedBranch != "" || s.ExpectedHead != "" || s.ExpectedUpstreamOid != "" {
 				return failure("invalid", "fetch takes only a remote")
 			}
+			if s.All && s.Remote != "" {
+				return failure("invalid", "fetch takes either a remote or all remotes")
+			}
+			if s.Prune && !s.All {
+				return failure("invalid", "prune applies to fetching all remotes")
+			}
 		default:
-			if s.Remote != "" {
+			if s.Remote != "" || s.All || s.Prune {
 				return failure("invalid", "pull and push use the branch's configured upstream; remote is not accepted")
 			}
 			if s.Upstream == "" || !plausibleBranchName(s.ExpectedBranch) || !gitFullHash.MatchString(s.ExpectedHead) {

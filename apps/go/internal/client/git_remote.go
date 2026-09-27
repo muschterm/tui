@@ -117,6 +117,13 @@ func GitFetchCommand(id string, target GitTarget, remote string) protocol.Comman
 	return syncCommand(id, protocol.GitKindFetch, target, protocol.GitSync{Remote: remote})
 }
 
+// GitFetchAllCommand fetches every configured remote (capability
+// git-fetch-all); prune also removes remote-tracking refs whose branch is
+// gone, and without it pruning is off whatever the configuration says.
+func GitFetchAllCommand(id string, target GitTarget, prune bool) protocol.Command {
+	return syncCommand(id, protocol.GitKindFetch, target, protocol.GitSync{All: true, Prune: prune})
+}
+
 // GitPullCommand fetches the upstream shown in status and fast-forwards the
 // branch when possible; it never merges or rebases (diverged is reported).
 func GitPullCommand(id string, target GitTarget, status protocol.GitStatus) protocol.Command {

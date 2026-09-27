@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -127,6 +128,13 @@ func gitRefKind(kind string) bool {
 	return false
 }
 
+// gitFetchAllEnabled reports that the server fetches all remotes and prunes
+// (capability git-fetch-all); an older server fetches only the upstream's
+// remote.
+func (m *Model) gitFetchAllEnabled() bool {
+	return slices.Contains(m.snapshot.Capabilities, "git-fetch-all")
+}
+
 func gitSyncKind(kind string) bool {
 	return kind == protocol.GitKindFetch || kind == protocol.GitKindPull || kind == protocol.GitKindPush
 }
@@ -173,7 +181,7 @@ func (m *Model) gitRefBlock(key string, g *gitView, kind string) string {
 	s := g.status
 	switch kind {
 	case protocol.GitKindFetch:
-		if s.Upstream == "" {
+		if s.Upstream == "" && !m.gitFetchAllEnabled() {
 			return "No upstream · nothing to fetch from"
 		}
 	case protocol.GitKindPull, protocol.GitKindPush:
@@ -257,7 +265,7 @@ func (m *Model) gitRefAction(a action) (tea.Cmd, bool) {
 		return nil, true
 	case "git-review":
 		return m.gitReview(key), true
-	case "git-fetch", "git-pull", "git-push", "git-push-confirm", "git-switch", "git-switch-carry", "git-ack-confirm",
+	case "git-fetch", "git-fetch-prune", "git-pull", "git-push", "git-push-confirm", "git-switch", "git-switch-carry", "git-ack-confirm",
 		"git-branch-new", "git-branch-create", "git-branch-create-switch", "git-reset", "git-reset-confirm", "git-reset-undo":
 	default:
 		return nil, false
@@ -266,7 +274,7 @@ func (m *Model) gitRefAction(a action) (tea.Cmd, bool) {
 		return m.showNoticeAs(noticeUnavailable, "Git status not loaded"), true
 	}
 	kind := map[string]string{
-		"git-fetch": protocol.GitKindFetch, "git-pull": protocol.GitKindPull, "git-push": protocol.GitKindPush, "git-push-confirm": protocol.GitKindPush,
+		"git-fetch": protocol.GitKindFetch, "git-fetch-prune": protocol.GitKindFetch, "git-pull": protocol.GitKindPull, "git-push": protocol.GitKindPush, "git-push-confirm": protocol.GitKindPush,
 		"git-switch": protocol.GitKindSwitch, "git-switch-carry": protocol.GitKindSwitch,
 		"git-branch-new": protocol.GitKindBranchCreate, "git-branch-create": protocol.GitKindBranchCreate,
 		"git-branch-create-switch": protocol.GitKindSwitch,
@@ -275,14 +283,21 @@ func (m *Model) gitRefAction(a action) (tea.Cmd, bool) {
 	if a.Kind == "git-ack-confirm" && m.gitR.ack != nil {
 		kind = m.gitR.ack.cmd.Kind
 	}
+	if a.Kind == "git-fetch-prune" && !m.gitFetchAllEnabled() {
+		return m.showNoticeAs(noticeUnavailable, "Fetch & prune needs a newer server"), true
+	}
 	if reason := m.gitRefBlock(key, g, kind); reason != "" {
 		m.gitR.carry, m.gitR.ack, m.gitR.reset, m.gitR.push = nil, nil, nil, nil
 		return m.showNoticeAs(noticeUnavailable, reason), true
 	}
 	s := *g.status
 	switch a.Kind {
-	case "git-fetch":
+	case "git-fetch", "git-fetch-prune":
 		m.clearGitWarning(key)
+		if m.gitFetchAllEnabled() {
+			// Both fetch every configured remote, without confirmation.
+			return m.sendGitWrite(key, client.GitFetchAllCommand(identity(), target, a.Kind == "git-fetch-prune"), "all remotes"), true
+		}
 		return m.sendGitWrite(key, client.GitFetchCommand(identity(), target, ""), gitUpstreamRemote(s.Upstream)), true
 	case "git-pull":
 		m.clearGitWarning(key)
@@ -752,6 +767,12 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 		return tea.Batch(m.showNoticeAs(noticeDone, done), refresh())
 	case protocol.GitStateFailed:
 		st.failure = gitRefCopy(kind, r.Code)
+		if kind == protocol.GitKindFetch && len(r.Fetches) > 0 {
+			// Successful remotes and removed refs are reported beside the
+			// failures, in the surface line and as a notice.
+			st.failure = gitFetchAllCopy(msg.cmd.Git.Sync.Prune, r)
+			return tea.Batch(m.showNoticeAs(noticeUnavailable, st.failure), refresh())
+		}
 		if r.Code == "" {
 			st.failure = "Git refused the change"
 		}
@@ -816,6 +837,9 @@ func (m *Model) gitSyncSummary(st *gitWriteState, r *protocol.GitResult) string 
 	sync := st.cmd.Git.Sync
 	switch st.cmd.Kind {
 	case protocol.GitKindFetch:
+		if len(r.Fetches) > 0 {
+			return gitFetchAllCopy(sync.Prune, r)
+		}
 		remote := safe(singleLine(st.label))
 		if r.Fetch != nil && r.Fetch.Remote != "" {
 			remote = safe(singleLine(r.Fetch.Remote))
@@ -843,6 +867,80 @@ func (m *Model) gitSyncSummary(st *gitWriteState, r *protocol.GitResult) string 
 		return "Pushed " + safe(singleLine(sync.ExpectedBranch)) + " → " + up
 	}
 	return "Done"
+}
+
+// gitFetchPrunedShown bounds the removed refs a fetch notice names.
+const gitFetchPrunedShown = 5
+
+// gitFetchAllCopy is the outcome of fetching all remotes: the remotes that
+// were fetched, the removed remote-tracking refs (at most
+// gitFetchPrunedShown, then a count) and each failed remote with its reason.
+func gitFetchAllCopy(prune bool, r *protocol.GitResult) string {
+	var ok, failed, skipped, cancelled, pruned, other []string
+	more := 0
+	for _, f := range r.Fetches {
+		name := safe(singleLine(f.Remote))
+		switch f.State {
+		case protocol.GitFetchSucceeded:
+			ok = append(ok, name)
+		case protocol.GitFetchSkipped:
+			skipped = append(skipped, name)
+		case protocol.GitFetchCancelled:
+			cancelled = append(cancelled, name)
+		default:
+			failed = append(failed, name+" failed: "+gitRefCopy(protocol.GitKindFetch, f.Code))
+		}
+		for _, ref := range f.Pruned {
+			if len(pruned) < gitFetchPrunedShown {
+				pruned = append(pruned, safe(singleLine(ref)))
+			} else {
+				more++
+			}
+		}
+		more += f.PrunedMore
+		for _, ref := range f.RemovedOther {
+			other = append(other, safe(singleLine(ref)))
+		}
+	}
+	var parts []string
+	if len(ok) == 0 {
+		parts = append(parts, "Nothing fetched")
+	} else {
+		parts = append(parts, "Fetched "+strings.Join(ok, ", "))
+	}
+	if prune {
+		if len(pruned) == 0 {
+			parts = append(parts, "nothing pruned")
+		} else {
+			removed := "pruned " + strings.Join(pruned, ", ")
+			if more > 0 {
+				removed += fmt.Sprintf(" +%d more", more)
+			}
+			parts = append(parts, removed)
+		}
+	}
+	if len(other) > 0 {
+		parts = append(parts, "also removed "+strings.Join(other[:min(len(other), gitFetchPrunedShown)], ", "))
+	}
+	parts = append(parts, failed...)
+	if len(cancelled) > 0 {
+		parts = append(parts, "cancelled "+strings.Join(cancelled, ", "))
+	}
+	if len(skipped) > 0 {
+		parts = append(parts, "skipped "+strings.Join(skipped, ", ")+" (skipFetchAll)")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// gitFetchCredentialFailure reports whether any remote of an all-remotes
+// fetch failed for want of credentials or a trusted host key.
+func gitFetchCredentialFailure(r *protocol.GitResult) bool {
+	for _, f := range r.Fetches {
+		if f.State == protocol.GitFetchFailed && gitCredentialCode(f.Code) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitRefCopy is the functional copy for ADR 0021 codes, falling back to the
@@ -888,6 +986,16 @@ func gitRefCopy(kind, code string) string {
 		return "Upstream branch no longer exists on the remote"
 	case "unknown_remote":
 		return "Remote is not configured"
+	case "no_remote":
+		return "No remotes configured · nothing to fetch from"
+	case "partial_fetch":
+		return "Some remotes failed to fetch"
+	case "fetch_failed":
+		return "Every remote failed to fetch"
+	case "remote_ref_missing":
+		return "A configured fetch refspec names a missing ref"
+	case "unsafe_refspec":
+		return "Refspec writes outside its remote-tracking refs · fetch it from a terminal"
 	case "behind_upstream":
 		return "Behind upstream · Pull first"
 	case "diverged":
@@ -1013,7 +1121,7 @@ func gitCredentialCode(code string) bool {
 const gitCredentialAdvice = "Run `git fetch` once in a terminal to trust the host or unlock the key"
 
 // gitRefKey handles the surface keys of the ref and remote actions while a
-// Git row or control has focus: f fetch, p pull, P push, S switch, b new
+// Git row or control has focus: f fetch, F fetch & prune, p pull, P push, S switch, b new
 // branch, r soft reset, y copy hash.
 func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
 	if cmd, ok := m.gitConflictKey(s); ok {
@@ -1046,6 +1154,8 @@ func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
 	switch s {
 	case "f":
 		return m.activate(action{Kind: "git-fetch"}), true
+	case "F", "shift+f":
+		return m.activate(action{Kind: "git-fetch-prune"}), true
 	case "p":
 		return m.activate(action{Kind: "git-pull"}), true
 	case "P", "shift+p":

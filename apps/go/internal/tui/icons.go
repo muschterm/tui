@@ -63,7 +63,8 @@ var icons = map[string]struct{ glyph, plain string }{
 	"file-link": {"\ueaee", "@"}, "file-other": {"\ueae8", "?"},
 	// Git ref and remote actions: cod-cloud_download, cod-repo_pull,
 	// cod-repo_push and cod-arrow_right (switch to a branch).
-	"fetch": {"\ueac2", "F"}, "pull": {"\ueb40", "v"}, "push": {"\ueb41", "^"},
+	// cod-clear_all marks Fetch & prune.
+	"fetch": {"\ueac2", "F"}, "fetch-prune": {"\ueabf", "F-"}, "pull": {"\ueb40", "v"}, "push": {"\ueb41", "^"},
 	"switch": {"\uea9c", ">"},
 	"back":   {"\uea9b", "<"}, "wrap": {"\ueb80", "w"}, "copy": {"\uebcc", "c"},
 }

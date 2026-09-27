@@ -1546,10 +1546,38 @@ or a final result naming one, offers **Review and switch/reset again** with
 fresh status. Dialog state is dropped when its menu closes.
 
 - **Heading controls.** The GIT heading carries glyph-only icon controls in
-  fixed reserved slots: Fetch (`cod-cloud_download`, plain `F`), Pull
-  (`cod-repo_pull`, `v`, fast-forward only), Push (`cod-repo_push`, `^`) and
-  Refresh. Unavailable controls stay in place, muted, with the reason in
-  help: no upstream, detached HEAD, "Behind upstream · Pull first" for Push,
+  fixed reserved slots: Fetch (`cod-cloud_download`, plain `F`), Fetch &
+  prune (`cod-clear_all`, plain `F-`), Pull (`cod-repo_pull`, `v`,
+  fast-forward only), Push (`cod-repo_push`, `^`) and Refresh. With the
+  server capability `git-fetch-all` (implemented 2026-09-26), Fetch and Fetch
+  & prune both fetch every configured remote in `git remote` order, one
+  `git fetch --prune|--no-prune --no-prune-tags <remote>` each, without
+  confirmation; plain Fetch overrides `fetch.prune`, and tags are never
+  pruned. Like `git fetch --all`, `remote.<name>.skipFetchAll` remotes are
+  skipped and reported (Git's own boolean parsing). Immediately before each
+  remote's fetch the server re-reads its configuration and refuses the
+  remote (`unsafe_refspec`, the others are still fetched) when a
+  `remote.<name>.fetch` destination leaves `refs/remotes/<name>/` or its
+  namespace overlaps another remote's, compared case-insensitively
+  (`origin` and `origin/x`, `Origin` and `origin`), so only remote-tracking
+  refs are removed; a configuration change in the short window between
+  that check and Git's own read remains possible and is caught by the
+  removed-ref report below; negative refspecs and refspecs without a
+  destination are allowed. Removed refs are found by comparing all of
+  `refs/` before and after each remote's fetch (not `git fetch --porcelain`,
+  which needs Git 2.41 and would have to be separated from progress
+  output): a ref is reported when it existed before the run and not at its
+  end, under the remote whose fetch removed it, and any removed ref outside
+  `refs/remotes/` is reported separately as a safety net. A ref another
+  process deletes meanwhile is attributed to the fetch running then. The
+  server reports every remote in `GitResult.Fetches` (at most 100 pruned
+  refs each, then a count); a failed remote never hides the others
+  (`partial_fetch`, the failures' shared code, or `fetch_failed`;
+  `cancelled` names only the remotes not started; `no_remote` when none are
+  configured). An older
+  server without the capability keeps the upstream-only Fetch and Fetch &
+  prune is shown unavailable. Unavailable controls stay in place, muted, with
+  the reason in help: no upstream (upstream-only Fetch), detached HEAD, "Behind upstream · Pull first" for Push,
   a running write, or (Pull only) an agent turn holding the checkout lease.
   No "fetched \<age\>" is shown: status does not report FETCH_HEAD time.
 - **Progress and Cancel.** A running sync reads "Fetching origin… 42%",
@@ -1557,6 +1585,11 @@ fresh status. Dialog state is dropped when its menu closes.
   snapshot `GitOp.Progress`; **Cancel** appears while `GitOp.Cancellable` and
   sends `git.cancel` (a new ID; `not_running`/`not_cancellable` explained).
 - **Results** stay at the source until the next action: "Fetched origin",
+  for all remotes "Fetched origin, second · pruned origin/a, origin/b +N
+  more · broken failed: \<reason\> · cancelled slow · skipped archive
+  (skipFetchAll)" (up to 5 removed refs named; "nothing pruned" after Fetch &
+  prune; a failure is also a notice, with credential advice when any remote
+  failed for credentials),
   "Fast-forwarded \<branch\> to \<short\>", "Up to date", "Ahead of upstream
   by N", "Diverged: N ahead, M behind" with "Fetched, not integrated · merge
   or rebase explicitly" and **Compare with \<upstream\>** (the existing
@@ -1608,7 +1641,7 @@ fresh status. Dialog state is dropped when its menu closes.
 
 | Key (GIT heading controls, branch rows and their slots, commit rows) | Action |
 | --- | --- |
-| `f` / `p` / `P` | Fetch / Pull (fast-forward only) / Push confirmation |
+| `f` / `F` / `p` / `P` | Fetch / Fetch & prune (all remotes) / Pull (fast-forward only) / Push confirmation |
 | `S` on a local branch row | Switch (carry dialog when changes are listed) |
 | `b` on a branch or commit row | Create branch at its tip or commit |
 | `r` on a commit row | Soft reset confirmation |

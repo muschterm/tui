@@ -19,7 +19,7 @@ import (
 const gitWouldOverwriteShown = 8
 
 // gitHeadingBlock is the GIT heading with its glyph-only icon controls, in
-// fixed order Fetch, Pull, Push, Refresh at the right.
+// fixed order Fetch, Fetch & prune, Pull, Push, Refresh at the right.
 func (m *Model) gitHeadingBlock(key string, g *gitView) surfaceBlock {
 	row := &gitRow{kind: "heading", text: "Git"}
 	tool := func(kind, glyph, k, verb, keyHint string) *gitControl {
@@ -36,8 +36,19 @@ func (m *Model) gitHeadingBlock(key string, g *gitView) surfaceBlock {
 	if g != nil && g.status != nil {
 		remote, up = safe(singleLine(gitUpstreamRemote(g.status.Upstream))), safe(singleLine(g.status.Upstream))
 	}
+	fetchVerb := strings.TrimSpace("Fetch " + remote)
+	if m.gitFetchAllEnabled() {
+		fetchVerb = "Fetch all remotes"
+	}
+	fetch := tool(protocol.GitKindFetch, m.icon("fetch"), "git:sync:fetch", fetchVerb, "f")
+	prune := tool(protocol.GitKindFetch, m.icon("fetch-prune"), "git:sync:fetch-prune", "Fetch & prune all remotes", "F")
+	prune.action = action{Kind: "git-fetch-prune"}
+	if !m.gitFetchAllEnabled() {
+		prune.help, prune.disabled = "Fetch & prune unavailable · Needs a newer server", true
+	}
 	row.tools = []*gitControl{
-		tool(protocol.GitKindFetch, m.icon("fetch"), "git:sync:fetch", strings.TrimSpace("Fetch "+remote), "f"),
+		fetch,
+		prune,
 		tool(protocol.GitKindPull, m.icon("pull"), "git:sync:pull", strings.TrimSpace("Pull "+up)+" · fast-forward only", "p"),
 		tool(protocol.GitKindPush, m.icon("push"), "git:sync:push", strings.TrimSpace("Push to "+up), "P"),
 		{glyph: m.icon("refresh"), key: "git-refresh", help: "Refresh Git status · read-only", action: action{Kind: "git-refresh"}},
@@ -204,7 +215,7 @@ func (m *Model) gitRefResultBlocks(key string, g *gitView, st *gitWriteState) []
 		}
 		b = append(b, button(verb, m.icon("refresh"), "git:review", action{Kind: "git-review"}))
 	}
-	if gitCredentialCode(code) {
+	if gitCredentialCode(code) || (r != nil && gitFetchCredentialFailure(r)) {
 		b = append(b, text(gitCredentialAdvice, p.muted))
 	}
 	if r != nil && (code == "would_overwrite" || code == "partial_switch") && (len(r.Paths) > 0 || r.PathsIncomplete) {

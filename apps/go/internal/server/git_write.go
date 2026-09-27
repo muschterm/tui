@@ -1301,6 +1301,9 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 	case protocol.GitKindResetSoft:
 		return prepareResetSoft(ctx, g, w, *c.Git.Ref)
 	case protocol.GitKindFetch:
+		if c.Git.Sync.All {
+			return prepareFetchAll(ctx, g, w, *c.Git.Sync)
+		}
 		return prepareFetch(ctx, g, w, *c.Git.Sync)
 	case protocol.GitKindPull:
 		return preparePull(ctx, g, w, *c.Git.Sync)

@@ -489,3 +489,233 @@ func TestGitRemoteHelpers(t *testing.T) {
 		}
 	}
 }
+
+func TestGitFetchAllRemotesAndPrune(t *testing.T) {
+	r := remoteSetup(t)
+	e, git := r.e, r.git
+	// A second remote with its own branch, and a remote that cannot be read.
+	second := filepath.Join(t.TempDir(), "second.git")
+	gitIn(t, r.root, "init", "-q", "--bare", second)
+	git("push", "-q", second, "main:side")
+	git("remote", "add", "second", second)
+	git("remote", "add", "broken", filepath.Join(t.TempDir(), "missing.git"))
+	r.other("push", "-q", "origin", "main:topic")
+	git("fetch", "-q", "origin")
+	gitIn(t, r.bare, "update-ref", "-d", "refs/heads/topic")
+	// Plain Fetch never prunes, even with fetch.prune configured.
+	git("config", "fetch.prune", "true")
+	res := mustGit(t, e, client.GitFetchAllCommand("all-1", gitTarget, false), protocol.GitStateFailed)
+	if res.Git.Code != "partial_fetch" || len(res.Git.Fetches) != 3 {
+		t.Fatalf("fetch all: %+v", res.Git)
+	}
+	byRemote := func(res protocol.Receipt) map[string]protocol.GitFetchResult {
+		m := map[string]protocol.GitFetchResult{}
+		for _, f := range res.Git.Fetches {
+			m[f.Remote] = f
+		}
+		return m
+	}
+	got := byRemote(res)
+	if got["origin"].State != protocol.GitFetchSucceeded || got["second"].State != protocol.GitFetchSucceeded || got["broken"].State != protocol.GitFetchFailed || got["broken"].Code == "" || got["broken"].Message == "" {
+		t.Fatalf("per remote: %+v", res.Git.Fetches)
+	}
+	if len(got["origin"].Pruned) != 0 || git("rev-parse", "--verify", "-q", "refs/remotes/origin/topic") == "" || git("rev-parse", "--verify", "-q", "refs/remotes/second/side") == "" {
+		t.Fatalf("plain fetch pruned or missed refs: %+v", res.Git.Fetches)
+	}
+	if res.Git.Fetch == nil || res.Git.Fetch.Remote != "origin" || res.Git.Fetch.Upstream != "origin/main" || res.Git.Fetch.UpstreamAfter == "" {
+		t.Fatalf("upstream fetch: %+v", res.Git.Fetch)
+	}
+	// Fetch & prune removes origin/topic and reports it; the broken remote
+	// still fails beside it.
+	res = mustGit(t, e, client.GitFetchAllCommand("all-2", gitTarget, true), protocol.GitStateFailed)
+	got = byRemote(res)
+	if !slices.Equal(got["origin"].Pruned, []string{"origin/topic"}) || len(got["second"].Pruned) != 0 || got["broken"].State != protocol.GitFetchFailed {
+		t.Fatalf("prune: %+v", res.Git.Fetches)
+	}
+	if out, err := gitRun(r.root, "for-each-ref", "refs/remotes/origin/topic"); err != nil || out != "" {
+		t.Fatalf("origin/topic still present: %q %v", out, err)
+	}
+	// Nothing to prune, every remote reachable.
+	git("remote", "remove", "broken")
+	res = mustGit(t, e, client.GitFetchAllCommand("all-3", gitTarget, true), protocol.GitStateSucceeded)
+	for _, f := range res.Git.Fetches {
+		if f.State != protocol.GitFetchSucceeded || len(f.Pruned) != 0 || f.PrunedMore != 0 {
+			t.Fatalf("nothing to prune: %+v", res.Git.Fetches)
+		}
+	}
+	// Only one remote, failing: its own code.
+	git("remote", "remove", "second")
+	git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	res = mustGit(t, e, client.GitFetchAllCommand("all-4", gitTarget, false), protocol.GitStateFailed)
+	if res.Git.Code != "transport" || len(res.Git.Fetches) != 1 {
+		t.Fatalf("single failing remote: %+v", res.Git)
+	}
+	// Shapes.
+	bad := client.GitFetchAllCommand("all-bad", gitTarget, true)
+	bad.Git.Sync.Remote = "origin"
+	if _, err := e.command(bad); err == nil {
+		t.Fatal("all with a remote accepted")
+	}
+	bad = client.GitFetchCommand("prune-bad", gitTarget, "origin")
+	bad.Git.Sync.Prune = true
+	if _, err := e.command(bad); err == nil {
+		t.Fatal("prune without all accepted")
+	}
+	git("remote", "remove", "origin")
+	if _, err := e.command(client.GitFetchAllCommand("all-none", gitTarget, false)); err == nil || !strings.Contains(err.Error(), "no remotes") {
+		t.Fatalf("no remotes: %v", err)
+	}
+}
+
+func TestGitFetchAllSafety(t *testing.T) {
+	r := remoteSetup(t)
+	e, git := r.e, r.git
+	fetches := func(res protocol.Receipt) map[string]protocol.GitFetchResult {
+		m := map[string]protocol.GitFetchResult{}
+		for _, f := range res.Git.Fetches {
+			m[f.Remote] = f
+		}
+		return m
+	}
+	has := func(ref string) bool {
+		out, _ := gitRun(r.root, "for-each-ref", ref)
+		return out != ""
+	}
+	// fetch.pruneTags would delete local tags with --prune; it is overridden.
+	git("tag", "local-only")
+	git("config", "fetch.pruneTags", "true")
+	git("config", "remote.origin.pruneTags", "true")
+	mustGit(t, e, client.GitFetchAllCommand("tags", gitTarget, true), protocol.GitStateSucceeded)
+	if !has("refs/tags/local-only") {
+		t.Fatal("Fetch & prune deleted a local tag")
+	}
+
+	// A remote whose refspec writes into refs/heads/ is refused; the others
+	// are still fetched, and no local branch is deleted.
+	mirror := filepath.Join(t.TempDir(), "mirror.git")
+	gitIn(t, r.root, "init", "-q", "--bare", mirror)
+	git("push", "-q", mirror, "main")
+	git("remote", "add", "mirror", mirror)
+	git("config", "--replace-all", "remote.mirror.fetch", "+refs/heads/*:refs/heads/*")
+	git("branch", "keepme")
+	r.other("push", "-q", "origin", "main:topic")
+	git("fetch", "-q", "origin")
+	gitIn(t, r.bare, "update-ref", "-d", "refs/heads/topic")
+	res := mustGit(t, e, client.GitFetchAllCommand("unsafe", gitTarget, true), protocol.GitStateFailed)
+	got := fetches(res)
+	if res.Git.Code != "partial_fetch" || got["mirror"].Code != "unsafe_refspec" || got["mirror"].Message == "" || !slices.Equal(got["origin"].Pruned, []string{"origin/topic"}) {
+		t.Fatalf("unsafe refspec: %+v", res.Git.Fetches)
+	}
+	if !has("refs/heads/keepme") {
+		t.Fatal("a local branch was deleted")
+	}
+	// A negative refspec and one without destination are safe.
+	git("config", "--replace-all", "remote.mirror.fetch", "+refs/heads/*:refs/remotes/mirror/*")
+	git("config", "--add", "remote.mirror.fetch", "^refs/heads/skip")
+	git("config", "--add", "remote.mirror.fetch", "refs/heads/main")
+	res = mustGit(t, e, client.GitFetchAllCommand("negative", gitTarget, true), protocol.GitStateSucceeded)
+	if fetches(res)["mirror"].State != protocol.GitFetchSucceeded {
+		t.Fatalf("safe refspecs: %+v", res.Git.Fetches)
+	}
+
+	// Overlapping namespaces: origin and origin/x are both refused.
+	git("config", "remote.origin/x.url", mirror)
+	git("config", "remote.origin/x.fetch", "+refs/heads/*:refs/remotes/origin/x/*")
+	res = mustGit(t, e, client.GitFetchAllCommand("overlap", gitTarget, true), protocol.GitStateFailed)
+	got = fetches(res)
+	if got["origin"].Code != "unsafe_refspec" || got["origin/x"].Code != "unsafe_refspec" || got["mirror"].State != protocol.GitFetchSucceeded || len(got["origin"].Pruned) != 0 {
+		t.Fatalf("overlap: %+v", res.Git.Fetches)
+	}
+	if res.Git.Fetch == nil || res.Git.Fetch.Remote != "origin" || res.Git.Fetch.State != protocol.GitFetchFailed {
+		t.Fatalf("upstream entry copied whatever its state: %+v", res.Git.Fetch)
+	}
+	git("config", "--remove-section", "remote.origin/x")
+	// Namespaces differing only in case overlap on case-insensitive
+	// filesystems: both are refused.
+	git("config", "remote.Origin.url", mirror)
+	git("config", "remote.Origin.fetch", "+refs/heads/*:refs/remotes/Origin/*")
+	res = mustGit(t, e, client.GitFetchAllCommand("case", gitTarget, false), protocol.GitStateFailed)
+	if got = fetches(res); got["origin"].Code != "unsafe_refspec" || got["Origin"].Code != "unsafe_refspec" || got["mirror"].State != protocol.GitFetchSucceeded {
+		t.Fatalf("case overlap: %+v", res.Git.Fetches)
+	}
+	git("config", "--remove-section", "remote.Origin")
+
+	// skipFetchAll is honoured and reported.
+	// Git's boolean rules: 2 is true.
+	git("config", "remote.mirror.skipFetchAll", "2")
+	res = mustGit(t, e, client.GitFetchAllCommand("skip", gitTarget, false), protocol.GitStateSucceeded)
+	if f := fetches(res)["mirror"]; f.State != protocol.GitFetchSkipped || f.Message == "" {
+		t.Fatalf("skip: %+v", res.Git.Fetches)
+	}
+
+	// An invalid remote name is refused on its own.
+	git("config", "remote.-bad.url", mirror)
+	res = mustGit(t, e, client.GitFetchAllCommand("badname", gitTarget, false), protocol.GitStateFailed)
+	if got = fetches(res); got["-bad"].Code != "not_supported" || got["origin"].State != protocol.GitFetchSucceeded || res.Git.Code != "partial_fetch" {
+		t.Fatalf("bad name: %+v", res.Git.Fetches)
+	}
+	git("config", "--remove-section", "remote.-bad")
+
+	// Different failure codes with nothing fetched: fetch_failed.
+	git("config", "--unset", "remote.mirror.skipFetchAll")
+	git("config", "--replace-all", "remote.mirror.fetch", "+refs/heads/*:refs/heads/*")
+	git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	res = mustGit(t, e, client.GitFetchAllCommand("mixed", gitTarget, false), protocol.GitStateFailed)
+	if res.Git.Code != "fetch_failed" {
+		t.Fatalf("mixed codes: %+v", res.Git)
+	}
+	git("remote", "set-url", "origin", r.bare)
+	git("remote", "remove", "mirror")
+
+	// A refspec changed during the run is refused: the first remote's
+	// transport rewrites the next remote's refspec before failing.
+	git("config", "protocol.ssh.allow", "always")
+	git("config", "core.sshCommand", script(t, "git -C '"+r.root+"' config remote.zz.fetch '+refs/heads/*:refs/heads/*'\nexit 255\n"))
+	git("remote", "add", "aaa", "ssh://git@example.invalid/repo.git")
+	git("remote", "add", "zz", r.bare)
+	git("branch", "-f", "keepme2")
+	res = mustGit(t, e, client.GitFetchAllCommand("midrun", gitTarget, true), protocol.GitStateFailed)
+	if got = fetches(res); got["zz"].Code != "unsafe_refspec" || !has("refs/heads/keepme2") {
+		t.Fatalf("mid-run refspec change: %+v", res.Git.Fetches)
+	}
+	git("remote", "remove", "aaa")
+	git("remote", "remove", "zz")
+
+	// Cancel mid-run: earlier remotes keep their outcome, the running one is
+	// cancelled and only later ones are listed as not started.
+	git("remote", "add", "broken", filepath.Join(t.TempDir(), "missing.git"))
+	git("config", "protocol.ssh.allow", "always")
+	started := filepath.Join(t.TempDir(), "slow-started")
+	git("config", "core.sshCommand", script(t, "touch '"+started+"'\nexec sleep 30\n"))
+	git("remote", "add", "slow", "ssh://git@example.invalid/repo.git")
+	git("remote", "add", "zlast", r.bare)
+	done := make(chan protocol.Receipt, 1)
+	go func() {
+		rec, err := e.command(client.GitFetchAllCommand("all-cancel", gitTarget, true))
+		if err != nil {
+			t.Error(err)
+		}
+		done <- rec
+	}()
+	waitFor(t, e, "cancellable fetch", func(s protocol.Snapshot) bool {
+		return len(s.GitOps) > 0 && s.GitOps[len(s.GitOps)-1].CommandID == "all-cancel" && s.GitOps[len(s.GitOps)-1].State == protocol.GitStateRunning && s.GitOps[len(s.GitOps)-1].Cancellable
+	})
+	// Wait until the slow remote is the one running.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := e.command(client.GitCancelCommand("cancel-all", "all-cancel")); err != nil {
+		t.Fatal(err)
+	}
+	res = <-done
+	got = fetches(res)
+	if res.Git.Code != "cancelled" || got["origin"].State != protocol.GitFetchSucceeded || got["broken"].State != protocol.GitFetchFailed ||
+		got["slow"].State != protocol.GitFetchCancelled || got["zlast"].State != protocol.GitFetchCancelled ||
+		!strings.Contains(res.Git.Message, "not started: zlast") || strings.Contains(res.Git.Message, "broken") {
+		t.Fatalf("cancel: %+v %+v", res.Git, res.Git.Fetches)
+	}
+}
