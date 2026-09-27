@@ -96,7 +96,7 @@ and built-in ACP bridges for installed Claude and Codex CLIs.`,
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return &usageError{command: cmd, err: err}
 	})
-	root.AddCommand(newServerCommand(opts), newSnapshotCommand(opts), newProbeCommand(), newVersionCommand())
+	root.AddCommand(newServerCommand(opts), newSnapshotCommand(opts), newProbeCommand(), newVersionCommand(), newRebaseHelperCommand())
 	return root
 }
 

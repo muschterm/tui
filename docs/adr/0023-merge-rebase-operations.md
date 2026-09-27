@@ -8,6 +8,12 @@ status: accepted (user decisions 2026-09-25); partly superseded 2026-09-26
 > [git-client.md, Pull and integration](../design/git-client.md#pull-and-integration)
 > and the [2026-09-26 handoff](../implementation/handoff-2026-09-26.md).
 > A new ADR records the implementation; everything else here stands.
+> [ADR 0026](0026-interactive-rebase.md) (2026-09-26) records it: an
+> application interactive rebase is started from a plan
+> (`GitIntegrate.Interactive`), its edit, break and message stops are
+> continued here rather than in a terminal, and ranges with merge commits
+> are flattened after an acknowledgement. The non-interactive `git.rebase`
+> below and external rebases are unchanged.
 
 # Merge and rebase operations
 

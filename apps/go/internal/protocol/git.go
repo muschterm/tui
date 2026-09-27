@@ -289,10 +289,14 @@ type GitOperationState struct {
 	// remove or write into; their content can be neither listed nor backed
 	// up, so those commands are refused (not_supported; resolve in a
 	// terminal).
-	AbortDropsCount       int      `json:"abort_drops_count,omitempty"`
-	AbortDropsIncomplete  bool     `json:"abort_drops_incomplete,omitempty"`
-	AbortDropsFingerprint string   `json:"abort_drops_fingerprint,omitempty"`
-	NestedInTheWay        []string `json:"nested_in_the_way,omitempty"`
+	AbortDropsCount       int    `json:"abort_drops_count,omitempty"`
+	AbortDropsIncomplete  bool   `json:"abort_drops_incomplete,omitempty"`
+	AbortDropsFingerprint string `json:"abort_drops_fingerprint,omitempty"`
+	// AbortDropsAtLeast (additive, ADR 0026) reports that AbortDropsCount
+	// is a lower bound: an interactive rebase's commits beyond what could
+	// be walked (its HEAD left the stop's history); show "at least N".
+	AbortDropsAtLeast bool     `json:"abort_drops_at_least,omitempty"`
+	NestedInTheWay    []string `json:"nested_in_the_way,omitempty"`
 	// Additive (fifth review). NestedOnAbort, NestedOnSkip and
 	// NestedOnContinue split NestedInTheWay (now their union) by command, so
 	// only the command that would remove the nested repository is refused;
@@ -338,6 +342,10 @@ type GitOperationState struct {
 	// AgentChanges (additive, S4 gate) is set while a resolution job's
 	// baseline is recorded for this operation (also after the job ended).
 	AgentChanges *GitAgentChanges `json:"agent_changes,omitempty"`
+	// Interactive (additive, ADR 0026) is the todo progress of a
+	// merge-backend rebase and, for an application interactive rebase,
+	// the classified stop.
+	Interactive *GitRebaseProgress `json:"interactive,omitempty"`
 }
 
 // GitOperationBackup is the copy the server makes immediately before an

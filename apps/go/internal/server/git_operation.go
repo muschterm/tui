@@ -86,7 +86,7 @@ func operationKindPolicy(kind string, k gitKind) gitKind {
 
 func gitOperationKind(kind string) bool {
 	switch kind {
-	case protocol.GitKindMerge, protocol.GitKindRebase, protocol.GitKindOperationAbort, protocol.GitKindOperationContinue, protocol.GitKindOperationSkip:
+	case protocol.GitKindMerge, protocol.GitKindRebase, protocol.GitKindOperationAbort, protocol.GitKindOperationContinue, protocol.GitKindOperationSkip, protocol.GitKindOperationCommit:
 		return true
 	}
 	return false
@@ -112,6 +112,9 @@ func validateGitOperationWrite(kind string, w *protocol.GitWrite) error {
 		i := w.Integrate
 		if i == nil || w.Operation != nil {
 			return failure("invalid", kind+" carries its payload in Git.Integrate")
+		}
+		if i.Interactive != nil {
+			return validateRebaseInteractive(kind, i)
 		}
 		// An empty expected branch (detached HEAD) is refused by prepare
 		// with detached, so the client learns why.
@@ -143,6 +146,12 @@ func validateGitOperationWrite(kind string, w *protocol.GitWrite) error {
 		}
 		if !managedOperation(o.Kind) {
 			return failure("invalid", "kind must be merge, rebase, cherry-pick or revert")
+		}
+		if kind == protocol.GitKindOperationCommit {
+			return validateOperationCommit(o)
+		}
+		if o.Message != "" && (kind != protocol.GitKindOperationContinue || !protocol.ValidRebaseMessage(o.Message)) {
+			return failure("invalid", "message applies only to continue and must be UTF-8 text up to 64 KiB")
 		}
 		if !o.Confirmed {
 			return failure("confirmation_required", "confirm this "+o.Kind+" action first")
@@ -350,6 +359,12 @@ func observeOperationMode(ctx context.Context, g *gitReader, gitDir string, full
 		}
 		if !apply {
 			st.StopReason = interactiveStop(dir)
+			st.Interactive = rebaseProgress(dir)
+			if a := st.Interactive.Amend; a != "" {
+				if out, _, err := g.read(ctx, 4096, "rev-parse", "--verify", "--quiet", a+"^1"); err == nil && gitFullHash.MatchString(strings.TrimSpace(string(out))) {
+					st.Interactive.AmendParent = strings.TrimSpace(string(out))
+				}
+			}
 		}
 	case protocol.GitOperationCherryPick:
 		st.OrigHead, current = head.oid, stateOid(gitDir, "CHERRY_PICK_HEAD")
@@ -378,6 +393,11 @@ func observeOperationMode(ctx context.Context, g *gitReader, gitDir string, full
 		if err := readConflicts(ctx, g, &st); err != nil {
 			return st, nil, err
 		}
+	}
+	if st.StopReason != "" && st.UnmergedFingerprint != "" && current != "" {
+		// A conflict at an edit, reword or squash step is stopped at the
+		// commit being applied, not after it.
+		st.Current = &protocol.GitOperationCommit{Oid: current, Label: shortOid(current), Subject: commitSubject(ctx, g, current)}
 	}
 	st.Attempt = attemptID(gitDir, st.Kind)
 	if full && managedOperation(st.Kind) {
@@ -607,6 +627,7 @@ func annotateOperation(st *protocol.GitOperationState, rec *protocol.GitOperatio
 		if rec.Target.Label != "" && st.Target != nil {
 			st.Target.Label = rec.Target.Label
 		}
+		annotateInteractive(st, rec)
 	}
 	st.Sides = operationSides(*st)
 	for i := range st.Conflicts {
@@ -687,6 +708,11 @@ func gitOperationActive(state string) bool {
 // recordMatches reports whether the observed operation is the recorded one:
 // same kind and target and, for a rebase, the same original head.
 func recordMatches(rec protocol.GitOperationRecord, st protocol.GitOperationState) bool {
+	if rec.Kind == protocol.GitOperationRebase && rec.Target.Oid == "" && rec.Interactive != nil && rec.Interactive.Root && st.Kind == rec.Kind && st.Target != nil {
+		// A --root rebase without onto replays onto a root commit Git
+		// creates; until the record learned it, the original head decides.
+		return st.OrigHead == rec.OrigHead
+	}
 	if rec.Kind != st.Kind || st.Target == nil || st.Target.Oid != rec.Target.Oid {
 		return false
 	}
@@ -754,17 +780,21 @@ func reconcileRecord(rec *protocol.GitOperationRecord, st protocol.GitOperationS
 		endRecord(rec, protocol.GitOperationEndedExternal, "", gitOperationEndedMessage, now)
 		return true
 	}
+	learned := false
+	if rec.Target.Oid == "" && st.Target != nil {
+		rec.Target.Oid, rec.Target.Subject, learned = st.Target.Oid, st.Target.Subject, true
+	}
 	switch rec.State {
 	case protocol.GitOperationAgentRunning, protocol.GitOperationAgentReview, protocol.GitOperationAgentInterrupted:
 		// Reserved for agent resolution, which owns these transitions.
-		return false
+		return learned
 	}
 	want := protocol.GitOperationReady
 	if st.UnmergedFingerprint != "" {
 		want = protocol.GitOperationStoppedConflicts
 	}
 	if rec.State == want {
-		return false
+		return learned
 	}
 	rec.State, rec.UpdatedAt = want, now
 	if rec.Code == "interrupted" {
@@ -990,6 +1020,14 @@ func (e *engine) operationState(ctx context.Context, dir string, refresh bool) (
 	}
 	e.attachOperation(&st, top, seq)
 	e.mu.Lock()
+	sweep := e.gitLocked().sweepPlans
+	e.gitLocked().sweepPlans = false
+	e.mu.Unlock()
+	if sweep {
+		e.sweepRebasePlans()
+	}
+	e.fillStepMessage(ctx, &st, top)
+	e.mu.Lock()
 	in := e.jobInputLocked(top)
 	e.mu.Unlock()
 	if in != nil && st.Kind != "" {
@@ -1049,9 +1087,17 @@ func (e *engine) attachOperation(st *protocol.GitOperationState, top string, seq
 		busy = busy || h.top == top
 	}
 	rec := gitOperationFor(&e.snap, top)
+	if rec != nil && !busy && !e.stopping && gitOperationActive(rec.State) && rec.State != protocol.GitOperationRunning && recordMatches(*rec, *st) && recordStopSnapshot(rec, st, true, false) {
+		// No command of this server observed the stop when Git made it.
+		e.snap.Revision++
+		e.flushLocked()
+	}
 	if rec != nil && !busy && !e.stopping && reconcileRecord(rec, *st, time.Now().UTC().Format(time.RFC3339)) {
 		e.snap.Revision++
 		e.flushLocked()
+		if rec.Interactive != nil && !gitOperationActive(rec.State) {
+			e.gitLocked().sweepPlans = true // the rebase ended outside the application
+		}
 	}
 	e.rebalanceWritersAndFlushLocked()
 	annotateOperation(st, gitOperationFor(&e.snap, top))
@@ -1266,11 +1312,11 @@ func checkTrackedClean(ctx context.Context, g *gitReader) error {
 // gitWrittenPathsMax bounds the paths a start checks before Git runs.
 const gitWrittenPathsMax = 20000
 
-// operationPaths lists the paths a merge or rebase writes: every path that
-// differs between HEAD and the target and, for a rebase, every path a
-// replayed commit changes. added holds the paths such a change adds;
-// complete is false when there were too many to list.
-func operationPaths(ctx context.Context, g *gitReader, head, target string, rebase bool) (written map[string]bool, added []string, complete bool, err error) {
+// operationPathsRange lists the paths a merge or rebase writes: every path
+// that differs between HEAD and the target and every path a commit of
+// logRange (a log range; nil for a merge) changes. added holds the paths
+// such a change adds; complete is false when there were too many to list.
+func operationPathsRange(ctx context.Context, g *gitReader, head, target string, logRange []string) (written map[string]bool, added []string, complete bool, err error) {
 	written, complete = map[string]bool{}, true
 	isAdded := map[string]bool{}
 	add := func(args ...string) error {
@@ -1307,8 +1353,8 @@ func operationPaths(ctx context.Context, g *gitReader, head, target string, reba
 	if err := add("diff-tree", "-r", "-z", "--name-status", "--no-renames", head, target); err != nil {
 		return nil, nil, false, err
 	}
-	if rebase {
-		if err := add("log", "-z", "--format=", "--name-status", "--no-renames", head, "^"+target, "--"); err != nil {
+	if logRange != nil {
+		if err := add(append(append([]string{"log", "-z", "--format=", "--name-status", "--no-renames"}, logRange...), "--")...); err != nil {
 			return nil, nil, false, err
 		}
 	}
@@ -1359,7 +1405,17 @@ func blockingAncestor(top, p string) string {
 //     only by a tracked file that the operation itself replaces (file to
 //     directory) is not in the way.
 func checkWrittenPaths(ctx context.Context, g *gitReader, head, target string, rebase bool) error {
-	written, added, complete, err := operationPaths(ctx, g, head, target, rebase)
+	var logRange []string
+	if rebase {
+		logRange = []string{head, "^" + target}
+	}
+	return checkWrittenPathsRange(ctx, g, head, target, logRange)
+}
+
+// checkWrittenPathsRange is checkWrittenPaths with the replayed commits
+// given as a log range (nil for none).
+func checkWrittenPathsRange(ctx context.Context, g *gitReader, head, target string, logRange []string) error {
+	written, added, complete, err := operationPathsRange(ctx, g, head, target, logRange)
 	if err != nil {
 		return err
 	}
@@ -1559,6 +1615,10 @@ func operationJournal(c protocol.Command, top string, observed protocol.GitOpera
 		if res.Operation != nil && rec.JobBaseline != nil && operationLeftStop(res.Operation, rec.JobBaseline.StopKey) {
 			rec.JobBaseline, rec.JobDecisions = nil, nil
 		}
+		recordRebaseFailure(rec, res)
+		recordStopCommits(rec, res)
+		recordStopSnapshot(rec, operationStateOf(res), false, c.Kind == protocol.GitKindOperationContinue || c.Kind == protocol.GitKindOperationSkip)
+		recordEditStop(rec, res)
 		applyOperationResult(rec, res, previous, now)
 		if res.Operation != nil && res.Operation.State != nil {
 			annotateOperation(res.Operation.State, rec)
@@ -1614,12 +1674,30 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 	case st.HeadOid != req.ExpectedHead:
 		return nil, failure("stale_head", "HEAD moved since the operation was read; refresh and review again")
 	}
+	// An application interactive rebase (git_rebase.go) also continues at
+	// edit, break and message stops, and skips at conflicts of any step.
+	ir := w.interactiveRun(st)
+	if ir != nil {
+		applyEditStop(&st, &ir.rec)
+		fillAbortDrops(&st, &ir.rec)
+	}
+	if ir == nil && req.Message != "" {
+		return nil, failure("invalid", "a message applies only to an application interactive rebase")
+	}
+	pending := func(s protocol.GitOperationState) error {
+		if ir != nil {
+			s = pinnedRefs(s, &ir.rec)
+		}
+		return checkPending(s)
+	}
+	// Skip also drops a commit that became empty at a reword or edit step.
+	irConflict := ir != nil && (st.UnmergedFingerprint != "" || factsOf(st, &ir.rec).empty)
 	verb := "abort"
 	switch c.Kind {
 	case protocol.GitKindOperationContinue:
 		verb = "continue"
 		switch {
-		case st.StopReason != "":
+		case st.StopReason != "" && ir == nil:
 			return nil, failure("not_supported", "the rebase stopped for an interactive step ("+st.StopReason+"); continue it in a terminal")
 		case st.Step != req.ExpectedStep:
 			return nil, failure("stale_operation", "the operation moved on since it was read; refresh")
@@ -1638,8 +1716,13 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		case st.MarkersIncomplete && !req.AcknowledgeMarkersIncomplete:
 			return nil, failure("markers_incomplete", "not every staged file could be checked for conflict markers; review them, then confirm continuing without a complete check")
 		}
-		if err := checkPending(st); err != nil {
+		if err := pending(st); err != nil {
 			return nil, err
+		}
+		if ir != nil {
+			if err := ir.checkContinue(st, req); err != nil {
+				return nil, err
+			}
 		}
 		if err := refuseAgentChanges(ctx, g, w, st, req.AcknowledgeAgentChanges); err != nil {
 			return nil, err
@@ -1650,8 +1733,10 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 	case protocol.GitKindOperationSkip:
 		verb = "skip"
 		switch {
-		case st.StopReason != "":
+		case st.StopReason != "" && !irConflict:
 			return nil, failure("not_supported", "the rebase stopped for an interactive step ("+st.StopReason+"), not at a conflicting commit; use a terminal")
+		case ir != nil && ir.missing:
+			return nil, failure("plan_missing", "the stored plan of this rebase is missing from the application home; skip in a terminal, or abort")
 		case st.Current == nil:
 			return nil, failure("not_stopped", "the rebase is not stopped at a commit")
 		case st.Step != req.ExpectedStep || st.Current.Oid != req.SkipOid:
@@ -1663,7 +1748,7 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		if err := checkDiscards(st, req, st.DiscardsOnSkip, st.DiscardsOnSkipIncomplete, "skip"); err != nil {
 			return nil, err
 		}
-		if err := checkPending(st); err != nil {
+		if err := pending(st); err != nil {
 			return nil, err
 		}
 		// Skip is not gated on agent changes: it resets the index to the
@@ -1709,6 +1794,10 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		}
 		// Last look: saving documents or another process may have moved it.
 		again, againLists, err := observeOperationLists(ctx, g, w.gitDir)
+		if ir != nil && err == nil {
+			applyEditStop(&again, &ir.rec)
+			fillAbortDrops(&again, &ir.rec)
+		}
 		switch {
 		case err != nil:
 			op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, "unavailable", "the operation could not be read; nothing was changed", nil)
@@ -1729,8 +1818,8 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 		case again.AbortDropsFingerprint != st.AbortDropsFingerprint:
 			op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, "stale_operation", "the commits the abort would drop changed after review; nothing was changed", nil)
 			return res
-		case c.Kind != protocol.GitKindOperationAbort && checkPending(again) != nil:
-			pe := checkPending(again).(*protocol.Error)
+		case c.Kind != protocol.GitKindOperationAbort && pending(again) != nil:
+			pe := pending(again).(*protocol.Error)
 			op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, pe.Code, pe.Message+"; nothing was changed", nil)
 			return res
 		}
@@ -1801,10 +1890,90 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 			}()
 		}
 		args := append(append([]string{}, operationArgs...), st.Kind, "--"+verb)
-		run := w.runWith(ctx, gitRunOpts{combined: true, cMessages: true}, args...)
+		var run gitRunResult
+		var failCode, failHook, failDetail string
+		switch {
+		case ir != nil && c.Kind != protocol.GitKindOperationAbort:
+			var pre *gitRunResult
+			message := req.Message
+			if c.Kind == protocol.GitKindOperationContinue {
+				// Saved documents may have changed files since review.
+				if err := ir.checkContinue(again, req); err != nil {
+					pe, _ := err.(*protocol.Error)
+					op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, pe.Code, pe.Message+"; nothing was changed", nil)
+					return res
+				}
+				if r, handled := ir.stopForEdit(ctx, g, w, again, req, op); handled {
+					res = r
+					ir.fillResultMessage(ctx, g, op.State)
+					return res
+				}
+				made, consumed, failed, commit := ir.preContinue(ctx, g, w, again, req)
+				op.StopCommits, pre = made, commit
+				if failed != nil {
+					op.Outcome, res = protocol.GitOutcomeUnchanged, *failed
+					return res
+				}
+				if pre != nil && pre.err != nil {
+					// The commit before the continue failed: the rebase stays
+					// at this stop, with the failure reported for it.
+					op.Outcome, res = protocol.GitOutcomeUnchanged, failedGit("commit_failed", "the commit at this stop was not made, so the rebase did not continue", pre.output)
+					if code, hook, detail := ir.failure(*pre); code != "" {
+						res.Code, res.Message = code, "the commit at this stop was not made ("+failureText(code, hook, detail)+"), so the rebase did not continue"
+						if now, err := w.observe(ctx, g); err == nil && now.Interactive != nil {
+							now.Interactive.Failure, now.Interactive.Hook, now.Interactive.Detail = code, hook, detail
+							op.State = &now
+						}
+					}
+					return res
+				}
+				if consumed {
+					message = ""
+				}
+			}
+			stepMessage, err := ir.stepMessage(ctx, g, again, message)
+			if err == nil {
+				err = ir.writeOverride(again, stepMessage)
+			}
+			if err != nil {
+				op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, "storage", "the step's message could not be prepared for Git's editor helper ("+err.Error()+"); the rebase did not continue", nil)
+				if pre != nil {
+					op.Outcome, res.State = protocol.GitOutcomeUnknown, protocol.GitStateOutcomeUnknown
+				}
+				return res
+			}
+			run = ir.runGit(ctx, w, continueArgs(verb)...)
+			failCode, failHook, failDetail = ir.failure(run)
+			_ = os.Remove(filepath.Join(ir.dir, rebaseOverrideName))
+			if pre != nil {
+				// The output of the commit made first leads.
+				pre.output.Write(run.output.bytes())
+				run.output = pre.output
+			}
+		case ir != nil:
+			// Whatever the rebase made so far stays reachable from a ref.
+			ref := ir.backupRef()
+			if keep := w.runWith(ctx, gitRunOpts{combined: true, cMessages: true}, "update-ref", "-m", "tui-go: interactive rebase aborted", ref, again.HeadOid); keep.err != nil {
+				op.Outcome, res = protocol.GitOutcomeUnchanged, failedGit("backup_incomplete", "the rebase's commits could not be kept at "+ref+"; nothing was aborted", keep.output)
+				return res
+			}
+			op.BackupRef = ref
+			extra, err := ir.keepListedCommits(ctx, g, w, again)
+			op.BackupRefs = extra
+			if err != nil {
+				op.Outcome, res = protocol.GitOutcomeUnchanged, gitResult(protocol.GitStateFailed, "backup_incomplete", err.Error()+"; nothing was aborted", nil)
+				return res
+			}
+			run = w.runWith(ctx, gitRunOpts{combined: true, cMessages: true}, args...)
+		default:
+			run = w.runWith(ctx, gitRunOpts{combined: true, cMessages: true}, args...)
+		}
 		vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitRequestBudget)
 		defer cancel()
 		after, err := w.observe(vctx, g)
+		if ir != nil && err == nil && after.Kind == "" {
+			ir.remove()
+		}
 		if err != nil {
 			op.Outcome, res = protocol.GitOutcomeUnknown, gitResult(protocol.GitStateOutcomeUnknown, "git_failed", "the result could not be read; refresh", run.output)
 			return res
@@ -1815,6 +1984,9 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 			case after.Kind == "":
 				op.Outcome = protocol.GitOutcomeAborted
 				res = gitResult(protocol.GitStateSucceeded, "", "Aborted the "+st.Kind+"; HEAD is at "+shortOid(after.HeadOid), run.output)
+				if op.BackupRef != "" {
+					res.Message += "; what the rebase made is kept at " + strings.Join(append([]string{op.BackupRef}, op.BackupRefs...), ", ")
+				}
 				if run.err != nil {
 					res.Code = "hook_failed"
 				}
@@ -1835,15 +2007,30 @@ func prepareOperationCommand(ctx context.Context, g *gitReader, w *gitWriter, c 
 				copied := after
 				op.State = &copied
 			}
+			if ir != nil && op.Outcome == protocol.GitOutcomeAborted {
+				if moved := ir.checkAbortRefs(vctx, g); len(moved) > 0 {
+					res.Code = "abort_refs_moved"
+					res.Message += "; these branches are not where they were before the rebase: " + listPaths(moved) + "; review them"
+				}
+			}
 			res.Commit = after.HeadOid
 			return res
 		}
 		operationOutcome(&res, op, st, after, run, verb)
+		if ir != nil && op.State != nil {
+			ir.refineFacts(vctx, g, op.State, op.StopCommits)
+			ir.afterStop(vctx, g, w, &res, op, failCode, failHook, failDetail)
+			ir.fillResultMessage(vctx, g, op.State)
+			if op.State.Interactive != nil && op.State.Interactive.Failure != "" && sameStop(st, *op.State) {
+				op.Outcome = protocol.GitOutcomeUnchanged
+				res.State = protocol.GitStateFailed
+			}
+		}
 		if c.Kind == protocol.GitKindOperationSkip && op.Outcome != protocol.GitOutcomeUnchanged {
 			op.Skipped = skipped
 		}
 		if op.Outcome == protocol.GitOutcomeStoppedConflicts {
-			_ = w.ensureConflictCopy(vctx, p, after, op) // best effort; conflict commands retry
+			_ = w.ensureConflictCopy(vctx, p, *op.State, op) // best effort; conflict commands retry
 		}
 		return res
 	}
@@ -1893,6 +2080,9 @@ func mergeMessage(req protocol.GitIntegrate, label string) string {
 
 // prepareIntegrate prepares git.merge and git.rebase.
 func prepareIntegrate(ctx context.Context, g *gitReader, w *gitWriter, c protocol.Command) (*gitPlan, error) {
+	if c.Git.Integrate.Interactive != nil {
+		return prepareRebaseInteractive(ctx, g, w, c)
+	}
 	req := *c.Git.Integrate
 	rebase := c.Kind == protocol.GitKindRebase
 	kind := protocol.GitOperationMerge

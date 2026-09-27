@@ -801,6 +801,10 @@ type GitIntegrate struct {
 	ExpectedHead         string `json:"expected_head"`
 	ExpectedReplayCount  int    `json:"expected_replay_count,omitempty"`
 	AcknowledgePublished bool   `json:"acknowledge_published,omitempty"`
+	// Interactive (additive, ADR 0026) makes git.rebase an interactive
+	// rebase of the pinned branch (git_rebase.go); Source, TargetRef,
+	// TargetOid and ExpectedReplayCount are then empty.
+	Interactive *GitRebaseInteractive `json:"interactive,omitempty"`
 }
 
 // GitOperationWrite is GitWrite.Operation for git.operation_abort,
@@ -856,6 +860,12 @@ type GitOperationWrite struct {
 	// GitAgentChanges.Fingerprint of the unexplained index changes the user
 	// reviewed and accepts committing.
 	AcknowledgeAgentChanges string `json:"acknowledge_agent_changes,omitempty"`
+	// Message (additive, ADR 0026) is, for continue of an application
+	// interactive rebase, the message for the commit the continue makes or
+	// amends at this stop (an edit, a failed message step, a conflict),
+	// replacing the stored or original one; for git.operation_commit, the
+	// new commit's message (required). UTF-8, 64 KiB, `#` lines kept.
+	Message string `json:"message,omitempty"`
 }
 
 // GitBackupEntry records one abort or skip backup in Snapshot.GitBackups
@@ -914,6 +924,16 @@ type GitOperationResult struct {
 	// Evicted (additive) lists copies of this stop that recording a new
 	// copy had to drop (only beyond 100 distinct copies of one path).
 	Evicted []GitConflictCopyRef `json:"evicted,omitempty"`
+	// StopCommits (additive, ADR 0026) are the commits this command made at
+	// an interactive rebase stop; BackupRef is the ref an abort of an
+	// interactive rebase with such commits left pointing at its HEAD.
+	StopCommits []GitOperationCommit `json:"stop_commits,omitempty"`
+	BackupRef   string               `json:"backup_ref,omitempty"`
+	// BackupRefs (additive) are further refs the abort left, one per listed
+	// commit (AbortDropsCommits) that BackupRef's commit does not reach
+	// (for example a resolution commit a reset stop soft-reset, or a stop
+	// commit amended later), so every listed commit stays recoverable.
+	BackupRefs []string `json:"backup_refs,omitempty"`
 }
 
 // Git operation record states (GitOperationRecord.State).
@@ -992,6 +1012,10 @@ type GitOperationRecord struct {
 	// (GitOperationState.AgentChanges).
 	JobBaseline  *GitJobBaseline   `json:"job_baseline,omitempty"`
 	JobDecisions map[string]string `json:"job_decisions,omitempty"`
+	// Interactive (additive, ADR 0026) is the plan an interactive rebase
+	// pinned; Target is then its onto commit (empty Oid until Git created
+	// the new root of a --root rebase without onto).
+	Interactive *GitRebaseRecord `json:"interactive,omitempty"`
 }
 
 // GitJobBaseline is GitOperationRecord.JobBaseline: Listing is the SHA-256

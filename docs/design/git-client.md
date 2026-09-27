@@ -106,6 +106,32 @@ conflict markers are read from the staged content itself (second review). Manual
 and the TUI remain. Verified with real Git in temporary repositories in
 `git_operation_test.go`, not in a terminal.
 
+### Interactive rebase — 2026-09-26
+
+The server, protocol and Go client (not yet the TUI) run interactive
+rebases from a plan ([ADR 0026](../adr/0026-interactive-rebase.md); wire
+contract in `apps/go/internal/protocol/git_rebase.go`, client helpers in
+`apps/go/internal/client/git_rebase.go`, capability
+`git-rebase-interactive`, Git 2.38 or newer). `GET /v1/git/rebase/plan`
+reads the commits from a base (the upstream, a commit's parent, or the
+root) to HEAD with their messages, authors, published and merge flags, the
+branches `--update-refs` would move and a fingerprint; `git.rebase` with a
+plan validates it with the shared `protocol.ValidateRebasePlan` (every
+commit exactly once, squash and fixup after a commit, the messages each
+step needs) against a fresh read. The server drives `git rebase -i` with
+its own editor helpers, so the pinned plan and stored messages are what
+Git runs. Stops use the ADR 0023 operation commands, now also at edit,
+break and message stops of an application plan, with
+`git.operation_commit` to split or insert commits while stopped; stop,
+signing-failure, hook-rejection and helper-failure states are reported in
+`GitOperationState.Interactive` and survive a server restart. Commits made
+at stops are recorded; Abort lists them for acknowledgement and first keeps
+the rebase's HEAD at `refs/tui-go/rebase-backup/<operation>`. Messages are
+committed verbatim, so plan and original messages keep `#` lines, trailing
+spaces and blank lines exactly. Verified with
+real Git in temporary repositories in `git_rebase_test.go`, not in a
+terminal.
+
 ### Partial staging — 2026-09-26
 
 The server, protocol, Go client and Go TUI (the selectable diff viewer;
@@ -162,18 +188,20 @@ The ordinary Pull action explicitly enforces fast-forward-only integration regar
 
 A failed fast-forward-only pull must not silently fall back to merge or rebase. Offer an explicit next action to integrate the selected upstream by rebase (manual interactive or agent-planned, see below), or leave the branch as it is. Manual or agent conflict resolution applies when that separately chosen operation encounters conflicts.
 
-**User decisions — 2026-09-26 (history editing and fetch).** These supersede the earlier "non-interactive rebase only" decision (ADR 0023) and the merge option in the divergence follow-up above; they are not yet implemented.
+**User decisions — 2026-09-26 (history editing and fetch).** These supersede the earlier "non-interactive rebase only" decision (ADR 0023) and the merge option in the divergence follow-up above. Implementation status is noted per item and in the status sections above (interactive rebase: server, protocol and client only, 2026-09-26).
 
 - **Pull integrates by fast forward only.** When Pull finds the branch diverged, the follow-up offers rebase onto the upstream or leaving the branch as it is; Pull never leads to a merge commit. The separate Merge action for other branches is unchanged.
 - **Soft reset from a commit's context menu** is the user's manual squashing workflow (already built, ADR 0021): right-click a commit → Soft reset the current branch to it, keeping index and working tree.
 - **Interactive rebase, two ways.** The user can edit the rebase plan manually or hand it to an agent. Manual scope: parity with mainstream Git clients, with Sublime Merge as the named reference (reorder, reword, edit/amend, squash, fixup, drop and the commit-menu shortcuts such clients offer); the exact list is to be confirmed against Sublime Merge's documentation before implementation. Agent mode: an agent job reads the commits and the user's instruction and proposes a plan (and reworded messages); the user reviews and may edit it in the same editor, and only then does the server run it. Conflicts use the existing manual or agent resolution, which stops for review before Continue.
+- **Interactive rebase scope (confirmed 2026-09-26 after the [research](../research/go-interactive-rebase-2026-09-27.md)).** Parity target is everything Sublime Merge does for history editing, as the todo subset `pick`, `reword`, `edit`, `squash`, `fixup`, `fixup -C`, `fixup -c`, explicit `drop`, `break` and reordering. Sublime Merge's one-shot commit-menu items (edit message, edit contents, squash with parent or selection, fixup, drop, move up/down, rebase onto) are presets that open the same plan; there is no second server path. `exec` lines are not supported. Merge commits inside the rewritten range are flattened: the plan read flags them, starting needs an explicit acknowledgement, and the confirmation states that merges are dropped and their side commits linearised (never `--rebase-merges`). `--update-refs` is a per-plan toggle, off by default; the plan read lists the local branches that would move. Cherry-pick and revert are deferred. A clean tracked tree is still required and nothing is stashed; published commits still need an acknowledgement; the application never force-pushes.
+- **Interactive rebase defaults (orchestrator, reversible; [ADR 0026](../adr/0026-interactive-rebase.md)).** `commit.gpgSign` is honoured, with a distinct signing-failed state; repository hooks run, and a refusing hook is reported as its own state; rerere is disabled during application rebases; Edit offers both a plain amend stop and Sublime Merge's "edit contents", which soft-resets the commit into the index at the stop so it can be re-committed or split (the default); rebase, sequence, editor, autosquash and autostash configuration is neutralised on the command line, while identity, signing, hooks and merge drivers follow the user's configuration.
 - **Fetch and Fetch & prune** are two actions that fetch all remotes; Fetch & prune reports which remote-tracking refs it removed afterwards, without a confirmation (it deletes only remote-tracking refs). Implemented 2026-09-26 in the Go slice: plain Fetch never prunes, even when `fetch.prune` is configured, and neither action prunes tags; `remote.<name>.skipFetchAll` is honoured as by `git fetch --all`. Deleting only remote-tracking refs is enforced by checking each remote's configuration immediately before its fetch: a remote whose fetch refspecs write outside its own `refs/remotes/<name>/`, or whose namespace overlaps another remote's (compared case-insensitively), is refused and reported rather than fetched. A configuration change between that check and Git's own read remains a narrow race; any non-remote-tracking ref removed is still reported. Each remote is fetched and reported separately, so one failing remote does not hide the others' results or removed refs.
 
 Missing upstream, authentication failure, transport failure, cancellation, and divergence need distinct states. Additional network features, background fetching, ordinary Push, and force-push behavior remain to be scoped. These product features do not authorize contributor remote operations in this repository.
 
 ## Rebase and manual conflicts
 
-Rebase is interactive with a manual or agent-proposed plan (user decision 2026-09-26, under Pull and integration). Show the operation type, source and target, current replayed commit when applicable, affected files, and progress. Keep Continue, Skip, and Abort distinct. Continue requires resolving and staging the appropriate conflicts; Skip omits a patch and must communicate that consequence. Do not imply that absence of conflict markers proves correctness.
+Rebase is interactive with a manual or agent-proposed plan (user decision 2026-09-26, under Pull and integration; server contract in [ADR 0026](../adr/0026-interactive-rebase.md)). Show the operation type, source and target, current replayed commit when applicable, affected files, and progress. Keep Continue, Skip, and Abort distinct. Continue requires resolving and staging the appropriate conflicts; Skip omits a patch and must communicate that consequence. Do not imply that absence of conflict markers proves correctness.
 
 The manual resolver needs base/side/result inspection, editable output, saving, and explicit resolution state. Label sides by their real branch/commit roles: during rebase, “ours” and “theirs” do not mean what users may expect from an ordinary merge. Layout details remain open, including which views remain visible at narrow widths.
 

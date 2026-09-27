@@ -87,7 +87,10 @@ type gitWriteState struct {
 	// opSeq counts journaled operation-record changes, so a read that
 	// observed the repository before one does not reconcile over it.
 	opSeq uint64
-	wg    sync.WaitGroup
+	// sweepPlans asks the next operation read to remove the plan files of
+	// interactive rebases that ended outside the application (git_rebase.go).
+	sweepPlans bool
+	wg         sync.WaitGroup
 }
 
 // gitHold is a running Git write. Every hold occupies its repository's Git
@@ -474,7 +477,7 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	if err != nil {
 		return protocol.Receipt{}, err
 	}
-	w.baselineDir = e.baselineDir
+	w.baselineDir, w.rebaseDir = e.baselineDir, e.rebaseDir
 	w.recordLookup = func() *protocol.GitOperationRecord {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -804,6 +807,8 @@ type gitWriter struct {
 	recordLookup func() *protocol.GitOperationRecord
 	// baselineDir is engine.baselineDir; set by runGitWrite.
 	baselineDir string
+	// rebaseDir is engine.rebaseDir (git_rebase.go); set by runGitWrite.
+	rebaseDir string
 }
 
 var gitVersion = sync.OnceValues(func() ([2]int, error) {
@@ -1313,6 +1318,8 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return prepareIntegrate(ctx, g, w, c)
 	case protocol.GitKindOperationAbort, protocol.GitKindOperationContinue, protocol.GitKindOperationSkip:
 		return prepareOperationCommand(ctx, g, w, c)
+	case protocol.GitKindOperationCommit:
+		return prepareOperationCommit(ctx, g, w, c)
 	case protocol.GitKindConflictChoose, protocol.GitKindConflictResolve, protocol.GitKindConflictRestore:
 		return prepareConflict(ctx, g, w, c)
 	case protocol.GitKindResolveJobStart:

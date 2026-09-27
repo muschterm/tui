@@ -74,6 +74,9 @@ type engine struct {
 	git gitWriteState
 	// baselineDir keeps resolution jobs' index listings (git_resolve_job.go).
 	baselineDir string
+	// rebaseDir keeps interactive rebase plans for the editor helpers
+	// (git_rebase.go); empty disables interactive rebase.
+	rebaseDir string
 	// worktreeDir holds managed worktrees (worktrees.go); empty disables
 	// worktree creation. worktreesCheckedAt throttles detection.
 	worktreeDir string
@@ -615,6 +618,11 @@ func Serve(ctx context.Context, home string) error {
 	if gitPartialSupported() {
 		snap.Capabilities = append(snap.Capabilities, "git-partial-stage")
 	}
+	// So does interactive rebase (ADR 0026).
+	snap.Capabilities = slices.DeleteFunc(snap.Capabilities, func(c string) bool { return c == "git-rebase-interactive" })
+	if gitRebaseInteractiveSupported() {
+		snap.Capabilities = append(snap.Capabilities, "git-rebase-interactive")
+	}
 	// Agent definitions are server-owned: an existing home gains the configured
 	// connections on start and a changed executable invalidates its probe.
 	agent.Ensure(&snap, os.Getenv)
@@ -626,6 +634,7 @@ func Serve(ctx context.Context, home string) error {
 	e.log = slog.Default()
 	e.baselineDir = filepath.Join(home, "git-baselines")
 	e.worktreeDir = filepath.Join(home, "worktrees")
+	e.rebaseDir = filepath.Join(home, "git-rebase")
 	e.sweepJobBaselines()
 	// Interrupted publications, orphaned files and expired staging are
 	// reconciled before any client can reference an artifact.
@@ -680,6 +689,7 @@ func Serve(ctx context.Context, home string) error {
 	mux.HandleFunc("GET /v1/git/operation/backup", e.gitOperationBackup)
 	mux.HandleFunc("GET /v1/git/conflict", e.gitConflict)
 	mux.HandleFunc("GET /v1/git/integrate/preview", e.gitIntegratePreview)
+	mux.HandleFunc("GET /v1/git/rebase/plan", e.gitRebasePlan)
 	mux.HandleFunc("GET /v1/terminals/{id}/stream", e.terminalStream)
 	mux.HandleFunc("GET /v1/documents/{id}/stream", e.documentStream)
 	mux.HandleFunc("GET /v1/documents/{id}/versions", e.documentVersionsHandler)

@@ -127,6 +127,15 @@ func observeChanges(ctx context.Context, g *gitReader, gitDir string, st *protoc
 			unstaged = append(unstaged, e.Path)
 		}
 	}
+	if pi := st.Interactive; pi != nil {
+		// Git's own check ignores submodules.
+		for _, p := range unstaged {
+			pi.Unstaged = pi.Unstaged || !gitlinks[p]
+		}
+		for _, c := range staged {
+			pi.Staged = pi.Staged || !(c.unmerged || unmerged[c.path])
+		}
+	}
 	own, ownKnown := stepResults(ctx, g, gitDir, *st)
 	var listed, stagedDeleted, dirty []string
 	for _, c := range staged {
@@ -269,6 +278,7 @@ func observeChanges(ctx context.Context, g *gitReader, gitDir string, st *protoc
 			abortInc = true // the dropped commits could not be counted
 		}
 	}
+	observeStepFacts(ctx, g, gitDir, st)
 	st.DiscardsOnAbortIncomplete = abortInc
 	st.DiscardsOnSkipIncomplete = skipInc && rebase && st.Current != nil && st.StopReason == ""
 	st.DiscardsIncomplete = st.DiscardsOnAbortIncomplete || st.DiscardsOnSkipIncomplete
@@ -528,6 +538,9 @@ func pendingAdds(ctx context.Context, g *gitReader, gitDir string, st protocol.G
 		}
 		switch f[0] {
 		case "pick", "p", "reword", "r", "edit", "e", "fixup", "f", "squash", "s":
+			if (f[0] == "fixup" || f[0] == "f") && len(f) >= 3 && (f[1] == "-C" || f[1] == "-c") {
+				f = append(f[:1], f[2:]...) // fixup -C|-c <commit>
+			}
 			if len(f) < 2 || !todoOid(f[1]) {
 				return nil, nil, false
 			}

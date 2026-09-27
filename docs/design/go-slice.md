@@ -1844,6 +1844,98 @@ follow-up and end, viewer diff tabs, content-gate acknowledgement and
 review_pending). `TestGitJobCaptures` renders start, running, review and
 the continue review (dark and light).
 
+### Interactive rebase (server) — 2026-09-26
+
+Server, protocol and client only ([ADR 0026](../adr/0026-interactive-rebase.md));
+the [TUI binding](#interactive-rebase-tui--2026-09-26) builds on this
+contract; the agent planner comes next. `internal/server/git_rebase.go` serves `GET /v1/git/rebase/plan`
+and starts `git.rebase` with `GitIntegrate.Interactive`;
+`internal/server/git_rebase_helper.go` is the editor helper Git runs as
+`GIT_SEQUENCE_EDITOR` and `GIT_EDITOR`: this binary's hidden
+`tui-go git-rebase-helper sequence|message <file>` command
+(`internal/cli/helper.go`), reading the pinned todo and messages from
+`<home>/git-rebase/<operation>/plan.json` with a per-operation token.
+`internal/protocol/git_rebase.go` holds the types and
+`ValidateRebasePlan`, which clients can run before sending; client helpers
+are `Client.GitRebasePlan`, `DefaultRebaseEntries`,
+`GitRebaseInteractiveCommand` (with `RebaseOptions` for update refs and the
+merge and published acknowledgements), `GitOperationContinueMessageCommand`
+and `GitOperationCommitCommand`. Capability `git-rebase-interactive` is
+advertised with Git 2.38 or newer.
+
+- **Plan read** (`base` a full ref, full hash or `root`; optional `onto`):
+  commits oldest first with parents, subject, body, author, published and
+  merge flags; `MergeCount`, `Published`, `UpdateRefs`, `Fingerprint`,
+  `Blocked`.
+- **Entries:** pick, reword (message), edit (`reset` default or `amend`),
+  squash, fixup (`""`, `C`, `c`), drop, break; the last squash/fixup of a
+  chain with a squash or `fixup -c` carries the combined message.
+- **Refusals before anything runs:** `invalid_plan`, `message_required`,
+  `stale_plan`, `merges_unacknowledged`, `published_commit`,
+  `update_refs_unsupported`, the plan's `Blocked` code, `plan_missing`
+  (Continue/Skip/commit without the stored plan), `unstaged_changes`,
+  `staged_changes` (at a break, or at an amend stop after commits were made
+  there), `nothing_to_recommit` (a reset stop with nothing staged and
+  nothing committed), `invalid` (a Continue `Message` where the stop does
+  not commit the step with its own message), `drops_unacknowledged` (Abort
+  while commits made at stops exist: `AbortDropsCommits`, acknowledged with
+  `AcknowledgeDropped` as for a cherry-pick sequence).
+- **Abort** first points `refs/tui-go/rebase-backup/<operation>` at the
+  rebase's HEAD (`GitOperationResult.BackupRef`) and gives every listed
+  commit HEAD does not reach its own `…-<n>` ref (`BackupRefs`); commits made at stops are
+  recorded (`GitRebaseRecord.StopCommits`, `GitOperationResult.StopCommits`).
+- **Stop snapshots:** the facts of a stop (HEAD, the pre-step HEAD,
+  whether Git had committed the step or it became empty) are recorded when
+  a server command first observes it (`GitRebaseRecord.Snapshot`) and
+  later reads classify relative to them, so work made at a stop is never
+  made twice; a stop no command observed is `Late` and refuses Continue
+  and Skip at empty and message stops (`stop_unobserved`). Plans with
+  non-UTF-8 messages are blocked (`unsupported_message`). Stops
+  `committed` (a resolution committed at the stop) and `rescheduled` (a
+  step Git put back) continue without committing; Abort counts can be a
+  lower bound (`AbortDropsAtLeast`). The plan read returns raw messages
+  (`Message`) and accepts `base=upstream`; the operation read returns
+  `StepMessage` for prefilling (also on command results). An edit step
+  whose pick needed resolving still stops as planned: the server commits
+  the resolution and presents the edit stop (`ServerEdit`).
+- **Empty commits** (a pick, reword or edit step, `StepEmpty`): Continue
+  keeps one (original author; the plan's message for a reword, else the
+  original), Skip drops it. Messages are committed verbatim: the plan's or
+  the step's original message byte for byte, never Git's commented editor
+  text; `git.operation_commit` keeps `git.commit`'s whitespace cleanup.
+- **Stops** (`GitOperationState.Interactive.Stop`): conflict, edit_amend,
+  edit_reset (the default edit: the commit's changes staged at its parent),
+  break, message, commit_failed, empty, unknown; `Failure` signing_failed,
+  hook_rejected (with `Hook`) or helper_failed (with `Detail`) for the stop
+  the latest command left. Results carry the same codes; a pre-rebase hook
+  refusal and a rejected todo are `not_started`.
+- Verified in `internal/server/git_rebase_test.go` (reorder with squash and
+  reword checked with `git log`, fixup variants, drop, edit amend and reset
+  with a split, break with an inserted commit, conflict then abort with
+  update refs, a conflict at a reword step, stale and invalid plans,
+  published and merge acknowledgements with flattening, update refs on and
+  off, hook rejection and retry, signing failure, rerere off, restart
+  recovery and a missing plan, root and onto, helper failure and the helper's
+  refusals; verify round: `#` lines on every message fallback, abort
+  acknowledgement and backup ref, edit stops that never lose or duplicate
+  the commit, empty Continue/Skip, retried Continue, Skip at reword, edit,
+  squash, fixup and `fixup -c` conflicts, unsupported update-ref branches,
+  plan files swept after an external end, a pre-commit refusal at
+  `git.operation_commit`, reword recovery refusing another commit, precise
+  signing detection; second round: verbatim messages with trailing spaces
+  and doubled blank lines, reword and edit steps that became empty kept or
+  skipped; third round: reword with prepare-commit-msg and commit-msg
+  hooks, work made at a stop never made again, unobserved (late) stops,
+  empty-message commit after a conflict, large, mode-only and submodule
+  changes becoming empty, non-UTF-8 messages blocked, terminal commits at a
+  break listed for abort; fourth round: cherry-picked duplicates, a fixed
+  author date, a conflict committed in a terminal, a restart before any
+  read, a rescheduled pick, abort lower bounds, raw messages and the
+  upstream base, message prefill; fifth round: an edit step after a conflict stopping as
+  planned in amend mode (amend, continue) and reset mode (split, continue),
+  across a restart, and aborted) and `internal/protocol/git_rebase_test.go`; not yet in
+  a terminal.
+
 ### Honest newline hint — 2026-09-26
 
 Under tmux's default `extended-keys off`, Shift+Enter arrives as plain Enter

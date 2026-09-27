@@ -117,9 +117,12 @@ func GitOperationContinueCommand(id string, target GitTarget, state protocol.Git
 // (state.Current) and continues; send it only after the user confirmed
 // dropping that commit and, when state.DiscardsOnSkip is not empty, resetting
 // those files (acknowledgeDiscard). ok is false when state is not a rebase
-// stopped at a conflicting commit.
+// stopped at a commit it could not apply: a conflict (for an application
+// interactive rebase also at a reword, edit, squash or fixup step), a failed
+// commit or, interactive only, a commit that became empty.
 func GitOperationSkipCommand(id string, target GitTarget, state protocol.GitOperationState, acknowledgeDiscard bool) (cmd protocol.Command, ok bool) {
-	if state.Kind != protocol.GitOperationRebase || state.Current == nil || state.StopReason != "" {
+	interactive := state.Interactive != nil && state.Interactive.Plan && state.Can.Skip.Allowed
+	if state.Kind != protocol.GitOperationRebase || state.Current == nil || (state.StopReason != "" && !interactive) {
 		return protocol.Command{}, false
 	}
 	w := protocol.GitOperationWrite{ExpectedStep: state.Step, SkipOid: state.Current.Oid, WorktreeFingerprint: state.WorktreeFingerprint}

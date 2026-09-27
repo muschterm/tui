@@ -1367,6 +1367,7 @@ func getJobBaseline(dir, id string) ([]byte, error) {
 // sweepJobBaselines removes listings no operation record references, once
 // they are old enough that no job start can still be recording them.
 func (e *engine) sweepJobBaselines() {
+	e.sweepRebasePlans()
 	e.mu.Lock()
 	dir := e.baselineDir
 	keep := map[string]bool{}
