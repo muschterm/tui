@@ -810,6 +810,7 @@ func reconcileRecord(rec *protocol.GitOperationRecord, st protocol.GitOperationS
 // run here.
 func recoverGitOperations(s *protocol.Snapshot) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	recoverPlanJobs(s)
 	// Resolution jobs never continue by themselves after a restart: their
 	// threads wait for an explicit follow-up.
 	for i := range s.Threads {

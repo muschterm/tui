@@ -223,8 +223,12 @@ type Thread struct {
 	Job *ThreadJob `json:"job,omitempty"`
 }
 
-// Thread job kinds (ThreadJob.Kind).
-const ThreadJobConflictResolution = "conflict_resolution"
+// Thread job kinds (ThreadJob.Kind). A rebase_plan job (ADR 0027) is an
+// agent proposing an interactive rebase plan; it has no Git operation.
+const (
+	ThreadJobConflictResolution = "conflict_resolution"
+	ThreadJobRebasePlan         = "rebase_plan"
+)
 
 // ThreadJob describes a job-kind thread. OperationID is the Git operation it
 // works on, Checkout that operation's repository toplevel and Paths the
@@ -254,6 +258,13 @@ type ThreadJob struct {
 	BaseCopy      string            `json:"base_copy,omitempty"`
 	Decisions     map[string]string `json:"decisions,omitempty"`
 	DecisionsTurn string            `json:"decisions_turn,omitempty"`
+	// Additive (ADR 0027), rebase_plan jobs only: Base and Onto exactly as
+	// the job was started with (as for GET /v1/git/rebase/plan) and the
+	// latest proposal's summary (the full proposal is
+	// GET /v1/git/rebase/proposal).
+	Base     string                    `json:"base,omitempty"`
+	Onto     string                    `json:"onto,omitempty"`
+	Proposal *GitRebaseProposalSummary `json:"proposal,omitempty"`
 }
 
 // Activity is one transcript entry: a user prompt, agent reply, tool call or

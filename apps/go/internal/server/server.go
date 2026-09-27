@@ -86,6 +86,14 @@ type engine struct {
 	worktreesCheckedAt time.Time
 	// docs holds shared documents; see documents.go.
 	docs documentState
+	// planEvals marks planning jobs whose turn is being checked and planWG
+	// waits for those checks (git_rebase_plan_job.go).
+	planEvals map[string]bool
+	planWG    sync.WaitGroup
+	// planWrites and planWriteSeq record recent application work that may
+	// write a checkout (noteCheckoutWriteLocked).
+	planWrites   []planWrite
+	planWriteSeq uint64
 }
 
 func clone(s protocol.Snapshot) protocol.Snapshot {
@@ -620,8 +628,9 @@ func Serve(ctx context.Context, home string) error {
 	}
 	// So does interactive rebase (ADR 0026).
 	snap.Capabilities = slices.DeleteFunc(snap.Capabilities, func(c string) bool { return c == "git-rebase-interactive" })
+	snap.Capabilities = slices.DeleteFunc(snap.Capabilities, func(c string) bool { return c == "git-rebase-agent-plan" })
 	if gitRebaseInteractiveSupported() {
-		snap.Capabilities = append(snap.Capabilities, "git-rebase-interactive")
+		snap.Capabilities = append(snap.Capabilities, "git-rebase-interactive", "git-rebase-agent-plan")
 	}
 	// Agent definitions are server-owned: an existing home gains the configured
 	// connections on start and a changed executable invalidates its probe.
@@ -636,6 +645,8 @@ func Serve(ctx context.Context, home string) error {
 	e.worktreeDir = filepath.Join(home, "worktrees")
 	e.rebaseDir = filepath.Join(home, "git-rebase")
 	e.sweepJobBaselines()
+	// Planning turns that ended before a restart are checked now.
+	e.evaluatePendingPlanJobs()
 	// Interrupted publications, orphaned files and expired staging are
 	// reconciled before any client can reference an artifact.
 	e.sweepArtifacts()
@@ -690,6 +701,8 @@ func Serve(ctx context.Context, home string) error {
 	mux.HandleFunc("GET /v1/git/conflict", e.gitConflict)
 	mux.HandleFunc("GET /v1/git/integrate/preview", e.gitIntegratePreview)
 	mux.HandleFunc("GET /v1/git/rebase/plan", e.gitRebasePlan)
+	mux.HandleFunc("GET /v1/git/rebase/proposal", e.gitRebaseProposal)
+	mux.HandleFunc("GET /v1/git/rebase/proposals", e.gitRebaseProposals)
 	mux.HandleFunc("GET /v1/terminals/{id}/stream", e.terminalStream)
 	mux.HandleFunc("GET /v1/documents/{id}/stream", e.documentStream)
 	mux.HandleFunc("GET /v1/documents/{id}/versions", e.documentVersionsHandler)

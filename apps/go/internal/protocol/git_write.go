@@ -188,6 +188,8 @@ type GitWrite struct {
 	// Additive (ADR 0025): hunk/line selection for git.stage and
 	// git.unstage (git_partial.go); Paths is then empty.
 	Partial *GitPartial `json:"partial,omitempty"`
+	// Additive (ADR 0027): the git.rebase_plan_* commands.
+	RebasePlan *GitRebasePlanJob `json:"rebase_plan,omitempty"`
 }
 
 // GitPathPin names one status entry exactly as GitStatus showed it.

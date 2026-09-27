@@ -838,6 +838,8 @@ func (a *docActor) startSave() {
 	after := a.e.docs.afterRename
 	id := a.id
 	go func() {
+		// Planning jobs learn that the checkout may change under them.
+		a.e.noteDocumentWrite(root)
 		w, err := writeDocFile(root, rel, data, mode, expect, guard)
 		if err == nil && after != nil {
 			err = after(id)

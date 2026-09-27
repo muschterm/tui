@@ -207,9 +207,14 @@ func (e *engine) afterCommit(c protocol.Command, target string) {
 		if r := e.runs[target]; r != nil {
 			go r.interrupt()
 		}
+	case protocol.GitKindRebasePlanCancel:
+		// A revision cancelled before its turn started has nothing to stop.
+		if r, t := e.runs[target], threadByID(&e.snap, target); r != nil && t != nil && t.State == "interrupted" {
+			go r.interrupt()
+		}
 	case protocol.GitKindResolveJobFollowup:
 		e.ensureRunLocked(target)
-	case protocol.GitKindResolveJobEnd:
+	case protocol.GitKindResolveJobEnd, protocol.GitKindRebasePlanEnd:
 	case "thread.delete":
 		// The sweep above already stopped the run; nothing else to do.
 	case "request.answer":
@@ -285,6 +290,13 @@ func (e *engine) stopAgents() {
 		go func(r *acpRun) { defer wg.Done(); r.stop() }(r)
 	}
 	wg.Wait()
+	// Planning answers being checked finish (bounded by their Git budget).
+	planDone := make(chan struct{})
+	go func() { e.planWG.Wait(); close(planDone) }()
+	select {
+	case <-planDone:
+	case <-time.After(cancelTimeout):
+	}
 	// Probe processes are children of the same run context; wait, bounded, for
 	// them to record their outcome so no adapter outlives the server.
 	done := make(chan struct{})
@@ -509,6 +521,9 @@ type dispatchWork struct {
 	record    protocol.Agent
 	checkout  string
 	sessionID string
+	// readOnly opens a new session in the built-in bridge's read-only mode
+	// (planning jobs, ADR 0027).
+	readOnly bool
 }
 
 func (r *acpRun) loop() {
@@ -549,6 +564,17 @@ func (r *acpRun) claim() (dispatchWork, bool) {
 		e.rebalanceWritersLocked()
 		e.snap.Revision++
 		e.flushLocked()
+		e.planJobTurnEndedLocked(t.ID) // a planning revision fails with it
+		return dispatchWork{}, false
+	}
+	if err := worktreeUnavailable(&e.snap, t); err != nil && leaseExempt(t) {
+		// A planning revision does not wait for its worktree: it fails
+		// and can be revised once the worktree is back.
+		r.busy = false
+		t.State, t.Error = "failed", "the worktree is unavailable: "+err.Error()
+		e.snap.Revision++
+		e.flushLocked()
+		e.planJobTurnEndedLocked(t.ID)
 		return dispatchWork{}, false
 	}
 	if worktreeUnavailable(&e.snap, t) != nil {
@@ -566,13 +592,13 @@ func (r *acpRun) claim() (dispatchWork, bool) {
 		e.rebalanceWritersAndFlushLocked()
 		return dispatchWork{}, false
 	}
-	if t.Checkout != "" {
+	if t.Checkout != "" && !leaseExempt(t) {
 		if e.claiming == nil {
 			e.claiming = map[string]string{}
 		}
 		e.claiming[t.ID] = t.Checkout
 	}
-	return dispatchWork{prompt: t.Queue[0], record: *a, checkout: t.Checkout, sessionID: t.SessionID}, true
+	return dispatchWork{prompt: t.Queue[0], record: *a, checkout: t.Checkout, sessionID: t.SessionID, readOnly: planReadOnly(t, *a)}, true
 }
 
 func (r *acpRun) dispatch(w dispatchWork) {
@@ -640,7 +666,7 @@ func (r *acpRun) ensureSession(w dispatchWork) (*agent.Session, agent.Info, erro
 	r.generation = generation
 	r.mu.Unlock()
 	handler := &acpHandler{acpRun: r, generation: generation, questions: w.record.ID == "claude" || w.record.Command == agent.DefaultCodexCommand}
-	session, err := r.e.launcher()(r.ctx, agent.Options{AgentID: w.record.ID, Command: w.record.Command, Args: w.record.Args, Cwd: abs, Handler: handler, Log: r.e.logf})
+	session, err := r.e.launcher()(r.ctx, agent.Options{AgentID: w.record.ID, Command: w.record.Command, Args: w.record.Args, Cwd: abs, Handler: handler, Log: r.e.logf, ReadOnly: w.readOnly})
 	if err != nil {
 		return nil, agent.Info{}, err
 	}
@@ -741,6 +767,9 @@ func (r *acpRun) startTurn(w dispatchWork, effective protocol.Settings, options 
 	t.Queue = t.Queue[1:]
 	t.QueueRevision++
 	t.TurnID, t.State, t.StopReason, t.Error = w.prompt.ID, "running", "", ""
+	if !leaseExempt(t) {
+		e.noteCheckoutWriteLocked(&next, t.Checkout, t.ID)
+	}
 	t.Effective, t.Options = effective, options
 	prompt := w.prompt
 	entry := protocol.Activity{ID: prompt.ID, TurnID: prompt.ID, Prompt: &prompt, Role: "user", Text: prompt.Text, State: "running", Detail: promptSummary(prompt)}
@@ -836,6 +865,7 @@ func (r *acpRun) finishTurn(w dispatchWork, response acp.PromptResponse, err err
 	r.e.mu.Lock()
 	r.e.syncJobsLocked()
 	r.e.jobTurnEndedLocked(r.threadID)
+	r.e.planJobTurnEndedLocked(r.threadID)
 	r.e.mu.Unlock()
 }
 
@@ -882,6 +912,7 @@ func (r *acpRun) fail(w dispatchWork, title string, err error) {
 	r.e.mu.Lock()
 	r.e.syncJobsLocked()
 	r.e.jobTurnEndedLocked(r.threadID)
+	r.e.planJobTurnEndedLocked(r.threadID)
 	r.e.mu.Unlock()
 }
 

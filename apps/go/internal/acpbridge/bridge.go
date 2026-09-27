@@ -40,6 +40,19 @@ type host struct {
 	process    *process
 	nativeDone chan struct{}
 	nativeOnce sync.Once
+	// readOnly locks the session to the provider's read-only mode (see
+	// OpenOptions).
+	readOnly bool
+}
+
+// OpenOptions select how a bridge runs. ReadOnly locks its one session to
+// the provider's most restrictive documented mode for work that must not
+// change the checkout (agent-planned rebases, ADR 0027): Claude's plan
+// permission mode with classifier review of planning commands off, and
+// Codex's readOnly sandbox with approval policy never. The session then
+// offers only that value as its Permissions option and refuses others.
+type OpenOptions struct {
+	ReadOnly bool
 }
 
 // Endpoint carries serialized ACP over pipes inside the application binary.
@@ -54,11 +67,16 @@ type Endpoint struct {
 }
 
 func Open(ctx context.Context, provider, path, cwd string, env []string, stderr io.Writer) (*Endpoint, error) {
+	return OpenWith(ctx, provider, path, cwd, env, stderr, OpenOptions{})
+}
+
+// OpenWith is Open with options.
+func OpenWith(ctx context.Context, provider, path, cwd string, env []string, stderr io.Writer, o OpenOptions) (*Endpoint, error) {
 	if provider != "claude" && provider != "codex" {
 		return nil, errors.New("unknown built-in provider")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	h := &host{path: path, cwd: cwd, env: env, stderr: stderr, ctx: ctx, nativeDone: make(chan struct{})}
+	h := &host{path: path, cwd: cwd, env: env, stderr: stderr, ctx: ctx, nativeDone: make(chan struct{}), readOnly: o.ReadOnly}
 	var b backend
 	if provider == "claude" {
 		b = newClaude(h)

@@ -49,6 +49,9 @@ import (
 // waits on one. Bisect is not a holder. The reserved JobThreadID of a
 // recorded operation is exempt, so its resolution job can work there.
 //
+// Planning jobs (ADR 0027, leaseExempt) neither hold nor wait for the lease:
+// their agent must not write, which is verified after every turn instead.
+//
 // Known limits: between threads the lease key is the registered project path,
 // so nested projects in one working tree (/repo and /repo/sub) are not
 // coordinated with each other; a
@@ -66,7 +69,7 @@ func (e *engine) writerHolder(s *protocol.Snapshot, key, except string) string {
 	}
 	for i := range s.Threads {
 		t := &s.Threads[i]
-		if t.ID != except && t.Checkout == key && activeTurn(t) {
+		if t.ID != except && t.Checkout == key && activeTurn(t) && !leaseExempt(t) {
 			return t.ID
 		}
 	}
@@ -88,7 +91,7 @@ func (e *engine) writerHolder(s *protocol.Snapshot, key, except string) string {
 // ready stays in line and, at the head of a free checkout, is woken so claim
 // records the ordinary not-ready failure instead of stranding it silently.
 func writerEligible(t *protocol.Thread) bool {
-	return t != nil && t.Checkout != "" && !t.Closed && !t.NeedsResume && t.State == "idle" && len(t.Queue) > 0
+	return t != nil && t.Checkout != "" && !t.Closed && !t.NeedsResume && t.State == "idle" && len(t.Queue) > 0 && !leaseExempt(t)
 }
 
 // waitKey returns t's place in line, assigning the next sequence on first sight.
@@ -126,7 +129,7 @@ func (e *engine) candidates(s *protocol.Snapshot, key string) []*protocol.Thread
 // an earlier candidate is in line. It records t's place when it is a candidate.
 func (e *engine) writerBlocked(s *protocol.Snapshot, t *protocol.Thread) bool {
 	key := t.Checkout
-	if key == "" {
+	if key == "" || leaseExempt(t) {
 		return false
 	}
 	if e.writerHolder(s, key, t.ID) != "" {
@@ -273,7 +276,7 @@ func demoteConcurrentWriters(s *protocol.Snapshot) {
 	held := map[string]bool{}
 	for i := range s.Threads {
 		t := &s.Threads[i]
-		if t.Checkout == "" || !activeTurn(t) {
+		if t.Checkout == "" || !activeTurn(t) || leaseExempt(t) {
 			continue
 		}
 		if held[t.Checkout] {

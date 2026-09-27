@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -43,7 +42,7 @@ func jobControlKind(kind string) bool {
 	case protocol.GitKindResolveJobFollowup, protocol.GitKindResolveJobCancel, protocol.GitKindResolveJobEnd:
 		return true
 	}
-	return false
+	return rebasePlanControlKind(kind)
 }
 
 func validateResolveJobStart(w *protocol.GitWrite) error {
@@ -499,6 +498,9 @@ func refuseWhileJobRuns(s *protocol.Snapshot, top string) error {
 
 // applyJobControl applies git.resolve_job_followup, _cancel and _end.
 func (e *engine) applyJobControl(s *protocol.Snapshot, c protocol.Command) (string, error) {
+	if rebasePlanControlKind(c.Kind) {
+		return e.applyPlanJobControl(s, c)
+	}
 	req := c.Git
 	if req == nil || req.ResolveJob == nil || req.ResolveJob.OperationID == "" || req.Integrate != nil || req.Operation != nil || req.Conflict != nil {
 		return "", failure("invalid", c.Kind+" carries its payload in Git.ResolveJob with an operation_id")
@@ -1315,7 +1317,7 @@ func putJobBaseline(dir string, data []byte) (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	if _, err := getJobBaseline(dir, id); err == nil {
+	if _, err := getBlob(dir, id, planBlobMax); err == nil {
 		now := time.Now()
 		_ = os.Chtimes(name, now, now) // a sweep keeps what was just used
 		return id, nil
@@ -1346,26 +1348,12 @@ func putJobBaseline(dir string, data []byte) (string, error) {
 }
 
 func getJobBaseline(dir, id string) ([]byte, error) {
-	if dir == "" || len(id) != 64 || !gitFullHash.MatchString(id) {
-		return nil, failure("unavailable", "no baseline listing")
-	}
-	f, err := os.Open(filepath.Join(dir, id))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, gitStatusMaxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != id {
-		return nil, failure("unavailable", "the baseline listing is damaged")
-	}
-	return data, nil
+	return getBlob(dir, id, gitStatusMaxBytes)
 }
 
-// sweepJobBaselines removes listings no operation record references, once
-// they are old enough that no job start can still be recording them.
+// sweepJobBaselines removes listings no operation record references (nor
+// planning job, git_rebase_plan_job.go), once they are old enough that no
+// job start can still be recording them.
 func (e *engine) sweepJobBaselines() {
 	e.sweepRebasePlans()
 	e.mu.Lock()
@@ -1375,6 +1363,9 @@ func (e *engine) sweepJobBaselines() {
 		if rec.JobBaseline != nil {
 			keep[rec.JobBaseline.Listing] = true
 		}
+	}
+	for _, id := range planBlobIDs(&e.snap) {
+		keep[id] = true
 	}
 	e.mu.Unlock()
 	if dir == "" {

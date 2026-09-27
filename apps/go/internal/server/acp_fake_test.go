@@ -85,6 +85,9 @@ type fakeAgent struct {
 	// cwd is the session's working directory; FAKE-WRITE and FAKE-GIT
 	// prompt lines act in it (resolution job tests).
 	cwd string
+	// readOnly mirrors a built-in bridge opened read-only: its Permissions
+	// option offers only that value (planning job tests).
+	readOnly string
 }
 
 func (f *fakeAgent) optionWire() []any {
@@ -98,6 +101,10 @@ func (f *fakeAgent) optionWire() []any {
 		option := entry.(map[string]any)
 		if current, ok := f.options[option["id"].(string)]; ok {
 			option["currentValue"] = current
+		}
+		if f.readOnly != "" && option["id"] == "mode" {
+			option["currentValue"] = f.readOnly
+			option["options"] = []any{map[string]any{"value": f.readOnly, "name": "Read-only"}}
 		}
 	}
 	return wire
@@ -192,7 +199,7 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 			return nil, acp.NewInvalidParams(map[string]any{"error": err.Error()})
 		}
 		f.mu.Lock()
-		reject := f.rejectValue != "" && request.Value == f.rejectValue
+		reject := f.rejectValue != "" && request.Value == f.rejectValue || f.readOnly != "" && request.ConfigId == "mode" && request.Value != f.readOnly
 		if !reject {
 			f.options[request.ConfigId] = request.Value
 		}
@@ -250,6 +257,10 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 	f.mu.Unlock()
 	session := request.SessionId
 	f.act(text)
+	if reply, ok := fakeReply(text, "FAKE-REPLY "); ok && !strings.Contains(text, "cancel me") && !strings.Contains(text, "ask native question") {
+		f.update(ctx, session, chunk(reply))
+		return map[string]any{"stopReason": "end_turn"}, nil
+	}
 	switch {
 	case strings.Contains(text, "cancel me"):
 		f.update(ctx, session, chunk("counting"))
@@ -277,6 +288,9 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 		f.mu.Lock()
 		f.questionCancel = questionCancel
 		f.mu.Unlock()
+		if before, ok := fakeReply(text, "FAKE-BEFORE "); ok {
+			f.update(ctx, session, chunk(before))
+		}
 		f.update(ctx, session, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "question-call", "title": "AskUserQuestion", "kind": "other", "status": "pending"})
 		wire := nativeQuestionWire(session)
 		if f.codexQuestions {
@@ -302,7 +316,11 @@ func (f *fakeAgent) prompt(ctx context.Context, params json.RawMessage) (any, *a
 			return nil, acp.NewInternalError(map[string]any{"error": "the fake agent failed after the answer"})
 		}
 		f.update(ctx, session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "question-call", "status": "completed"})
-		f.update(ctx, session, chunk("question answered"))
+		if reply, ok := fakeReply(text, "FAKE-REPLY "); ok {
+			f.update(ctx, session, chunk(reply))
+		} else {
+			f.update(ctx, session, chunk("question answered"))
+		}
 		return map[string]any{"stopReason": "end_turn"}, nil
 	case strings.Contains(text, "ask permission"):
 		f.update(ctx, session, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "call-1", "title": "Write notes.md", "kind": "edit", "status": "pending", "locations": []any{map[string]any{"path": "notes.md"}}, "rawInput": map[string]any{"path": "notes.md"}})
@@ -367,6 +385,8 @@ type fakeFleet struct {
 	questionBlocking     bool
 	questionReceipt      bool
 	questionFail         bool
+	// readOnlyLaunches counts launches that asked for a read-only session.
+	readOnlyLaunches int
 }
 
 func (f *fakeFleet) launch(ctx context.Context, o agent.Options) (*agent.Session, error) {
@@ -377,6 +397,10 @@ func (f *fakeFleet) launch(ctx context.Context, o agent.Options) (*agent.Session
 		return nil, err
 	}
 	fake := &fakeAgent{options: map[string]string{}, authRequired: f.authRequired, rejectValue: f.rejectValue, nativeQuestions: f.nativeQuestions, codexQuestions: f.codexQuestions, nativeVersion: f.nativeVersion, questionBlocking: f.questionBlocking, questionReceipt: f.questionReceipt, questionFail: f.questionFail}
+	if o.ReadOnly {
+		f.readOnlyLaunches++
+		fake.readOnly = map[string]string{"claude": "plan", "codex": "read-only"}[o.AgentID]
+	}
 	dropApprovalResponse := f.dropApprovalResponse
 	dropQuestionResponse := f.dropQuestionResponse
 	f.agents = append(f.agents, fake)
@@ -493,6 +517,19 @@ func activityOf(t protocol.Thread, id string) protocol.Activity {
 		}
 	}
 	return protocol.Activity{}
+}
+
+// fakeReply is the answer a prompt asks the fake agent for: every
+// "FAKE-REPLY <text>" line (\n in text is a newline), joined (planning job
+// tests).
+func fakeReply(text, prefix string) (string, bool) {
+	var parts []string
+	for _, line := range strings.Split(text, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
+			parts = append(parts, strings.ReplaceAll(rest, `\n`, "\n"))
+		}
+	}
+	return strings.Join(parts, "\n"), len(parts) > 0
 }
 
 // act performs the file and Git actions a prompt asks the fake agent for:

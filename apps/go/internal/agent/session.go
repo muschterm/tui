@@ -71,6 +71,10 @@ type Options struct {
 	Cwd     string
 	Handler Handler
 	Log     func(msg string, args ...any)
+	// ReadOnly opens a built-in bridge in its read-only mode
+	// (acpbridge.OpenOptions); other agents refuse it, since the
+	// application cannot make them read-only.
+	ReadOnly bool
 }
 
 // Launcher starts an agent connection. The server holds one so tests can
@@ -138,7 +142,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 			ctx = context.Background()
 		}
 		buffer := newRing(stderrLimit)
-		endpoint, err := acpbridge.Open(ctx, o.AgentID, runtimePath, o.Cwd, environment, buffer)
+		endpoint, err := acpbridge.OpenWith(ctx, o.AgentID, runtimePath, o.Cwd, environment, buffer, acpbridge.OpenOptions{ReadOnly: o.ReadOnly})
 		if err != nil {
 			return nil, err
 		}
@@ -152,6 +156,9 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		s.disconnected = endpoint.Disconnected
 		logf("built-in ACP bridge opened", "agent", o.AgentID, "runtime", runtimePath, "version", acpbridge.Version)
 		return s, nil
+	}
+	if o.ReadOnly {
+		return nil, errors.New("a read-only session needs a built-in bridge")
 	}
 	path, err := exec.LookPath(o.Command)
 	if err != nil {

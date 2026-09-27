@@ -235,6 +235,11 @@ type codexFixture struct {
 
 func startCodexFixture(t *testing.T, outcome string) *codexFixture {
 	t.Helper()
+	return startCodexFixtureWith(t, outcome, OpenOptions{})
+}
+
+func startCodexFixtureWith(t *testing.T, outcome string, o OpenOptions) *codexFixture {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake App Server shim is a Unix executable")
 	}
@@ -250,7 +255,7 @@ func startCodexFixture(t *testing.T, outcome string) *codexFixture {
 	}
 	release := filepath.Join(root, "release-settings")
 	env := append(os.Environ(), fakeCodexBinary+"="+os.Args[0], fakeCodexRole+"="+fakeCodexRuntime, fakeCodexLog+"="+logPath, fakeCodexOutcome+"="+outcome, "TUI_GO_CODEX_TEST_CWD="+cwd, fakeCodexRelease+"="+release)
-	endpoint, err := Open(context.Background(), "codex", shim, cwd, env, io.Discard)
+	endpoint, err := OpenWith(context.Background(), "codex", shim, cwd, env, io.Discard, o)
 	if err != nil {
 		t.Fatalf("Open Codex bridge: %v", err)
 	}

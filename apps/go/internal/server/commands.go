@@ -67,14 +67,15 @@ func applyResolved(s *protocol.Snapshot, c protocol.Command, resolved *resolvedP
 	if t == nil {
 		return "", failure("not_found", "thread does not exist")
 	}
-	// A resolution job's thread is driven by the git.resolve_job_* commands
-	// only (ADR 0023 S4); Stop (thread.interrupt) stays available.
+	// A job thread is driven by its job commands only (resolution jobs,
+	// ADR 0023 S4; planning jobs, ADR 0027); Stop (thread.interrupt) stays
+	// available.
 	if t.Job != nil {
 		switch {
 		case c.Kind == "thread.delete" && activeTurn(t):
-			return "", failure("job_running", "the resolution agent is working; cancel it first")
+			return "", failure("job_running", "the job's agent is working; cancel it first")
 		case c.Kind == "prompt.send", c.Kind == "prompt.reopen-send", c.Kind == "thread.resume", c.Kind == "thread.reopen", strings.HasPrefix(c.Kind, "queue."):
-			return "", failure("job_thread", "this is a resolution job's thread; use the resolution job commands")
+			return "", failure("job_thread", "this is a job's thread; use the job's commands")
 		}
 	}
 	if c.Settings != nil {

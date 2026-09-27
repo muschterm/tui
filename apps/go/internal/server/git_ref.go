@@ -48,7 +48,8 @@ const (
 
 func gitKindPolicy(kind string) gitKind {
 	switch kind {
-	case protocol.GitKindBranchCreate:
+	case protocol.GitKindBranchCreate, protocol.GitKindRebasePlanStart, protocol.GitKindRebasePlanRevise:
+		// Planning jobs only read (ADR 0027).
 		return gitKind{budget: gitWriteBudget}
 	case protocol.GitKindSwitch, protocol.GitKindResetSoft:
 		return gitKind{lease: true, budget: gitRefBudget}

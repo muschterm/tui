@@ -208,6 +208,9 @@ func validateGitWrite(c protocol.Command) error {
 	if (c.ThreadID == "") == (c.ProjectID == "") {
 		return failure("invalid", "select exactly one project or thread")
 	}
+	if w.RebasePlan != nil || gitRebasePlanKind(c.Kind) {
+		return validateRebasePlanWrite(c.Kind, w)
+	}
 	if w.Partial != nil {
 		if w.Integrate != nil || w.Operation != nil || w.Conflict != nil || w.ResolveJob != nil || w.Ref != nil || w.Sync != nil || w.Cancel != nil {
 			return failure("invalid", "a partial selection carries only its partial payload")
@@ -488,6 +491,21 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 		}
 		return nil
 	}
+	w.writeSeq = func() uint64 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.planWriteSeq
+	}
+	w.writesSinceLocked = e.writesSinceLocked
+	w.threadLookup = func(id string) *protocol.Thread {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if t := threadByID(&e.snap, id); t != nil {
+			copied := clone(protocol.Snapshot{Threads: []protocol.Thread{*t}}).Threads[0]
+			return &copied
+		}
+		return nil
+	}
 	w.copyLookup = func(key string) []protocol.GitConflictCopy {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -562,6 +580,12 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 		ThreadID: c.ThreadID, ProjectID: c.ProjectID, StartedAt: time.Now().UTC().Format(time.RFC3339), Cancellable: kind.cancellable}
 	next := clone(e.snap)
 	putGitOp(&next, op)
+	if !gitRebasePlanKind(c.Kind) {
+		// Planning jobs learn that their repository may change under them
+		// (every Git write, with or without the lease: fetch and push move
+		// refs, branch creation adds one).
+		e.noteCheckoutWriteLocked(&next, w.top, "")
+	}
 	if plan.journal != nil {
 		gs.opSeq++
 		if err := plan.journal(&next, nil, op.StartedAt); err != nil {
@@ -681,6 +705,10 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 	switch c.Kind {
 	case protocol.GitKindOperationContinue, protocol.GitKindOperationSkip, protocol.GitKindOperationAbort, protocol.GitKindResolveJobStart:
 		go e.sweepJobBaselines() // listings of baselines these dropped
+	case protocol.GitKindRebasePlanStart, protocol.GitKindRebasePlanRevise:
+		if result.State == protocol.GitStateSucceeded {
+			e.startPlanTurnLocked(c)
+		}
 	}
 	return r, nil
 }
@@ -689,7 +717,7 @@ func (e *engine) runGitWrite(ctx context.Context, c protocol.Command, dir string
 // checkout overlapping top: an active turn or an ACP claim in progress.
 func (e *engine) gitThreadHolderLocked(top string) *protocol.Thread {
 	for i := range e.snap.Threads {
-		if t := &e.snap.Threads[i]; activeTurn(t) && pathsOverlap(t.Checkout, top) {
+		if t := &e.snap.Threads[i]; activeTurn(t) && !leaseExempt(t) && pathsOverlap(t.Checkout, top) {
 			return t
 		}
 	}
@@ -809,6 +837,14 @@ type gitWriter struct {
 	baselineDir string
 	// rebaseDir is engine.rebaseDir (git_rebase.go); set by runGitWrite.
 	rebaseDir string
+	// threadLookup returns a copy of a thread (git_rebase_plan_job.go);
+	// set by runGitWrite.
+	threadLookup func(id string) *protocol.Thread
+	// writeSeq and writesSinceLocked expose the engine's record of work
+	// that may write a checkout (git_rebase_plan_job.go); writesSinceLocked
+	// is called with the engine lock held (journals).
+	writeSeq          func() uint64
+	writesSinceLocked func(top string, seq uint64) bool
 }
 
 var gitVersion = sync.OnceValues(func() ([2]int, error) {
@@ -1324,6 +1360,10 @@ func prepareGitWrite(ctx context.Context, g *gitReader, w *gitWriter, c protocol
 		return prepareConflict(ctx, g, w, c)
 	case protocol.GitKindResolveJobStart:
 		return prepareJobStart(ctx, g, w, c)
+	case protocol.GitKindRebasePlanStart:
+		return prepareRebasePlanStart(ctx, g, w, c)
+	case protocol.GitKindRebasePlanRevise:
+		return prepareRebasePlanRevise(ctx, g, w, c)
 	}
 	return nil, failure("unsupported_command", fmt.Sprintf("unsupported command %q", c.Kind))
 }

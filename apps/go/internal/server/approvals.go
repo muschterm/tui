@@ -59,6 +59,10 @@ func (h *acpHandler) RequestPermission(ctx context.Context, p acp.RequestPermiss
 		}
 		seen[id] = true
 	}
+	// A planning job's agent may not do what needs permission (ADR 0027).
+	if out, handled := h.declinePlanApproval(p, request); handled {
+		return out, nil
+	}
 	e.mu.Lock()
 	t := threadByID(&e.snap, r.threadID)
 	r.mu.Lock()

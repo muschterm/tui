@@ -118,7 +118,14 @@ func runFakeClaudeRuntime() int {
 	}
 	var scanErr error
 	fastMode := false
+	startMode := "default"
 	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--permission-mode" {
+			startMode = args[i+1]
+		}
+		if forced := os.Getenv("TUI_GO_CLAUDE_TEST_INIT_MODE"); forced != "" {
+			startMode = forced
+		}
 		if args[i] == "--settings" && strings.Contains(args[i+1], `"fastMode":true`) {
 			fastMode = true
 		}
@@ -201,7 +208,7 @@ func runFakeClaudeRuntime() int {
 						map[string]any{"value": "fable-alias", "resolvedModel": "claude-fable-5", "displayName": "Fable", "description": "Fable 5 · Most capable"},
 						map[string]any{"value": "default", "resolvedModel": "claude-model-live-a-v1", "displayName": "Default (recommended)", "description": "Live model A · Best for everyday tasks"},
 					},
-					"current_permission_mode":   "default",
+					"current_permission_mode":   startMode,
 					"fast_mode_state":           "off",
 					"fast_mode_disabled_reason": "sdk_opt_in_required",
 				}
@@ -405,6 +412,11 @@ type claudeFixture struct {
 
 func startClaudeFixture(t *testing.T, extraEnv ...string) *claudeFixture {
 	t.Helper()
+	return startClaudeFixtureWith(t, OpenOptions{}, extraEnv...)
+}
+
+func startClaudeFixtureWith(t *testing.T, o OpenOptions, extraEnv ...string) *claudeFixture {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the test CLI shim is a Unix executable")
 	}
@@ -421,7 +433,7 @@ func startClaudeFixture(t *testing.T, extraEnv ...string) *claudeFixture {
 	}
 	env := append(os.Environ(), fakeTestBinary+"="+os.Args[0], fakeClaudeRole+"=runtime", fakeClaudeLog+"="+logPath)
 	env = append(env, extraEnv...)
-	endpoint, err := Open(context.Background(), "claude", shim, cwd, env, io.Discard)
+	endpoint, err := OpenWith(context.Background(), "claude", shim, cwd, env, io.Discard, o)
 	if err != nil {
 		t.Fatalf("Open Claude bridge: %v", err)
 	}

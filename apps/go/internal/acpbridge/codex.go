@@ -394,14 +394,14 @@ func (b *codexBridge) newSession(ctx context.Context, params json.RawMessage) (a
 		return nil, internal(errors.New("codex started the thread in a different working directory"))
 	}
 	model, effort := b.effectiveSettings(resp.Model, resp.ReasoningEffort)
-	if err := b.applySettings(ctx, resp.Thread.ID, "", "", "supervised"); err != nil {
-		return nil, internal(fmt.Errorf("codex did not acknowledge supervised baseline: %w", err))
+	if err := b.applySettings(ctx, resp.Thread.ID, "", "", b.baselineMode()); err != nil {
+		return nil, internal(fmt.Errorf("codex did not acknowledge the %s baseline: %w", b.baselineMode(), err))
 	}
 	b.mu.Lock()
 	b.threadID, b.sessionID, b.cwd = resp.Thread.ID, string(resp.Thread.ID), req.Cwd
 	b.selectedModel, b.selectedEffort = model, effort
 	b.selectedSpeed = b.modelSpeed(model, resp.ServiceTier)
-	b.selectedMode = "supervised"
+	b.selectedMode = b.baselineMode()
 	options := b.configOptionsLocked()
 	b.mu.Unlock()
 	return acp.NewSessionResponse{SessionId: acp.SessionId(resp.Thread.ID), ConfigOptions: options}, nil
@@ -449,14 +449,14 @@ func (b *codexBridge) loadSession(ctx context.Context, params json.RawMessage) (
 		return nil, internal(errors.New("codex thread working directory does not match the requested checkout"))
 	}
 	model, effort := b.effectiveSettings(resp.Model, resp.ReasoningEffort)
-	if err := b.applySettings(ctx, resp.Thread.ID, "", "", "supervised"); err != nil {
-		return nil, internal(fmt.Errorf("codex did not acknowledge supervised baseline: %w", err))
+	if err := b.applySettings(ctx, resp.Thread.ID, "", "", b.baselineMode()); err != nil {
+		return nil, internal(fmt.Errorf("codex did not acknowledge the %s baseline: %w", b.baselineMode(), err))
 	}
 	b.mu.Lock()
 	b.threadID, b.sessionID, b.cwd = resp.Thread.ID, string(req.SessionId), req.Cwd
 	b.selectedModel, b.selectedEffort = model, effort
 	b.selectedSpeed = b.modelSpeed(model, resp.ServiceTier)
-	b.selectedMode = "supervised"
+	b.selectedMode = b.baselineMode()
 	options := b.configOptionsLocked()
 	b.mu.Unlock()
 	return acp.LoadSessionResponse{ConfigOptions: options}, nil
@@ -538,7 +538,7 @@ func (b *codexBridge) setConfigOption(ctx context.Context, params json.RawMessag
 		}
 		effort = string(value)
 	case "mode":
-		if b.selectedMode == "" || !codexPermissionMode(string(value)) {
+		if b.selectedMode == "" || !b.modeAllowed(string(value)) {
 			b.mu.Unlock()
 			return nil, invalid(fmt.Errorf("codex cannot enforce permission mode %q", value))
 		}
@@ -597,6 +597,29 @@ func (b *codexBridge) applySettings(ctx context.Context, threadID, model, effort
 	return err
 }
 
+// codexReadOnlyMode is the permission mode of a read-only bridge; it is
+// never offered to ordinary sessions.
+const codexReadOnlyMode = "read-only"
+
+func (b *codexBridge) readOnly() bool { return b.h != nil && b.h.readOnly }
+
+// baselineMode is the mode a session is narrowed to when it opens.
+func (b *codexBridge) baselineMode() string {
+	if b.readOnly() {
+		return codexReadOnlyMode
+	}
+	return "supervised"
+}
+
+// modeAllowed: a read-only bridge accepts only its read-only mode; other
+// bridges never accept it.
+func (b *codexBridge) modeAllowed(mode string) bool {
+	if b.readOnly() {
+		return mode == codexReadOnlyMode
+	}
+	return codexPermissionMode(mode)
+}
+
 func codexPermissionMode(mode string) bool {
 	switch mode {
 	case "supervised", "auto", "full":
@@ -617,6 +640,14 @@ func (b *codexBridge) permissionPolicy(mode string) (any, any, string, error) {
 		return "on-request", map[string]any{"type": "workspaceWrite"}, "auto_review", nil
 	case "full":
 		return "never", map[string]any{"type": "dangerFullAccess"}, "user", nil
+	case codexReadOnlyMode:
+		// App Server v2 SandboxPolicy readOnly (no writes; network off by
+		// default) and AskForApproval never: failures return to the model
+		// and are never escalated (openai/codex app-server-protocol v2).
+		if !b.readOnly() {
+			return nil, nil, "", fmt.Errorf("the read-only mode is not available in this session")
+		}
+		return "never", map[string]any{"type": "readOnly", "networkAccess": false}, "user", nil
 	default:
 		return nil, nil, "", fmt.Errorf("unsupported Codex permission mode %q", mode)
 	}
@@ -730,6 +761,9 @@ func (b *codexBridge) configOptionsLocked() []acp.SessionConfigOption {
 			{Name: "Supervised", Value: "supervised", Description: stringPtr("Ask the user before actions outside the writable workspace")},
 			{Name: "Auto", Value: "auto", Description: stringPtr("Use Codex auto review for requests outside the writable workspace")},
 			{Name: "Full access", Value: "full", Description: stringPtr("Run without approval prompts or Codex sandbox restrictions")},
+		}
+		if b.readOnly() {
+			modeValues = acp.SessionConfigSelectOptionsUngrouped{{Name: "Read-only", Value: codexReadOnlyMode, Description: stringPtr("Codex read-only sandbox; nothing is escalated for approval")}}
 		}
 		options = append(options, acp.SessionConfigOption{Select: &acp.SessionConfigOptionSelect{
 			Id: "mode", Name: "Permissions", Category: &category, CurrentValue: acp.SessionConfigValueId(b.selectedMode),
@@ -869,7 +903,7 @@ func (b *codexBridge) prompt(ctx context.Context, params json.RawMessage) (any, 
 		return nil, invalid(errors.New("select a model reported by Codex before sending a prompt"))
 	}
 	model, effort, mode, speed, threadID := b.selectedModel, b.selectedEffort, b.selectedMode, b.selectedSpeed, b.threadID
-	if mode != "" && !codexPermissionMode(mode) {
+	if mode != "" && !b.modeAllowed(mode) {
 		b.mu.Unlock()
 		b.operationMu.Unlock()
 		return nil, invalid(errors.New("selected Codex permission mode is no longer supported"))

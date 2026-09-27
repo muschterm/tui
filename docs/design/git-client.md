@@ -133,6 +133,29 @@ spaces and blank lines exactly. Verified with
 real Git in temporary repositories in `git_rebase_test.go`, not in a
 terminal.
 
+### Agent-planned rebase — 2026-09-27
+
+The server, protocol and Go client let an agent propose an interactive
+rebase plan ([ADR 0027](../adr/0027-agent-planned-rebase.md); wire contract
+in `apps/go/internal/protocol/git_rebase_plan_job.go`, client helpers in
+`apps/go/internal/client/git_rebase_plan_job.go`, capability
+`git-rebase-agent-plan`); the TUI does not show proposals yet. A planning
+job is an agent turn in a job thread that is given the pinned plan's
+commits (messages, authors, numstat and bounded diffs) and the user's
+instruction, and answers with one fenced `tui-rebase-plan` JSON block. The
+server validates it with `protocol.ValidateRebasePlan` against the pinned
+plan and stores a revisioned proposal (proposed, invalid with its errors
+and raw text, tainted when the checkout changed during the turn, failed,
+cancelled; stale once the branch moved). The job does not hold the writer
+lease; the built-in bridges open its agent in the provider's read-only
+mode (Claude `plan`, Codex's read-only sandbox), approvals it asks for are
+declined, and the checkout is compared after every turn. Asking the agent to fix an invalid answer is an explicit
+revise, at most 8 turns per job. Nothing runs from a proposal: the user
+loads it into the plan editor and starts an ordinary interactive rebase,
+giving the merge and published acknowledgements. Verified with the fake
+ACP agent and real Git in temporary repositories, not with the installed
+Claude or Codex CLIs and not in a terminal.
+
 ### Partial staging — 2026-09-26
 
 The server, protocol, Go client and Go TUI (the selectable diff viewer;
@@ -189,7 +212,7 @@ The ordinary Pull action explicitly enforces fast-forward-only integration regar
 
 A failed fast-forward-only pull must not silently fall back to merge or rebase. Offer an explicit next action to integrate the selected upstream by rebase (manual interactive or agent-planned, see below), or leave the branch as it is. Manual or agent conflict resolution applies when that separately chosen operation encounters conflicts.
 
-**User decisions — 2026-09-26 (history editing and fetch).** These supersede the earlier "non-interactive rebase only" decision (ADR 0023) and the merge option in the divergence follow-up above. Implementation status is noted per item and in the status sections above (interactive rebase: server, protocol and client only, 2026-09-26).
+**User decisions — 2026-09-26 (history editing and fetch).** These supersede the earlier "non-interactive rebase only" decision (ADR 0023) and the merge option in the divergence follow-up above. Implementation status is noted per item and in the status sections above (interactive rebase: server, protocol, client and a first TUI, 2026-09-26; agent-planned rebase: server, protocol and client, 2026-09-27).
 
 - **Pull integrates by fast forward only.** When Pull finds the branch diverged, the follow-up offers rebase onto the upstream or leaving the branch as it is; Pull never leads to a merge commit. The separate Merge action for other branches is unchanged.
 - **Soft reset from a commit's context menu** is the user's manual squashing workflow (already built, ADR 0021): right-click a commit → Soft reset the current branch to it, keeping index and working tree.

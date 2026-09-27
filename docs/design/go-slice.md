@@ -1,6 +1,6 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI, with partial discard deferred; a [tmux 3.7c compatibility matrix](../research/go-terminal-matrix-2026-09-26.md) is recorded, but SSH and GUI emulators remain untested; interactive rebase has a first TUI ([binding](#interactive-rebase-tui--2026-09-26)), with agent-proposed plans still to come; most of the above is verified by unit/integration tests, PTY harnesses and fixtures rather than a full real-terminal/SSH matrix. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI, with partial discard deferred; a [tmux 3.7c compatibility matrix](../research/go-terminal-matrix-2026-09-26.md) is recorded, but SSH and GUI emulators remain untested; interactive rebase has a first TUI ([binding](#interactive-rebase-tui--2026-09-26)); [agent-planned proposals](#agent-planned-rebase-server--2026-09-27) are served but not yet shown in the TUI; most of the above is verified by unit/integration tests, PTY harnesses and fixtures rather than a full real-terminal/SSH matrix. This does not change the accepted product scope or settle later integration decisions.
 
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
@@ -1848,7 +1848,7 @@ the continue review (dark and light).
 
 Server, protocol and client only ([ADR 0026](../adr/0026-interactive-rebase.md));
 the [TUI binding](#interactive-rebase-tui--2026-09-26) builds on this
-contract; the agent planner comes next. `internal/server/git_rebase.go` serves `GET /v1/git/rebase/plan`
+contract; the [agent planner](#agent-planned-rebase-server--2026-09-27) proposes plans for it. `internal/server/git_rebase.go` serves `GET /v1/git/rebase/plan`
 and starts `git.rebase` with `GitIntegrate.Interactive`;
 `internal/server/git_rebase_helper.go` is the editor helper Git runs as
 `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR`: this binary's hidden
@@ -1935,6 +1935,65 @@ advertised with Git 2.38 or newer.
   planned in amend mode (amend, continue) and reset mode (split, continue),
   across a restart, and aborted) and `internal/protocol/git_rebase_test.go`; not yet in
   a terminal.
+
+### Agent-planned rebase (server) — 2026-09-27
+
+Server, protocol and client only ([ADR 0027](../adr/0027-agent-planned-rebase.md));
+the TUI does not show proposals yet (it will load one with
+`openGitRebaseAgentPlan`). `internal/server/git_rebase_plan_job.go` runs
+planning jobs; `internal/protocol/git_rebase_plan_job.go` holds the wire
+contract; client helpers are `GitRebasePlanStartCommand`,
+`GitRebasePlanReviseCommand`, `GitRebasePlanCancelCommand`,
+`GitRebasePlanEndCommand`, `Client.GitRebaseProposal`,
+`Client.GitRebaseProposals` and `ProposalLoadable`. Capability
+`git-rebase-agent-plan` (with `git-rebase-interactive`).
+
+- **Commands:** `git.rebase_plan_start` (agent, settings, `base`/`onto` as
+  for the plan read, optional fingerprint and instructions) and
+  `git.rebase_plan_revise` (job, the revision the user saw, optional
+  instructions) are journaled Git writes that take the Git slot but not the
+  writer lease; `git.rebase_plan_cancel` and `git.rebase_plan_end` are
+  ordinary commands. The job thread is `rebase-plan-<command ID>`, a
+  `rebase_plan` job thread exempt from writer scheduling (`leaseExempt` in
+  `writer.go`, `claim`, `gitThreadHolderLocked`).
+- **Reads:** `GET /v1/git/rebase/proposal?job=` (pinned plan, parsed
+  entries, update-refs suggestion, rationale, raw answer, errors, checkout
+  changes, enforcement note, and a fresh plan read's fingerprint and
+  `Blocked`; `stale` is derived here) and `GET /v1/git/rebase/proposals`.
+  The snapshot carries `Thread.Job.Proposal` for every client.
+- **Checks:** on a verified built-in bridge the agent is opened read-only
+  (`acpbridge.OpenOptions.ReadOnly`: Claude `plan` with
+  `useAutoModeDuringPlan` off and no bypass, Codex `readOnly` sandbox with
+  approval policy `never`; `Summary.ReadOnlyMode`); approvals are declined
+  by the server (reject option);
+  the checkout is compared after each turn (`tainted`): branch, HEAD and
+  its symbolic target, index and index flags (skip-worktree and
+  assume-unchanged files by stat), the complete status with submodules,
+  configuration, hooks (symlinked ones by target), info/ exclude,
+  attributes, sparse-checkout and grafts, and every ref except
+  remote-tracking and prefetch refs (`git_rebase_plan_pin.go`); concurrent
+  application work is matched by repository;
+  a dispatch that cannot start fails the revision, and one that never
+  starts can be cancelled; the answer is the final agent message segment
+  and keys are checked strictly; the fenced `tui-rebase-plan` JSON is parsed
+  strictly and validated with `protocol.ValidateRebasePlan`; `exec` is
+  refused; restart fails a running revision and checks an ended one.
+- **Codes:** `stale_plan`, `stale_proposal`, `too_many_turns`,
+  `job_running`, `not_active`, `no_job`, `job_thread`, `capacity`, the
+  plan's start refusals.
+- Verified in `internal/server/git_rebase_plan_job_test.go` with the fake
+  ACP agent only (a valid proposal run through `git.rebase`, abbreviated
+  hashes, invalid answers with the raw text kept and an explicit fix-up
+  turn, `exec` and unknown actions, a named merge commit and the
+  published/merge acknowledgements the agent cannot give, a written file
+  and a staged file tainting, cancel while other threads and a staging
+  write proceed, declined approvals, refusals, the turn bound, restart
+  recovery, the permission policy, a verified bridge opened read-only, and
+  the parser) and `internal/acpbridge/readonly_test.go` with fake Claude
+  and Codex CLIs (launch arguments, plan confirmation, the read-only
+  catalogue and refusals, the App Server policy at open and per turn); no
+  installed Claude or Codex CLI was run, and nothing was checked in a
+  terminal.
 
 ### Interactive rebase (TUI) — 2026-09-26
 

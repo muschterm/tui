@@ -196,7 +196,7 @@ func (c *claude) Handle(ctx context.Context, method string, raw json.RawMessage)
 			}
 			control = map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": req.Value == "fast"}}
 		case "mode":
-			if !claudePermissionMode(req.Value) {
+			if c.readOnly() != (req.Value == claudeReadOnlyMode) || !c.readOnly() && !claudePermissionMode(req.Value) {
 				return nil, invalid(errors.New("unsupported permission mode"))
 			}
 			if req.Value == "auto" && !claudeModelSupportsAuto(models, currentModel) {
@@ -350,7 +350,26 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 	}
 	// Claude Code's non-interactive Fast contract requires opt-in at launch.
 	// Reset it before exposing the session so no prompt inherits Fast silently.
-	p, err := c.h.launch("-p", "--settings", `{"fastMode":true}`, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--allow-dangerously-skip-permissions", "--permission-mode", "default", "--session-id", c.session)
+	args := []string{"-p", "--settings", `{"fastMode":true}`, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--allow-dangerously-skip-permissions", "--permission-mode", "default", "--session-id", c.session}
+	wantMode := "default"
+	if c.readOnly() {
+		// Plan mode: Claude does not edit files; with the classifier off
+		// during planning, every command outside its built-in read-only set
+		// asks through the permission prompt tool (documented at
+		// code.claude.com/docs/en/permission-modes). Bypass is not enabled.
+		wantMode = claudeReadOnlyMode
+		// disableAutoMode keeps the auto-mode classifier from approving
+		// anything in this session. A repository's own plansDirectory
+		// inside the project would put plan files into the checkout; the
+		// server's checkout pin detects that.
+		settings := map[string]any{"fastMode": true, "useAutoModeDuringPlan": false, "disableAutoMode": "disable"}
+		encoded, err := json.Marshal(settings)
+		if err != nil {
+			return nil, internal(err)
+		}
+		args = []string{"-p", "--settings", string(encoded), "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", claudeReadOnlyMode, "--session-id", c.session}
+	}
+	p, err := c.h.launch(args...)
 	if err != nil {
 		return nil, internal(err)
 	}
@@ -367,7 +386,7 @@ func (c *claude) initialize(ctx context.Context, raw json.RawMessage) (any, *acp
 		FastModeState          string        `json:"fast_mode_state"`
 		FastModeDisabledReason string        `json:"fast_mode_disabled_reason"`
 	}
-	if json.Unmarshal(r, &info) != nil || len(info.Models) == 0 || len(info.Models) > 128 || info.Mode != "default" {
+	if json.Unmarshal(r, &info) != nil || len(info.Models) == 0 || len(info.Models) > 128 || info.Mode != wantMode {
 		c.Close()
 		return nil, internal(errors.New("unsupported Claude initialization/settings response"))
 	}
@@ -460,6 +479,9 @@ func (c *claude) options() []any {
 		modeValues = append(modeValues, map[string]any{"value": "auto", "name": "Auto", "description": "Claude automatically reviews permission decisions", "_meta": map[string]any{"tui-go.models": autoModels}})
 	}
 	modeValues = append(modeValues, map[string]any{"value": "bypassPermissions", "name": "Full access", "description": "Bypass Claude permission prompts"})
+	if c.readOnly() {
+		modeValues = []any{map[string]any{"value": claudeReadOnlyMode, "name": "Read-only (plan)", "description": "Claude plans without editing files; commands outside its read-only set ask for permission"}}
+	}
 	options := []any{
 		map[string]any{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": c.model, "options": values},
 		map[string]any{"id": "mode", "name": "Permissions", "category": "mode", "type": "select", "currentValue": c.permissionMode, "options": modeValues},
@@ -661,6 +683,12 @@ func (c *claude) setFast(ctx context.Context, enabled bool) error {
 	c.mu.Unlock()
 	return nil
 }
+
+func (c *claude) readOnly() bool { return c.h != nil && c.h.readOnly }
+
+// claudeReadOnlyMode is the permission mode of a read-only bridge; it is
+// never offered to ordinary sessions.
+const claudeReadOnlyMode = "plan"
 
 func claudePermissionMode(value string) bool {
 	switch value {
