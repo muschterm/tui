@@ -297,6 +297,7 @@ type Model struct {
 	gitO          gitOpUI
 	gitCF         gitConflictUI
 	gitJ          gitJobUI
+	gitRB         gitRebaseUI
 	// jobReq is a resolution job thread whose pending requests the request
 	// cards show (git_job.go); the active thread is unchanged.
 	jobReq string
@@ -648,6 +649,12 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	if m.gitJ.ready {
 		m.gitJ.input.Blur()
 	}
+	if m.gitRB.ready {
+		m.gitRB.msg.Blur()
+	}
+	if key == gitRebaseMsgKey {
+		return m.gitRebaseMsg().Focus()
+	}
 	if key == gitBranchNameKey {
 		return m.gitBranchInput().Focus()
 	}
@@ -875,6 +882,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptGitReview(msg)
 	case gitPreviewMsg:
 		cmd = m.acceptGitPreview(msg)
+	case gitRebasePlanMsg:
+		cmd = m.acceptGitRebasePlan(msg)
 	case viewerImageMsg:
 		cmd = m.acceptViewerImage(msg)
 	case thumbnailMsg:
@@ -1208,6 +1217,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.gitBranchNamePaste(text)
 		} else if m.focus == gitJobInputKey {
 			cmd = m.gitJobInputPaste(text)
+		} else if m.focus == gitRebaseMsgKey {
+			cmd = m.gitRebaseMsgPaste(text)
 		} else if m.focus == "prompt" {
 			m.promptView.Reset()
 			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(text)})
@@ -1262,6 +1273,14 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			return cmd
 		}
 		if cmd, handled := m.viewerKey(k); handled {
+			return cmd
+		}
+	}
+	if s == "esc" && m.focus == gitRebaseMsgKey && len(m.menu) == 0 {
+		return m.gitRebaseMsgKeyPress(k)
+	}
+	if s == "esc" && len(m.menu) == 0 && strings.HasPrefix(m.focus, "git:rb") {
+		if cmd, handled := m.gitRebaseKey(s); handled {
 			return cmd
 		}
 	}
@@ -1521,6 +1540,12 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	if m.focus == gitJobInputKey {
 		return m.gitJobInputKeyPress(k)
 	}
+	if m.focus == gitRebaseMsgKey {
+		return m.gitRebaseMsgKeyPress(k)
+	}
+	if cmd, handled := m.gitRebaseKey(s); handled {
+		return cmd
+	}
 	if cmd, handled := m.gitRowKey(s); handled {
 		return cmd
 	}
@@ -1602,6 +1627,9 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	if cmd, handled := m.docMouse(msg, f); handled {
+		return cmd
+	}
+	if cmd, handled := m.gitRebaseMouse(msg, f); handled {
 		return cmd
 	}
 	switch msg.(type) {

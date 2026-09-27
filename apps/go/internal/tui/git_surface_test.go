@@ -32,8 +32,10 @@ type fakeGit struct {
 	preview protocol.GitIntegratePreview
 	// conflictFiles answers GitConflictFile by "path|version".
 	conflictFiles map[string]protocol.GitConflictFile
-	err           error
-	calls         []string
+	// rbPlan answers GitRebasePlan (git_rebase_test.go).
+	rbPlan protocol.GitRebasePlan
+	err    error
+	calls  []string
 }
 
 func (g *fakeGit) record(call string) {

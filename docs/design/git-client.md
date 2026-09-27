@@ -108,7 +108,8 @@ and the TUI remain. Verified with real Git in temporary repositories in
 
 ### Interactive rebase — 2026-09-26
 
-The server, protocol and Go client (not yet the TUI) run interactive
+The server, protocol, Go client and a first Go TUI ([go-slice
+binding](go-slice.md#interactive-rebase-tui--2026-09-26)) run interactive
 rebases from a plan ([ADR 0026](../adr/0026-interactive-rebase.md); wire
 contract in `apps/go/internal/protocol/git_rebase.go`, client helpers in
 `apps/go/internal/client/git_rebase.go`, capability

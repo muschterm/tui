@@ -84,7 +84,7 @@ func gitWriteSettle(t *testing.T, m *Model, cmd tea.Cmd) {
 		var next []tea.Cmd
 		for _, msg := range pump(t, m, cmd).msgs {
 			switch msg.(type) {
-			case gitStatusMsg, gitLogMsg, gitViewerMsg, gitHunksMsg, gitWriteMsg, gitHeadMsg, gitOperationMsg, gitPreviewMsg, gitConflictFileMsg, gitReviewMsg:
+			case gitStatusMsg, gitLogMsg, gitViewerMsg, gitHunksMsg, gitWriteMsg, gitHeadMsg, gitOperationMsg, gitPreviewMsg, gitConflictFileMsg, gitReviewMsg, gitRebasePlanMsg:
 				_, c := m.Update(msg)
 				next = append(next, c)
 			}

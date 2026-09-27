@@ -142,6 +142,7 @@ func (m *Model) nextGitRefresh() tea.Cmd {
 	m.gitDialogsSettle(key)
 	m.gitOperationSettle(key)
 	m.gitJobSettle(key)
+	m.gitRebaseSettle(key)
 	opsDone := m.gitOpsChanged(key)
 	active := activeTurn(m.thread()) && !m.creatingThread()
 	ended := m.gitTurnKey == key && m.gitTurnActive && !active
@@ -270,6 +271,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 	case "git-partial-hunk":
 		return m.gitPartialSelectHunk(a.Index)
 	}
+	if cmd, ok := m.gitRebaseAction(a); ok {
+		return cmd
+	}
 	if cmd, ok := m.gitBranchesAction(a); ok {
 		return cmd
 	}
@@ -323,6 +327,8 @@ type gitRow struct {
 	// graph and graphRow place a commit row's cells in the cached layout.
 	graph    *gitGraph
 	graphRow int
+	// rb is an interactive rebase plan row (git_rebase_view.go).
+	rb *gitRebaseRow
 }
 
 var gitSections = []struct{ group, title, label string }{
@@ -440,6 +446,12 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	if s := m.gitJ.start; s != nil && s.key == key {
 		return append(b, m.gitJobStartBlocks(s)...)
 	}
+	if e := m.gitRB.edits[key]; e != nil {
+		return append(b, m.gitRebaseMessageBlocks(e, m.gitRebaseDraftFor(key))...)
+	}
+	if d := m.gitRebaseDraftFor(key); d != nil && d.open && d.sentID == "" {
+		return append(b, m.gitRebaseEditorBlocks(d)...)
+	}
 	if v := m.gitCF.viewer; v != nil && v.key == key {
 		return append(b, m.gitConflictViewerBlocks(v)...)
 	}
@@ -448,6 +460,9 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 		return append(b, m.gitReviewBlocks(r)...)
 	}
 	b = append(b, m.gitCheckoutBlocks()...)
+	if d := m.gitRebaseDraftFor(key); d != nil {
+		b = append(b, m.gitRebaseDraftBlocks(d)...)
+	}
 	s := g.status
 	if s != nil && s.Upstream != "" {
 		value := safe(singleLine(s.Upstream))

@@ -69,6 +69,9 @@ type gitOpDialog struct {
 	target client.GitTarget
 	kind   string // protocol.GitKindOperation*
 	state  protocol.GitOperationState
+	// message is Continue's message at an interactive stop ("" keeps the
+	// stored or original one; git_rebase.go).
+	message string
 }
 
 // gitOpUI is the client-local merge/rebase state.
@@ -98,7 +101,7 @@ func (m *Model) gitOperationClient() gitOperationAPI {
 func gitOperationKind(kind string) bool {
 	switch kind {
 	case protocol.GitKindMerge, protocol.GitKindRebase, protocol.GitKindOperationAbort,
-		protocol.GitKindOperationContinue, protocol.GitKindOperationSkip:
+		protocol.GitKindOperationContinue, protocol.GitKindOperationSkip, protocol.GitKindOperationCommit:
 		return true
 	}
 	return false
@@ -290,6 +293,7 @@ func (m *Model) gitOperationAction(a action) (tea.Cmd, bool) {
 			if gitAgentChangesPending(st) {
 				client.AcknowledgeAgentChanges(&cmd, st.AgentChanges)
 			}
+			cmd.Git.Operation.Message = dlg.message
 			return m.sendGitWrite(key, cmd, st.Kind), true
 		case protocol.GitKindOperationSkip:
 			cmd, ok := client.GitOperationSkipCommand(identity(), dlg.target, st, len(st.DiscardsOnSkip) > 0 || len(st.BackupMissingOnSkip) > 0)
@@ -501,10 +505,22 @@ func gitOpReviewSections(kind string, st protocol.GitOperationState) []gitReview
 			for _, c := range st.AbortDropsCommits {
 				commits = append(commits, gitShort(c.Oid)+" "+safe(singleLine(c.Subject)))
 			}
-			if st.AbortDropsIncomplete {
-				commits = append(commits, "and "+strconv.Itoa(st.AbortDropsCount-len(st.AbortDropsCommits))+" more")
+			if st.AbortDropsIncomplete || st.AbortDropsAtLeast && st.AbortDropsCount > len(st.AbortDropsCommits) {
+				more := "and "
+				if st.AbortDropsAtLeast {
+					more += "at least "
+				}
+				commits = append(commits, more+strconv.Itoa(st.AbortDropsCount-len(st.AbortDropsCommits))+" more")
 			}
-			add("Removes "+plural(st.AbortDropsCount, "commit")+" the "+safe(singleLine(st.Kind))+" already made:", commits)
+			heading := "Removes " + plural(st.AbortDropsCount, "commit") + " the " + safe(singleLine(st.Kind)) + " already made:"
+			if st.Interactive != nil && st.Interactive.Plan {
+				n := plural(st.AbortDropsCount, "commit")
+				if st.AbortDropsAtLeast {
+					n = "at least " + n
+				}
+				heading = "Removes " + n + " made at stops (a backup ref keeps them):"
+			}
+			add(heading, commits)
 		}
 	case protocol.GitKindOperationSkip:
 		add("Also resets changes to:", st.DiscardsOnSkip)
@@ -615,6 +631,13 @@ func (m *Model) openGitOpDialog(dlg *gitOpDialog) {
 	case protocol.GitKindOperationContinue:
 		title, verb = "Continue "+kind+" · ", "Continue the "+kind
 		question = append(question, "Continue the "+kind+" on "+branch+"?", "Commits what is staged now, with the "+kind+"'s own message")
+		if in := st.Interactive; in != nil && in.Plan {
+			question[1] = gitRebaseContinueCopy(st)
+		}
+		if dlg.message != "" {
+			subject, _, _ := strings.Cut(safe(dlg.message), "\n")
+			question[1] = "Commits what is staged now with your message: " + truncateCells(subject, 48)
+		}
 		if len(st.MarkerPaths) > 0 {
 			verb, confirm.ID = "Continue with conflict markers", "markers"
 		}

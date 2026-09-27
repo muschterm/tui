@@ -692,6 +692,7 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 		return m.refreshGit()
 	}
 	kind := msg.cmd.Kind
+	m.gitRebaseReply(msg)
 	var pe *protocol.Error
 	if errors.As(msg.err, &pe) {
 		if pe.Code == "unknown_outcome_lookup" || pe.Code == "storage" {
@@ -1019,6 +1020,9 @@ func gitRefCopy(kind, code string) string {
 	case "agent_unavailable":
 		return "ssh-agent is unavailable or refused to sign"
 	case "signing_failed":
+		if gitOperationKind(kind) {
+			return "Commit signing failed · fix signing (commit.gpgSign), then Continue, or Abort"
+		}
 		return "Push signing failed · nothing was sent"
 	case "transport":
 		return "Could not reach the remote"
@@ -1096,7 +1100,7 @@ func gitRefCopy(kind, code string) string {
 	case "drops_unacknowledged":
 		return "Commits the abort removes differ from shown · review again"
 	case "backup_incomplete":
-		return "Not every overwritten file can be backed up · review again; nothing changed"
+		return "The backup could not be completed · nothing changed; review again"
 	case "stopped_conflicts":
 		return "Stopped with conflicts · resolve and stage them, then Continue"
 	case "stopped":
@@ -1107,6 +1111,51 @@ func gitRefCopy(kind, code string) string {
 		return "Git failed but files or the index changed · review status"
 	case "abort_incomplete":
 		return "Aborted, but some restored files still differ · review them"
+	case "upstream_missing":
+		return "The configured upstream's ref is missing · fetch it, or set another upstream"
+	case "stop_unobserved":
+		return "This stop wasn't observed by the server · Abort, or finish in a terminal"
+	case "unsupported_message":
+		return "A commit message in the range cannot be handled here · rebase in a terminal"
+	case "nothing_to_recommit":
+		return "Nothing is staged to recommit · stage the changes to recommit, or Abort"
+	case "update_refs_unsupported":
+		return "Some branches cannot be moved here · start with Update refs off"
+	case "invalid":
+		if kind == protocol.GitKindOperationContinue {
+			return "A message does not apply at this stop · Continue without one"
+		}
+		return gitErrorCopy(code)
+	case "stale_plan":
+		return "The repository changed since the plan was read · Refresh plan keeps your arrangement"
+	case "invalid_plan":
+		return "The plan is not valid"
+	case "message_required":
+		return "A step needs a message"
+	case "merges_unacknowledged":
+		return "Acknowledge that merge commits are dropped first"
+	case "empty_range":
+		return "No commits to rebase between the base and HEAD"
+	case "too_many_commits":
+		return "Too many commits for one plan · rebase a shorter range"
+	case "plan_missing":
+		return "The stored plan of this rebase is missing · continue in a terminal, or abort"
+	case "todo_rejected":
+		return "Git rejected the plan's todo · nothing changed"
+	case "nothing_staged":
+		return "Stage changes before committing"
+	case "empty_message":
+		return "Write a commit message first"
+	case "staged_changes":
+		return "Changes are staged (a commit was made at this stop) · commit or unstage them first"
+	case "unstaged_changes":
+		return "Unstaged changes present · stage or discard them first"
+	case "hook_rejected":
+		return "A hook refused the commit · see output, fix it and Continue"
+	case "helper_failed":
+		return "The server's editor helper failed · Continue retries"
+	case "commit_failed":
+		return "The commit was not created · see output"
 	case "documents_changed_tree":
 		return "Saving open documents changed tracked files · commit or discard them, then start again"
 	}
@@ -1195,6 +1244,9 @@ func (m *Model) gitRefKey(s string) (tea.Cmd, bool) {
 // openGitContextMenu opens the context menu of a branch or commit row. Every
 // item names the commit and the branch or HEAD it affects.
 func (m *Model) openGitContextMenu(focus string) tea.Cmd {
+	if i, ok := gitRebaseRowIndex(focus); ok {
+		return m.openGitRebaseRowMenu(i)
+	}
 	if strings.HasPrefix(focus, "git:conflict:") || strings.HasPrefix(focus, "git-cact:") {
 		return m.openGitConflictMenu(focus)
 	}
@@ -1227,6 +1279,9 @@ func (m *Model) openGitContextMenu(focus string) tea.Cmd {
 			items = append(items,
 				menuItem{Label: "Merge " + name + " into " + cur + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationMerge, ID: br.Ref}},
 				menuItem{Label: "Rebase " + cur + " onto " + name + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: br.Ref}})
+			if m.gitRebaseEnabled() {
+				items = append(items, menuItem{Label: "Rebase " + cur + " onto " + name + " interactively…", Action: action{Kind: "git-rb-onto", ID: br.Ref}})
+			}
 		}
 		items = append(items,
 			menuItem{Label: "Create branch from " + name + " " + gitShort(br.Tip) + "… (b)", Action: action{Kind: "git-branch-new", ID: br.Tip, Value: br.Name}},
@@ -1248,6 +1303,14 @@ func (m *Model) openGitContextMenu(focus string) tea.Cmd {
 			items = append(items,
 				menuItem{Label: "Merge " + short + " into " + cur + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationMerge, ID: c.Hash}},
 				menuItem{Label: "Rebase " + cur + " onto " + short + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: c.Hash}})
+			if m.gitRebaseEnabled() {
+				items = append(items, menuItem{Label: "Rebase " + cur + " onto " + short + " interactively…", Action: action{Kind: "git-rb-onto", ID: c.Hash}})
+			}
+		}
+		if m.gitOperationsEnabled() {
+			items = append(items, menuItem{Separator: true})
+			items = append(items, m.gitRebaseMenuItems(g, c)...)
+			items = append(items, menuItem{Separator: true})
 		}
 		items = append(items, menuItem{Label: "Copy hash " + short + " (y)", Action: action{Kind: "context-copy", Value: c.Hash}})
 	} else {
@@ -1270,7 +1333,7 @@ func (m *Model) openGitContextMenuAt(f frame, x, y int) (tea.Cmd, bool) {
 		if !h.Rect.Contains(x, y) {
 			continue
 		}
-		if strings.HasPrefix(h.Key, "git:branch:") || strings.HasPrefix(h.Key, "git:commit:") || strings.HasPrefix(h.Key, "git:conflict:") || strings.HasPrefix(h.Key, "git-cact:") {
+		if strings.HasPrefix(h.Key, "git:branch:") || strings.HasPrefix(h.Key, "git:commit:") || strings.HasPrefix(h.Key, "git:rb:e:") || strings.HasPrefix(h.Key, "git:conflict:") || strings.HasPrefix(h.Key, "git-cact:") {
 			return m.openGitContextMenu(h.Key), true
 		}
 		if ref, ok := strings.CutPrefix(h.Key, "git-bact:"); ok {

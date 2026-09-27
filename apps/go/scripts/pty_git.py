@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Git surface via OS PTY against the real server: stage and commit, merge a
 conflicting branch and resolve it through the operation panel, then pull a
-fast-forward from a local bare remote and Fetch & prune a deleted branch. Byte-level evidence only, not GUI
+fast-forward from a local bare remote, Fetch & prune a deleted branch, run
+an interactive rebase (reorder, squash, reword) from the plan editor, soft
+reset from the commit menu and continue an edit stop. Byte-level evidence only, not GUI
 terminal compatibility. Everything runs in temporary homes; git is invoked
 with the isolated environment, so no user or system Git configuration applies
 beyond what the harness sets in the repository."""
@@ -274,9 +276,99 @@ def main():
             wait(lambda: visible('pruned origin/gone'), 'fetch & prune result')
             check(git('for-each-ref', 'refs/remotes/origin/gone') == '',
                   'Fetch & prune removes origin/gone and the notice names it')
+            # Interactive rebase (ADR 0026) through the plan editor: three
+            # local commits are reordered, two squashed and one reworded.
+            for name, subject in (('alpha', 'Alpha rb'), ('beta', 'Beta rb'), ('gamma', 'Gamma rb')):
+                (repo / (name + '.txt')).write_text(name + '\n')
+                git('add', name + '.txt')
+                git('commit', '-qm', subject)
+            base = git('rev-parse', 'HEAD~3')
+            refresh()
+            wait(lambda: visible('Gamma rb'), 'new commits listed')
+            right_click('Alpha rb')
+            wait(lambda: visible('Interactive rebase from'), 'commit menu presets')
+            check(visible('Squash') and visible('into parent') and visible('Edit message of'),
+                  'the commit menu offers the interactive rebase presets')
+            t.click_label('Interactive rebase from')
+            wait(lambda: visible('INTERACTIVE REBASE') and visible('Newest first'), 'plan editor')
+            check(visible('pick') and git('rev-parse', 'HEAD~3') == base,
+                  'Interactive rebase from here opens the plan editor; nothing ran yet')
+            # Focus starts on the chosen commit (Alpha, the oldest row): go up
+            # to Gamma, the newest, and move it below Beta.
+            t.send(b'\x1b[A\x1b[A', .3)
+            t.send(b'J', .5)
+            t.send(b'\x1b[A', .3)   # up to Beta, now the newest row
+            t.send(b's', .5)       # squash Beta into Gamma (the row below)
+            t.send(b'm', .6)       # write the combined message (an older
+            wait(lambda: visible('COMBINED MESSAGE'), 'combined message editor')  # server sends no exact originals)
+            t.send(b'\x7f' * 40, .4)
+            paste('Gamma rb')
+            t.send(b'\n', .2)  # Ctrl+J: newline
+            t.send(b'\n', .2)
+            paste('Beta rb squashed')
+            t.send(b'\r', .6)
+            t.send(b'\x1b[B\x1b[B', .3)  # down to Alpha
+            t.send(b'r', .6)       # reword: the message editor opens prefilled
+            wait(lambda: visible('REWORD'), 'reword editor')
+            t.send(b'\x7f' * 40, .4)
+            paste('Alpha reworded')
+            t.send(b'\r', .6)
+            wait(lambda: visible('INTERACTIVE REBASE') and visible('Start rebase'), 'editor after reword')
+            check(visible('squash') and visible('reword'), 'the editor shows the squash and reword actions')
+            t.click_label('Start rebase')
+            wait(lambda: visible('Rewrite main at'), 'rebase confirmation')
+            check(visible('3 commits replayed') and visible('1 reworded') and visible('1 squashed or fixed up'),
+                  'the confirmation summarises the rewrite')
+            t.send(b'\x1b[B\r', 1)  # from the focused Cancel to the confirm
+            wait(lambda: git('log', '-1', '--format=%s') == 'Gamma rb' and git('log', '-1', '--skip=1', '--format=%s') == 'Alpha reworded', 'rebase finished', 20)
+            head_message = git('log', '-1', '--format=%B')
+            files = git('show', '--name-only', '--format=', 'HEAD').split()
+            check(git('rev-parse', 'HEAD~2') == base and 'Beta rb' in head_message and sorted(files) == ['beta.txt', 'gamma.txt']
+                  and not (repo / '.git' / 'rebase-merge').exists(),
+                  'git log: Alpha reworded, then Gamma with Beta squashed into it (combined message), on the same base')
+
+            # Soft reset from the commit menu.
+            refresh()
+            wait(lambda: visible('Alpha reworded'), 'rebased history listed')
+            target = git('rev-parse', 'HEAD~1')
+            right_click('Alpha reworded')
+            wait(lambda: visible('Soft reset main to'), 'soft reset item')
+            t.click_label('Soft reset main to')
+            wait(lambda: visible('Their changes stay staged'), 'soft reset confirmation')
+            t.send(b'\x1b[B\r', 1)
+            wait(lambda: git('rev-parse', 'HEAD') == target, 'soft reset')
+            staged = git('diff', '--cached', '--name-only').split()
+            check(sorted(staged) == ['beta.txt', 'gamma.txt'] and git('diff', '--name-only') == '',
+                  'Soft reset from the commit menu moves main back one commit and keeps its changes staged')
+            git('commit', '-qm', 'Gamma again')
+
+            # An edit stop, continued from the operation panel.
+            refresh()
+            wait(lambda: visible('Gamma again'), 'recommitted')
+            before = git('rev-parse', 'HEAD~1')
+            right_click('Gamma again')
+            wait(lambda: visible('Edit contents of'), 'edit preset')
+            t.click_label('Edit contents of')
+            wait(lambda: visible('INTERACTIVE REBASE') and visible('edit'), 'editor with the edit preset')
+            t.click_label('Start rebase')
+            wait(lambda: visible('Rewrite main at'), 'edit confirmation')
+            t.send(b'\x1b[B\r', 1)
+            wait(lambda: (repo / '.git' / 'rebase-merge').exists(), 'stopped for editing', 20)
+            refresh()
+            wait(lambda: visible('Stopped to edit'), 'edit stop in the panel')
+            check(visible('Commit staged') and visible('Continue with message'),
+                  'the operation panel shows the edit stop with Commit staged and Continue with message')
+            t.click_label('Continue…')
+            wait(lambda: visible('Continue the rebase'), 'continue confirmation')
+            t.send(b'\x1b[B\r', 1)
+            wait(lambda: not (repo / '.git' / 'rebase-merge').exists(), 'rebase finished after the edit stop', 20)
+            check(git('log', '-1', '--format=%s') == 'Gamma again' and git('rev-parse', 'HEAD~1') == before and git('status', '--porcelain') == '',
+                  'Continue at the edit stop recommits the staged changes with the original message')
             report['result'] = 'PASS'
         except Exception as error:
             report['result'], report['error'] = 'FAIL', str(error)
+            if terminals:
+                (artifacts / 'failure-screen.txt').write_text('\n'.join(terminals[-1].screen()) + '\n')
             raise
         finally:
             for terminal in terminals:

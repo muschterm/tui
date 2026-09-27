@@ -265,6 +265,8 @@ func gitExtraRowText(r *gitRow) string {
 			state = r.when
 		}
 		return strings.TrimSpace(r.text + " · " + state)
+	case "rbentry", "rbmsg", "rbtoggle":
+		return gitRebaseRowText(r)
 	case "jinput":
 		return "Input: " + r.text
 	case "name":
@@ -284,6 +286,17 @@ func gitExtraRowText(r *gitRow) string {
 
 // paintGitExtraRow paints scope, section and branch rows.
 func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
+	switch r.kind {
+	case "rbentry":
+		m.paintGitRebaseRow(f, x, y, width, r)
+		return
+	case "rbmsg":
+		m.paintGitRebaseMsg(f, x, y, width, r)
+		return
+	case "rbtoggle":
+		m.paintGitToggle(f, x, y, width, r)
+		return
+	}
 	if r.kind == "jinput" {
 		m.paintGitJobRow(f, x, y, width, r, componentVisual{})
 		return

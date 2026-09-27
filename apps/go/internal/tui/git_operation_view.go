@@ -64,7 +64,9 @@ func (m *Model) gitOperationBlocks(g *gitView) []surfaceBlock {
 	if o.Sides.Ours != "" || o.Sides.Theirs != "" {
 		b = append(b, pair("Ours", safe(singleLine(o.Sides.Ours))), pair("Theirs", safe(singleLine(o.Sides.Theirs))))
 	}
-	if r := o.StopReason; r != "" {
+	if in := o.Interactive; in != nil && in.Plan {
+		b = append(b, m.gitRebaseStopBlocks(o)...)
+	} else if r := o.StopReason; r != "" {
 		what := map[string]string{protocol.GitStopEdit: "an edit", protocol.GitStopExec: "an exec", protocol.GitStopBreak: "a break"}[r]
 		if what == "" {
 			what = "an interactive step"
@@ -117,11 +119,18 @@ func (m *Model) gitOperationBlocks(g *gitView) []surfaceBlock {
 	if o.Kind == protocol.GitOperationRebase {
 		acts = append(acts, act{"git-op-skip", "Skip commit…", "next", o.Can.Skip})
 	}
+	if in := o.Interactive; in != nil && in.Plan && in.Stop == protocol.GitRebaseStopEmpty && !gitRebaseEmptyCommitted(o) {
+		// Continue keeps the empty commit; Skip drops it.
+		acts[0].label, acts[1].label = "Keep empty commit…", "Skip (drop) commit…"
+	}
 	acts = append(acts, act{"git-op-abort", "Abort " + safe(singleLine(o.Kind)) + "…", "close", o.Can.Abort})
 	for _, a := range acts {
 		if a.can.Allowed {
 			b = append(b, surfaceBlock{kind: surfaceGitBlock, git: &gitRow{compose: "button", text: a.label, mark: m.icon(a.glyph),
 				key: "git:" + strings.TrimPrefix(a.kind, "git-"), action: action{Kind: a.kind}, help: a.label}})
+			if a.kind == "git-op-continue" && o.Interactive != nil && o.Interactive.Plan {
+				b = append(b, m.gitRebaseStopActions(o)...)
+			}
 			continue
 		}
 		reason := safe(singleLine(a.can.Reason))
@@ -129,6 +138,9 @@ func (m *Model) gitOperationBlocks(g *gitView) []surfaceBlock {
 			reason = "not available now"
 		}
 		b = append(b, text(strings.TrimSuffix(a.label, "…")+" unavailable · "+reason, p.muted))
+		if a.kind == "git-op-continue" && o.Interactive != nil && o.Interactive.Plan {
+			b = append(b, m.gitRebaseStopActions(o)...)
+		}
 	}
 	return b
 }
@@ -198,12 +210,18 @@ func gitOperationDoneCopy(st *gitWriteState, r *protocol.GitResult) string {
 	if o == nil {
 		return "Done"
 	}
+	if st.cmd.Kind == protocol.GitKindOperationCommit && r.State == protocol.GitStateSucceeded {
+		return "Committed " + gitShort(r.Commit) + " · the rebase is still stopped"
+	}
 	switch o.Outcome {
 	case protocol.GitOutcomeStoppedConflicts:
 		return gitRefCopy(st.cmd.Kind, "stopped_conflicts")
 	case protocol.GitOutcomeStopped:
 		return gitRefCopy(st.cmd.Kind, "stopped")
 	case protocol.GitOutcomeAborted:
+		if ref := safe(singleLine(o.BackupRef)); ref != "" {
+			return "Aborted the " + safe(singleLine(o.Kind)) + " · commits made at stops kept at " + ref
+		}
 		return "Aborted the " + safe(singleLine(o.Kind))
 	}
 	switch st.cmd.Kind {
@@ -270,6 +288,26 @@ func (m *Model) gitOperationResultBlocks(st *gitWriteState) []surfaceBlock {
 			b = append(b, text("Rewritten from recorded resolutions (still unmerged, review):", p.gold))
 			for _, path := range o.RerereResolved {
 				b = append(b, text("  "+safe(singleLine(path)), p.text))
+			}
+		}
+		if len(o.StopCommits) > 0 {
+			b = append(b, text("Committed at this stop:", p.muted))
+			for _, c := range o.StopCommits {
+				b = append(b, text("  "+gitShort(c.Oid)+" "+safe(singleLine(c.Subject)), p.text))
+			}
+		}
+		if ref := safe(singleLine(o.BackupRef)); ref != "" {
+			b = append(b, text("Backup ref "+ref+" keeps the commits made at stops", p.muted),
+				text("Inspect: git log "+ref+" · delete: git update-ref -d "+ref, p.muted))
+		}
+		if n := len(o.BackupRefs); n > 0 {
+			b = append(b, text("Further backup refs (commits HEAD did not reach):", p.muted))
+			for i, r := range o.BackupRefs {
+				if i == 5 {
+					b = append(b, text("  and "+strconv.Itoa(n-5)+" more under refs/tui-go/rebase-backup/", p.muted))
+					break
+				}
+				b = append(b, text("  "+safe(singleLine(r)), p.text))
 			}
 		}
 		if bk := o.Backup; bk != nil && bk.Oid != "" {

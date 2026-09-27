@@ -1,6 +1,6 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI, with partial discard deferred; a [tmux 3.7c compatibility matrix](../research/go-terminal-matrix-2026-09-26.md) is recorded, but SSH and GUI emulators remain untested; interactive rebase remains incomplete; most of the above is verified by unit/integration tests, PTY harnesses and fixtures rather than a full real-terminal/SSH matrix. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI, with partial discard deferred; a [tmux 3.7c compatibility matrix](../research/go-terminal-matrix-2026-09-26.md) is recorded, but SSH and GUI emulators remain untested; interactive rebase has a first TUI ([binding](#interactive-rebase-tui--2026-09-26)), with agent-proposed plans still to come; most of the above is verified by unit/integration tests, PTY harnesses and fixtures rather than a full real-terminal/SSH matrix. This does not change the accepted product scope or settle later integration decisions.
 
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
@@ -1935,6 +1935,139 @@ advertised with Git 2.38 or newer.
   planned in amend mode (amend, continue) and reset mode (split, continue),
   across a restart, and aborted) and `internal/protocol/git_rebase_test.go`; not yet in
   a terminal.
+
+### Interactive rebase (TUI) — 2026-09-26
+
+The Go TUI binding of [ADR 0026](../adr/0026-interactive-rebase.md), offered
+only with the capability `git-rebase-interactive`
+(`internal/tui/git_rebase.go`, `git_rebase_view.go`). Verified with unit
+tests (`git_rebase_test.go`) and `scripts/pty_git.py` against the real server
+and Git in a temporary repository; no GUI terminal or SSH run.
+
+- **Plan editor.** It takes over the Git surface body, like the resolution
+  job form and the conflict viewer, so it scrolls with the body and follows
+  the shared maximize control; a centered dialog cannot hold an editable
+  list of any length. Rows are **newest first**, like the commit graph
+  (heading "Newest first · runs bottom to top"); the entries are kept and
+  sent in execution order (oldest first). Each row has a drag grip (`⋮`,
+  plain `:`), an action cell (pick, reword, edit, amend, squash, fixup,
+  fixup -C, fixup -c, drop, break), the short hash and the sanitized
+  subject, a `↓` before squash/fixup rows (they meld into the row below)
+  and right-edge flags: `!` the entry the validation names, `✎` a message
+  the user chose, `↑` published. Merge commits in the range are listed as
+  dropped text rows. Validation runs `protocol.ValidateRebasePlan` on every
+  paint and shows "Cannot start · …" inline; the published and
+  merge-dropping acknowledgements are toggle rows (Start is refused until
+  they are on), and Update refs is a toggle (default Off) listing the
+  branches that would move and, separately, those that cannot be moved
+  (`UpdateRefsUnsupported`).
+- **Messages.** Unedited messages are sent byte for byte from the plan's
+  `GitRebasePlanCommit.Message` (the raw message); the editor only shows a
+  display form. A reword opens the message editor (a rounded textarea in
+  the surface body) prefilled with the commit's message; leaving it
+  unchanged (Enter or Esc) keeps the entry as it was, so an unchanged
+  reword is a pick and nothing is rewritten. A squash chain's combined
+  message is, unless the user writes one, the raw messages of the first
+  commit (or its reword), its squashes and its `fixup -C/-c` members, each
+  with trailing newlines removed, joined by one blank line; it is edited
+  from any row of the chain (`m`) and sent on the chain's last entry. A
+  written combined message belongs to that exact chain (its commits, their
+  order and the members' actions; not the first entry's own action): it
+  is used only while that chain exists, returns when a move or action
+  change restores it, and is discarded only with the plan. Reword text
+  likewise returns when an entry is reworded again. A message the entry or chain
+  already carries (written, or from an agent plan) is kept byte for byte
+  when saved unchanged; the editor warns first when it cannot show it
+  exactly. A reword of a chain's first commit feeds the default combined
+  message; when the user wrote the combined message, the reword is
+  flagged as replaced by it (editor note, notice on save, and the
+  confirmation, which does not count it as reworded). The confirmation
+  also summarises the messages sent ("Messages: N written, M combined by
+  default") and offers "Review combined messages…" for the default ones. Enter saves,
+  Shift+Enter/Ctrl+J inserts a newline, Esc cancels; Reset restores the
+  original. The editor cannot keep tabs (shown as spaces), carriage
+  returns or other control characters: when the original has any, it says
+  so before editing, and an edit is sent exactly as shown. When the exact
+  original is not available (a server without `Message`, or a message over
+  64 KiB, `MessageTruncated`) the editor opens empty and says so: the user
+  writes the full message, and a cut original is never prefilled or
+  sent. Blank or whitespace-only messages are
+  refused.
+- **Draft.** Client-local per Git target: Back (Esc) or hiding the surface
+  or switching threads keeps it ("Rebase plan kept · Open rebase plan" in
+  the status body); it ends when the server accepts the start, on
+  Discard plan (confirmed when edited), or when its thread or project no
+  longer exists. A failed plan read offers Retry, and reopening a plan that
+  was never read reads it again. Opening another plan while an
+  edited one is open asks first. A stale plan (the server's `stale_plan`, or
+  status showing another branch or HEAD) shows Refresh plan, which reads the
+  plan again and keeps the arrangement: kept commits keep their actions,
+  messages and order, new commits are picked after their predecessor (after the end of a squash
+  or fixup chain, never inside it), and
+  commits no longer in range are named. A refused start reopens the editor
+  with the reason and every edit.
+- **Confirmation** (menu dialog, Cancel focused): branch and HEAD, base and
+  onto, commits replayed and the counts moved/reworded/squashed/dropped,
+  edit and break stops, the published and merge-dropping warnings, the
+  branches Update refs moves or leaves. It is bound to the draft revision it
+  showed and re-checks HEAD, the branch and validation before sending
+  `client.GitRebaseInteractiveCommand`.
+- **Commit-row menu presets** (Sublime Merge parity): Edit message…, Edit
+  contents…, Squash into parent…, Fixup into parent…, Drop…, Move up…, Move
+  down…, Interactive rebase from here…, each opening the editor preloaded
+  (never acting); plus "Rebase <branch> onto <commit or branch>
+  interactively…" on commit and branch rows. Presets read the plan from the
+  commit's parent (from its grandparent for squash, fixup and move down) and
+  are notes naming the reason when unavailable: a newer server needed, an
+  operation in progress, detached HEAD, not on the loaded first-parent
+  history, a merge commit or merge parent, the root, the newest commit for
+  Move up. The graph has no multi-selection, so "Squash selected" is not
+  offered.
+- **Entry points for later slices:** `openGitRebaseUpstream` (action
+  `git-rb-upstream`, base `upstream`, which the server resolves) for the Pull
+  divergence follow-up, and `openGitRebaseAgentPlan(base, onto, entries)` for
+  agent-proposed plans (shown with "nothing runs until you start it").
+- **Stops** (operation panel, application rebases): plan progress (done of
+  total, current command), what the stop needs, a signing, hook or helper
+  failure with its sanitized detail, staged/unstaged changes, commits made
+  at a reset stop, and the branches that move when it finishes. Actions:
+  Continue…, Continue with message… (only where a message applies: pick,
+  reword or edit steps whose continue commits something), Commit staged…
+  (edit and break stops with staged changes; message editor, then a
+  Cancel-first confirmation sending `git.operation_commit` with the staged
+  fingerprint), Skip and Abort. At an empty stop (a pick, reword or edit
+  step whose commit became empty, `StepEmpty`) the actions read "Keep
+  empty commit…" and "Skip (drop) commit…", unless the step's commit was
+  already made (then Continue only goes on and Skip is refused). A stop the
+  server did not observe (`Late`) at an empty or message stop says so
+  (`stop_unobserved`: Abort, or finish in a terminal). The Continue
+  confirmation says what Continue does at the stop (keep the empty commit,
+  resume after a break, recommit at an edit, amend, retry the message). The panel also shows the next todo line
+  (`Next`) and covers `committed` (a step committed outside the app:
+  Continue goes on) and `rescheduled` (Git rescheduled the step: clear the
+  obstacle, Continue retries) stops. Continue with message and Commit
+  staged prefill the step's raw message (`StepMessage`) under the same
+  rules as plan messages: unchanged, Continue sends no message and Commit
+  staged sends the exact step message; a cut step message opens the editor
+  empty (an empty Continue keeps the original). An edit stop the server
+  made after a resolved conflict (`ServerEdit`) says so, and the Continue
+  confirmation at a conflict on an edit step says it stops for editing.
+  The abort result lists the further backup refs (`BackupRefs`, first
+  five).
+  Abort shows "at least N" commits when `AbortDropsAtLeast`. Abort lists the commits made at
+  stops and acknowledges them; its result names the backup ref. Conflicts
+  use the existing manual and agent resolution unchanged.
+- **Keys** on a plan row: Enter/Space or a click on the action cell opens
+  the row's action menu (also Shift+F10 or right-click); `p` pick, `r`
+  reword, `e` edit contents then amend then pick, `s` squash, `f` fixup then
+  `-C` then `-c`, `d` drop (on a break: remove it), `b` insert a break after
+  the row, `m` edit the message, Shift+↑/`K` and Shift+↓/`J` move, ↑/↓ move
+  focus, Esc back. Dragging the grip with the left button held reorders
+  with the pointer (motion without the button ends the drag; at the body's
+  top or bottom edge each pointer motion scrolls one row, so holding the
+  pointer still does not keep scrolling). Presets check that the neighbouring entry is the
+  commit's parent or child and otherwise open the plan unchanged. "Moved"
+  counts the fewest entries whose moving explains the new order.
 
 ### Honest newline hint — 2026-09-26
 
