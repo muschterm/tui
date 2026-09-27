@@ -169,23 +169,31 @@ func (m *Model) gitRefResultBlocks(key string, g *gitView, st *gitWriteState) []
 		if g != nil && g.status != nil && (g.status.Ahead > 0 || g.status.Behind > 0) {
 			line = fmt.Sprintf("Diverged: %d ahead, %d behind", g.status.Ahead, g.status.Behind)
 		}
-		b = append(b, mark("blocked", line), text("Fetched, not integrated · merge or rebase explicitly", p.muted))
+		b = append(b, mark("blocked", line), text("Fetched, not integrated · rebase onto the upstream, or leave the branch as it is", p.muted))
 		up := safe(singleLine(st.cmd.Git.Sync.Upstream))
 		base := r.Integration.To
 		if base == "" {
 			base = "refs/remotes/" + st.cmd.Git.Sync.Upstream
 		}
 		b = append(b, button("Compare with "+up, m.icon("git"), "git:pull-compare", action{Kind: "git-compare", ID: base, Value: up}))
-		if m.gitOperationsEnabled() {
-			// The full upstream ref from the log (HEAD@{upstream}), else
-			// the fetched commit itself; never a guessed refs/remotes name.
+		// Pull never leads to a merge: rebase onto the upstream (the plan
+		// editor, base = the server-resolved upstream), let an agent plan
+		// it, or leave the branch as it is.
+		switch {
+		case m.gitRebaseEnabled():
+			b = append(b, button("Rebase onto "+up+"…", m.icon("git"), "git:pull-rebase", action{Kind: "git-rb-upstream"}))
+		case m.gitOperationsEnabled():
+			// Older server: the non-interactive rebase with its preview.
 			ref := r.Integration.To
 			if g != nil && g.log != nil && strings.HasPrefix(g.log.Upstream, "refs/") {
 				ref = g.log.Upstream
 			}
-			b = append(b, button("Merge "+up+"…", m.icon("git"), "git:pull-merge", action{Kind: "git-integrate", Value: protocol.GitOperationMerge, ID: ref}),
-				button("Rebase onto "+up+"…", m.icon("git"), "git:pull-rebase", action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: ref}))
+			b = append(b, button("Rebase onto "+up+"…", m.icon("git"), "git:pull-rebase", action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: ref}))
 		}
+		if m.gitPlanEnabled() {
+			b = append(b, button("Plan rebase with agent…", m.icon("rocket"), "git:pull-plan", action{Kind: "git-plan-open", ID: "upstream"}))
+		}
+		b = append(b, button("Leave the branch as it is", m.icon("close"), "git:pull-leave", action{Kind: "git-dismiss"}))
 	case r != nil && st.cmd.Kind == protocol.GitKindPull && r.Fetch != nil && r.Fetch.State == protocol.GitFetchSucceeded:
 		remote := safe(singleLine(r.Fetch.Remote))
 		b = append(b, text("Fetched "+remote+", not integrated · "+st.failure, p.red))

@@ -644,7 +644,7 @@ const gitJobLeaseCopy = "Resolution job running · stop it first"
 func (m *Model) gitJobLeaseHeld(path string) bool {
 	root := m.gitRepoRoot(path)
 	for _, t := range m.snapshot.Threads {
-		if jobThread(t) && !t.Closed && activeTurn(t) && (gitRepoOverlap(t.Checkout, root) || gitRepoOverlap(t.Checkout, path)) {
+		if jobThread(t) && !gitPlanJob(t) && !t.Closed && activeTurn(t) && (gitRepoOverlap(t.Checkout, root) || gitRepoOverlap(t.Checkout, path)) {
 			return true
 		}
 	}

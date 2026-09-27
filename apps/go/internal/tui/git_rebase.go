@@ -87,6 +87,8 @@ type gitRebaseDraft struct {
 	// entries replace the default arrangement (slice 6).
 	preset, presetCommit string
 	agent                []protocol.GitRebaseEntry
+	// fromAgent is set when the plan was loaded from an agent's proposal.
+	fromAgent *gitRebaseAgentInfo
 }
 
 // gitRebaseMsgEdit is an open message editor: a reword or a chain of the
@@ -144,6 +146,8 @@ type gitRebaseUI struct {
 	// replace is an open request waiting for the replace confirmation.
 	replace *gitRebaseDraft
 	discard string // key whose discard confirmation is shown
+	// agentInfo marks the next opened draft as an agent's proposal.
+	agentInfo *gitRebaseAgentInfo
 }
 
 type gitRebasePlanMsg struct {
@@ -712,6 +716,9 @@ func (m *Model) openGitRebase(base, onto, preset, presetCommit string, agent []p
 		return nil
 	}
 	d := &gitRebaseDraft{key: key, target: target, base: base, onto: onto, preset: preset, presetCommit: presetCommit, agent: agent, open: true}
+	if agent != nil {
+		d.fromAgent, m.gitRB.agentInfo = m.gitRB.agentInfo, nil
+	}
 	if old := m.gitRebaseDraftFor(key); old != nil {
 		if old.base == base && old.onto == onto && preset == "" && agent == nil {
 			old.open = true
@@ -819,10 +826,19 @@ func (m *Model) acceptGitRebasePlan(msg gitRebasePlanMsg) tea.Cmd {
 		d.plan, d.loaded = msg.plan, true
 		d.entries = client.DefaultRebaseEntries(d.plan)
 		d.chainMsg = map[string]string{}
+		if a := d.fromAgent; a != nil && a.fingerprint != "" && a.fingerprint != d.plan.Fingerprint {
+			// Never load a proposal for another branch state.
+			d.agent, d.fromAgent = nil, nil
+			d.err = "The branch changed since the agent planned · the proposal was not loaded; plan again"
+		}
 		if d.agent != nil {
 			d.applyEntries(d.agent)
 			d.agent = nil
 			d.notice = "Proposed plan · review it; nothing runs until you start it"
+			if a := d.fromAgent; a != nil {
+				d.updateRefs = a.updateRefs && len(d.plan.UpdateRefs) > 0
+				a.built = d.build()
+			}
 		}
 		if d.preset != "" {
 			return m.applyGitRebasePreset(d)
@@ -830,6 +846,9 @@ func (m *Model) acceptGitRebasePlan(msg gitRebasePlanMsg) tea.Cmd {
 		return m.gitRebaseFocusFirst(d)
 	}
 	old := d.plan.Fingerprint
+	if a := d.fromAgent; a != nil && msg.plan.Fingerprint != a.fingerprint {
+		a.outdated = true
+	}
 	added, removed := d.mergeRefresh(msg.plan)
 	d.stale = false
 	switch {
@@ -1023,6 +1042,9 @@ func (m *Model) gitRebaseMenuItems(g *gitView, c protocol.GitCommit) []menuItem 
 			continue
 		}
 		items = append(items, menuItem{Label: p.label, Action: action{Kind: "git-rb-open", ID: base, Value: p.preset + ":" + c.Hash}})
+		if p.preset == gitRebasePresetFrom && m.gitPlanEnabled() {
+			items = append(items, menuItem{Label: "Plan rebase from " + short + " with agent…", Action: action{Kind: "git-plan-open", ID: base}})
+		}
 	}
 	return items
 }
@@ -1607,6 +1629,15 @@ func (m *Model) openGitRebaseConfirm(key string) tea.Cmd {
 	items := []menuItem{
 		{Note: "Rewrite " + branch + " at " + gitShort(p.HeadOid) + "?"},
 		{Note: "Base " + gitRebaseBaseLabel(p) + " · onto " + gitRebaseOntoLabel(p)},
+	}
+	if a := d.fromAgent; a != nil && a.outdated {
+		items = append(items, menuItem{Note: "Plan proposed by the agent (revision " + strconv.FormatInt(a.revision, 10) + ") for an earlier state of the branch · review the changes"})
+	} else if a != nil {
+		how := "unchanged"
+		if !slices.Equal(a.built, d.build()) || d.updateRefs != (a.updateRefs && len(p.UpdateRefs) > 0) {
+			how = "edited by you"
+		}
+		items = append(items, menuItem{Note: "Plan proposed by the agent (revision " + strconv.FormatInt(a.revision, 10) + ") · " + how})
 	}
 	reordered, reworded, melded, dropped, stops, breaks := d.counts()
 	var parts []string

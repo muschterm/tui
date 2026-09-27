@@ -1,6 +1,6 @@
 # First Go server and shell slice
 
-Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI, with partial discard deferred; a [tmux 3.7c compatibility matrix](../research/go-terminal-matrix-2026-09-26.md) is recorded, but SSH and GUI emulators remain untested; interactive rebase has a first TUI ([binding](#interactive-rebase-tui--2026-09-26)); [agent-planned proposals](#agent-planned-rebase-server--2026-09-27) are served but not yet shown in the TUI; most of the above is verified by unit/integration tests, PTY harnesses and fixtures rather than a full real-terminal/SSH matrix. This does not change the accepted product scope or settle later integration decisions.
+Status: implementation in `apps/go`, updated 2026-09-26. The server, SQLite persistence and attachable client are real; a first [ACP slice](#acp-agents--2026-09-22) connects built-in Go Claude/Codex bridges alongside the fixture runner, with per-checkout [writer scheduling](#checkout-writer-scheduling--2026-09-24). Live HTTP checks are recorded separately from terminal validation. Children and general questions remain fixtures; [embedded terminals](#embedded-terminals--2026-09-24) run real server-owned shells; the [Git surface](#git-surface--2026-09-24) covers read-only status/diffs/history/branches/compare plus write actions, ref/remote actions, merge/rebase and both manual and [agent conflict resolution](#agent-conflict-resolution-tui--2026-09-25); the [Files surface](#files-surface-read-only--2026-09-24) is read-only; [shared documents](#editing-shared-documents-tui--2026-09-25) support autosave, reconciliation and presence. [Explicit worktrees](#explicit-worktrees-tui--2026-09-26) have a first TUI; [hunk/line staging](#git-partial-staging-tui--2026-09-26) has a first TUI, with partial discard deferred; a [tmux 3.7c compatibility matrix](../research/go-terminal-matrix-2026-09-26.md) is recorded, but SSH and GUI emulators remain untested; interactive rebase has a first TUI ([binding](#interactive-rebase-tui--2026-09-26)); [agent-planned rebases](#agent-planned-rebase-tui--2026-09-27) have a first TUI, not exercised with the installed Claude or Codex CLIs; most of the above is verified by unit/integration tests, PTY harnesses and fixtures rather than a full real-terminal/SSH matrix. This does not change the accepted product scope or settle later integration decisions.
 
 The [latest UI/bridge fixes](../research/ui-bugs-2026-09-22.md) add native
 permission selectors, Codex question delivery, system clipboard copying,
@@ -1591,9 +1591,13 @@ fresh status. Dialog state is dropped when its menu closes.
   prune; a failure is also a notice, with credential advice when any remote
   failed for credentials),
   "Fast-forwarded \<branch\> to \<short\>", "Up to date", "Ahead of upstream
-  by N", "Diverged: N ahead, M behind" with "Fetched, not integrated · merge
-  or rebase explicitly" and **Compare with \<upstream\>** (the existing
-  comparison viewer against the fetched tip), "Fetched origin, not integrated
+  by N", "Diverged: N ahead, M behind" with "Fetched, not integrated · rebase
+  onto the upstream, or leave the branch as it is", **Compare with
+  \<upstream\>** (the existing comparison viewer against the fetched tip),
+  **Rebase onto \<upstream\>…** (the plan editor with base `upstream`; the
+  non-interactive rebase preview on servers without interactive rebase),
+  **Plan rebase with agent…** (with `git-rebase-agent-plan`) and **Leave the
+  branch as it is** (dismisses the result); Pull never offers a merge, "Fetched origin, not integrated
   · \<reason\>", "Fetch failed · \<reason\>", "Pushed main → origin/main",
   "Pushed \<short\> (newer than shown) to origin/main" (`pushed_newer_head`),
   "\<branch\> may have moved to \<short\> · result unknown · refresh and
@@ -1938,9 +1942,9 @@ advertised with Git 2.38 or newer.
 
 ### Agent-planned rebase (server) — 2026-09-27
 
-Server, protocol and client only ([ADR 0027](../adr/0027-agent-planned-rebase.md));
-the TUI does not show proposals yet (it will load one with
-`openGitRebaseAgentPlan`). `internal/server/git_rebase_plan_job.go` runs
+Server, protocol and client ([ADR 0027](../adr/0027-agent-planned-rebase.md));
+the [TUI binding](#agent-planned-rebase-tui--2026-09-27) starts jobs, lists
+proposals and loads them with `openGitRebaseAgentPlan`. `internal/server/git_rebase_plan_job.go` runs
 planning jobs; `internal/protocol/git_rebase_plan_job.go` holds the wire
 contract; client helpers are `GitRebasePlanStartCommand`,
 `GitRebasePlanReviseCommand`, `GitRebasePlanCancelCommand`,
@@ -2127,6 +2131,60 @@ and Git in a temporary repository; no GUI terminal or SSH run.
   pointer still does not keep scrolling). Presets check that the neighbouring entry is the
   commit's parent or child and otherwise open the plan unchanged. "Moved"
   counts the fewest entries whose moving explains the new order.
+
+### Agent-planned rebase (TUI) — 2026-09-27
+
+The Go TUI binding of [ADR 0027](../adr/0027-agent-planned-rebase.md),
+offered with the capability `git-rebase-agent-plan`
+(`internal/tui/git_rebase_plan.go`, `git_rebase_plan_view.go`). Verified
+with unit tests against fakes (`git_rebase_plan_test.go`). `pty_git.py` does
+not cover it: the server plans only with ACP agents, the fixture runner is
+not one, and the harness must never launch the installed CLIs.
+
+- **Start** ("Plan rebase with agent…"): from the commit menu ("Plan rebase
+  from \<short\> with agent…", base = the commit's parent), branch and
+  commit menus ("Plan rebase of \<branch\> onto X with agent…"), the Pull
+  divergence result (base `upstream`) and the plan editor ("Plan with
+  agent…", sending the editor's plan fingerprint when it is not stale). The
+  form takes over the Git surface body like the resolution job form:
+  Cancel first, the agent (radio rows), its model/effort/permissions, the
+  instruction (Enter sends, Esc cancels) and a note that states the
+  enforcement honestly: built-in bridges open the agent read-only (Claude
+  plan mode, Codex read-only sandbox, replacing the chosen permissions);
+  other agents get only declined approvals and the checkout comparison.
+- **Jobs** ("REBASE PLANS" in the status body, per checkout): the state
+  (Planning…, Plan proposed, Invalid plan, Checkout changed during the turn,
+  Planning failed, Planning cancelled, Stale · the branch changed, which is
+  also derived from status when the pinned branch or HEAD differs), agent,
+  base, commits, entries and turns, the first errors, the reason, a
+  concurrent-writes note, and what kept the agent read-only. Actions: Stop
+  the agent (running), Open in the plan editor (proposed only), Ask the agent
+  to fix… (invalid, tainted, failed or cancelled, while turns remain; a form
+  with an optional instruction sent with the proposal revision shown),
+  Plan again… (stale, or no turns left), Details (the proposal in the
+  read-only viewer: enforcement, errors, checkout changes, rationale,
+  entries and the agent's raw answer, sanitized), Transcript, and End
+  planning job… (Cancel-first confirmation naming the checkout and
+  branch). Jobs of another worktree of the repository are listed read-only
+  with their checkout and branch ("open that checkout to act on it"; only
+  Details and Transcript), and staleness is derived only for this
+  checkout's jobs. Full hashes are shortened except in Details. Planning
+  jobs never count as holding the writer lease in the TUI. The form stays
+  hidden while its command is in flight and comes back with the
+  instruction and the server's reason if it is refused; the instruction is
+  limited to 4 KiB (bytes, counted under the input).
+- **Loading** reads the proposal; a stale proposal (state stale, or a
+  current fingerprint that differs) and anything not proposed is never
+  loaded. The editor then reads a fresh plan and loads the entries only when
+  its fingerprint equals the proposal's; otherwise it shows the default plan
+  and says the proposal was not loaded. Proposal messages are the draft's
+  stored messages (sent byte for byte unless edited), Update refs starts at
+  the proposal's value, and the rationale is shown. Nothing runs from a
+  proposal: the user starts it through the editor's confirmation, which
+  says "Plan proposed by the agent (revision N) · unchanged" or "· edited by
+  you"; once a refresh read another plan than the agent's, it says the
+  proposal was made "for an earlier state of the branch · review the
+  changes" instead.
 
 ### Honest newline hint — 2026-09-26
 

@@ -143,6 +143,7 @@ func (m *Model) nextGitRefresh() tea.Cmd {
 	m.gitOperationSettle(key)
 	m.gitJobSettle(key)
 	m.gitRebaseSettle(key)
+	m.gitPlanSettle(key)
 	opsDone := m.gitOpsChanged(key)
 	active := activeTurn(m.thread()) && !m.creatingThread()
 	ended := m.gitTurnKey == key && m.gitTurnActive && !active
@@ -270,6 +271,9 @@ func (m *Model) gitAction(a action) tea.Cmd {
 		return m.openGitViewer(a)
 	case "git-partial-hunk":
 		return m.gitPartialSelectHunk(a.Index)
+	}
+	if cmd, ok := m.gitPlanAction(a); ok {
+		return cmd
 	}
 	if cmd, ok := m.gitRebaseAction(a); ok {
 		return cmd
@@ -446,6 +450,9 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	if s := m.gitJ.start; s != nil && s.key == key {
 		return append(b, m.gitJobStartBlocks(s)...)
 	}
+	if f := m.gitPl.form; f != nil && f.key == key {
+		return append(b, m.gitPlanFormBlocks(f)...)
+	}
 	if e := m.gitRB.edits[key]; e != nil {
 		return append(b, m.gitRebaseMessageBlocks(e, m.gitRebaseDraftFor(key))...)
 	}
@@ -463,6 +470,7 @@ func (m *Model) gitSurfaceBlocks() []surfaceBlock {
 	if d := m.gitRebaseDraftFor(key); d != nil {
 		b = append(b, m.gitRebaseDraftBlocks(d)...)
 	}
+	b = append(b, m.gitPlanJobBlocks(g)...)
 	s := g.status
 	if s != nil && s.Upstream != "" {
 		value := safe(singleLine(s.Upstream))

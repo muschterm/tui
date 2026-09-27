@@ -74,6 +74,9 @@ func (m *Model) gitRebaseEditorBlocks(d *gitRebaseDraft) []surfaceBlock {
 	if d.notice != "" {
 		b = append(b, text(d.notice, p.muted))
 	}
+	if a := d.fromAgent; a != nil && a.rationale != "" {
+		b = append(b, text("Agent's rationale: "+safe(a.rationale), p.muted))
+	}
 	if !d.loaded {
 		if !d.loading {
 			b = append(b, gap, button("Retry reading the plan", m.icon("refresh"), "git:rb:retry", action{Kind: "git-rb-refresh"}, "Read the plan again"))
@@ -165,7 +168,11 @@ func (m *Model) gitRebaseEditorBlocks(d *gitRebaseDraft) []surfaceBlock {
 	}
 	b = append(b, gap,
 		button("Start rebase…", m.icon("check"), "git:rb:start", action{Kind: "git-rb-start"}, "Review and start the rebase"),
-		button("Refresh plan", m.icon("refresh"), "git:rb:refresh", action{Kind: "git-rb-refresh"}, "Read the plan again, keeping your edits"),
+		button("Refresh plan", m.icon("refresh"), "git:rb:refresh", action{Kind: "git-rb-refresh"}, "Read the plan again, keeping your edits"))
+	if m.gitPlanEnabled() {
+		b = append(b, button("Plan with agent…", m.icon("rocket"), "git:rb:agent", action{Kind: "git-plan-from-editor"}, "Ask an agent to propose a plan for this range"))
+	}
+	b = append(b,
 		button("Discard plan…", m.icon("trash"), "git:rb:discard", action{Kind: "git-rb-discard"}, "Discard the plan"))
 	return b
 }

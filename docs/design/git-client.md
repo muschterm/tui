@@ -139,7 +139,9 @@ The server, protocol and Go client let an agent propose an interactive
 rebase plan ([ADR 0027](../adr/0027-agent-planned-rebase.md); wire contract
 in `apps/go/internal/protocol/git_rebase_plan_job.go`, client helpers in
 `apps/go/internal/client/git_rebase_plan_job.go`, capability
-`git-rebase-agent-plan`); the TUI does not show proposals yet. A planning
+`git-rebase-agent-plan`); the Go TUI starts planning jobs, lists them with
+their proposals and loads proposed plans into the plan editor ([go-slice
+binding](go-slice.md#agent-planned-rebase-tui--2026-09-27)). A planning
 job is an agent turn in a job thread that is given the pinned plan's
 commits (messages, authors, numstat and bounded diffs) and the user's
 instruction, and answers with one fenced `tui-rebase-plan` JSON block. The

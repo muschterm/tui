@@ -121,6 +121,8 @@ func gitRefKind(kind string) bool {
 		return true
 	}
 	switch kind {
+	case protocol.GitKindRebasePlanStart, protocol.GitKindRebasePlanRevise, protocol.GitKindRebasePlanCancel, protocol.GitKindRebasePlanEnd:
+		return true
 	case protocol.GitKindBranchCreate, protocol.GitKindSwitch, protocol.GitKindResetSoft,
 		protocol.GitKindFetch, protocol.GitKindPull, protocol.GitKindPush:
 		return true
@@ -520,7 +522,13 @@ func (m *Model) startGitSwitch(dlg *gitCarryDialog) tea.Cmd {
 // stay unchanged.
 func plural(n int, word string) string {
 	s := strconv.Itoa(n) + " " + word
-	if n != 1 && (word == "change" || word == "commit" || word == "file" || word == "item") {
+	switch {
+	case n == 1 || word == "staged" || word == "unstaged" || word == "untracked":
+	case strings.HasSuffix(word, "ch"):
+		s += "es"
+	case strings.HasSuffix(word, "ry"):
+		s = s[:len(s)-1] + "ies"
+	default:
 		s += "s"
 	}
 	return s
@@ -693,6 +701,7 @@ func (m *Model) acceptGitRef(msg gitWriteMsg, st *gitWriteState) tea.Cmd {
 	}
 	kind := msg.cmd.Kind
 	m.gitRebaseReply(msg)
+	m.gitPlanReply(msg)
 	var pe *protocol.Error
 	if errors.As(msg.err, &pe) {
 		if pe.Code == "unknown_outcome_lookup" || pe.Code == "storage" {
@@ -829,6 +838,14 @@ func (m *Model) gitRefDoneCopy(st *gitWriteState, r *protocol.GitResult) string 
 		return "Stop requested"
 	case protocol.GitKindResolveJobEnd:
 		return "Resolution job ended"
+	case protocol.GitKindRebasePlanStart:
+		return "The agent is planning the rebase"
+	case protocol.GitKindRebasePlanRevise:
+		return "Asked the agent for another plan"
+	case protocol.GitKindRebasePlanCancel:
+		return "Stop requested"
+	case protocol.GitKindRebasePlanEnd:
+		return "Planning job ended"
 	}
 	return m.gitSyncSummary(st, r)
 }
@@ -1000,7 +1017,13 @@ func gitRefCopy(kind, code string) string {
 	case "behind_upstream":
 		return "Behind upstream · Pull first"
 	case "diverged":
-		return "Diverged from upstream · merge or rebase explicitly"
+		return "Diverged from upstream · rebase onto it, or leave the branch as it is"
+	case "stale_proposal":
+		return "The proposal changed since shown · review it again"
+	case "too_many_turns":
+		return "The planning job used all its turns · plan again"
+	case "not_active":
+		return "Nothing is running to stop"
 	case "not_running":
 		return "Nothing running to cancel"
 	case "not_cancellable":
@@ -1060,6 +1083,9 @@ func gitRefCopy(kind, code string) string {
 	case "job_exists":
 		return "A resolution job is already attached · end it first"
 	case "no_job":
+		if strings.HasPrefix(kind, "git.rebase_plan") {
+			return "That planning job no longer exists · refreshed"
+		}
 		return "No resolution job is attached · refreshed"
 	case "job_thread":
 		return "The job thread takes no ordinary commands"
@@ -1282,6 +1308,9 @@ func (m *Model) openGitContextMenu(focus string) tea.Cmd {
 			if m.gitRebaseEnabled() {
 				items = append(items, menuItem{Label: "Rebase " + cur + " onto " + name + " interactively…", Action: action{Kind: "git-rb-onto", ID: br.Ref}})
 			}
+			if m.gitPlanEnabled() {
+				items = append(items, menuItem{Label: "Plan rebase of " + cur + " onto " + name + " with agent…", Action: action{Kind: "git-plan-open", ID: br.Ref}})
+			}
 		}
 		items = append(items,
 			menuItem{Label: "Create branch from " + name + " " + gitShort(br.Tip) + "… (b)", Action: action{Kind: "git-branch-new", ID: br.Tip, Value: br.Name}},
@@ -1305,6 +1334,9 @@ func (m *Model) openGitContextMenu(focus string) tea.Cmd {
 				menuItem{Label: "Rebase " + cur + " onto " + short + "…", Action: action{Kind: "git-integrate", Value: protocol.GitOperationRebase, ID: c.Hash}})
 			if m.gitRebaseEnabled() {
 				items = append(items, menuItem{Label: "Rebase " + cur + " onto " + short + " interactively…", Action: action{Kind: "git-rb-onto", ID: c.Hash}})
+			}
+			if m.gitPlanEnabled() {
+				items = append(items, menuItem{Label: "Plan rebase of " + cur + " onto " + short + " with agent…", Action: action{Kind: "git-plan-open", ID: c.Hash}})
 			}
 		}
 		if m.gitOperationsEnabled() {

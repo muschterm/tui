@@ -298,6 +298,7 @@ type Model struct {
 	gitCF         gitConflictUI
 	gitJ          gitJobUI
 	gitRB         gitRebaseUI
+	gitPl         gitPlanUI
 	// jobReq is a resolution job thread whose pending requests the request
 	// cards show (git_job.go); the active thread is unchanged.
 	jobReq string
@@ -652,6 +653,12 @@ func (m *Model) setFocus(key string) tea.Cmd {
 	if m.gitRB.ready {
 		m.gitRB.msg.Blur()
 	}
+	if m.gitPl.ready {
+		m.gitPl.input.Blur()
+	}
+	if key == gitPlanInputKey {
+		return m.gitPlanInput().Focus()
+	}
 	if key == gitRebaseMsgKey {
 		return m.gitRebaseMsg().Focus()
 	}
@@ -884,6 +891,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.acceptGitPreview(msg)
 	case gitRebasePlanMsg:
 		cmd = m.acceptGitRebasePlan(msg)
+	case gitPlanProposalMsg:
+		cmd = m.acceptGitProposal(msg)
 	case viewerImageMsg:
 		cmd = m.acceptViewerImage(msg)
 	case thumbnailMsg:
@@ -1219,6 +1228,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.gitJobInputPaste(text)
 		} else if m.focus == gitRebaseMsgKey {
 			cmd = m.gitRebaseMsgPaste(text)
+		} else if m.focus == gitPlanInputKey {
+			cmd = m.gitPlanInputPaste(text)
 		} else if m.focus == "prompt" {
 			m.promptView.Reset()
 			cmd = updateInput(&m.prompt, tea.PasteMsg{Content: safe(text)})
@@ -1275,6 +1286,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if cmd, handled := m.viewerKey(k); handled {
 			return cmd
 		}
+	}
+	if s == "esc" && m.focus == gitPlanInputKey && len(m.menu) == 0 {
+		return m.gitPlanInputKeyPress(k)
 	}
 	if s == "esc" && m.focus == gitRebaseMsgKey && len(m.menu) == 0 {
 		return m.gitRebaseMsgKeyPress(k)
@@ -1542,6 +1556,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	}
 	if m.focus == gitRebaseMsgKey {
 		return m.gitRebaseMsgKeyPress(k)
+	}
+	if m.focus == gitPlanInputKey {
+		return m.gitPlanInputKeyPress(k)
 	}
 	if cmd, handled := m.gitRebaseKey(s); handled {
 		return cmd

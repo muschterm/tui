@@ -265,6 +265,8 @@ func gitExtraRowText(r *gitRow) string {
 			state = r.when
 		}
 		return strings.TrimSpace(r.text + " · " + state)
+	case "pinput":
+		return "Instructions: " + r.text
 	case "rbentry", "rbmsg", "rbtoggle":
 		return gitRebaseRowText(r)
 	case "jinput":
@@ -295,6 +297,9 @@ func (m *Model) paintGitExtraRow(f *frame, x, y, width int, r *gitRow) {
 		return
 	case "rbtoggle":
 		m.paintGitToggle(f, x, y, width, r)
+		return
+	case "pinput":
+		m.paintGitPlanInput(f, x, y, width, r)
 		return
 	}
 	if r.kind == "jinput" {

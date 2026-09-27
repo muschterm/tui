@@ -305,21 +305,28 @@ func TestGitWriterWaitNamesOperation(t *testing.T) {
 	}
 }
 
-func TestGitDivergedOffersMergeRebase(t *testing.T) {
+func TestGitDivergedOffersRebaseNotMerge(t *testing.T) {
 	m, api := opModel(t)
 	refReply(api, protocol.GitResult{State: protocol.GitStateFailed, Code: "diverged", Fetch: &protocol.GitFetchResult{Remote: "origin", State: "succeeded"}, Integration: &protocol.GitIntegration{State: "diverged", To: strings.Repeat("f", 40)}})
 	gitWriteSettle(t, m, m.activate(action{Kind: "git-pull"}))
 	text := gitSurfaceText(m)
-	if !strings.Contains(text, "Merge origin/feature/init…") || !strings.Contains(text, "Rebase onto origin/feature/init…") {
+	if strings.Contains(text, "Merge origin") || !strings.Contains(text, "Rebase onto origin/feature/init…") || !strings.Contains(text, "Leave the branch as it is") {
 		t.Fatalf("diverged:\n%s", text)
 	}
 	m.viewState().DetailScroll = 0
 	h, _ := findHit(m.measure(), "git:pull-rebase")
 	_, cmd := m.Update(tea.MouseClickMsg{X: h.Rect.X, Y: h.Rect.Y, Button: tea.MouseLeft})
 	gitWriteSettle(t, m, cmd)
-	// Without the log's full upstream ref, the fetched commit itself.
+	// Without interactive rebase: the non-interactive rebase of the fetched
+	// commit itself.
 	if api.count("preview:rebase:"+strings.Repeat("f", 40)) != 1 {
 		t.Fatalf("preview calls %v", api.calls)
+	}
+	// Leave it as it is: the result goes away, nothing is sent.
+	sent := len(api.sent())
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-dismiss"}))
+	if strings.Contains(gitSurfaceText(m), "Leave the branch as it is") || len(api.sent()) != sent {
+		t.Fatal("leave did not just dismiss")
 	}
 }
 
@@ -367,18 +374,17 @@ func TestGitOperationCaptures(t *testing.T) {
 func TestGitDivergedUsesFullUpstreamRef(t *testing.T) {
 	m, api := opModel(t)
 	api.log.Upstream = "refs/remotes/up/feature/init"
+	gitWriteSettle(t, m, m.activate(action{Kind: "git-refresh"}))
 	refReply(api, protocol.GitResult{State: protocol.GitStateFailed, Code: "diverged", Fetch: &protocol.GitFetchResult{Remote: "origin", State: "succeeded"}, Integration: &protocol.GitIntegration{State: "diverged", To: strings.Repeat("f", 40)}})
 	gitWriteSettle(t, m, m.activate(action{Kind: "git-pull"}))
-	m.menu = nil
-	gitWriteSettle(t, m, m.activate(action{Kind: "git-integrate", Value: "merge", ID: api.log.Upstream}))
 	h := false
 	for _, b := range m.gitSurfaceBlocks() {
-		if b.git != nil && b.git.key == "git:pull-merge" && b.git.action.ID == "refs/remotes/up/feature/init" {
+		if b.git != nil && b.git.key == "git:pull-rebase" && b.git.action.ID == "refs/remotes/up/feature/init" {
 			h = true
 		}
 	}
 	if !h {
-		t.Fatal("merge entry does not use the full upstream ref")
+		t.Fatal("rebase entry does not use the full upstream ref")
 	}
 }
 
