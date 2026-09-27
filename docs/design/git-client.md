@@ -160,13 +160,20 @@ Capture the selected object ID for the action and revalidate repository state be
 
 The ordinary Pull action explicitly enforces fast-forward-only integration regardless of a conflicting inherited Git preference. It identifies the remote and upstream and distinguishes fetch results from integration results. If history diverges, fetching may succeed while integration stops; do not report that the whole operation left all state unchanged.
 
-A failed fast-forward-only pull must not silently fall back to merge or rebase. Offer an explicit next action to integrate the selected upstream by merge or rebase, or leave the branch as it is. Manual or agent conflict resolution applies when that separately chosen operation encounters conflicts.
+A failed fast-forward-only pull must not silently fall back to merge or rebase. Offer an explicit next action to integrate the selected upstream by rebase (manual interactive or agent-planned, see below), or leave the branch as it is. Manual or agent conflict resolution applies when that separately chosen operation encounters conflicts.
+
+**User decisions — 2026-09-26 (history editing and fetch).** These supersede the earlier "non-interactive rebase only" decision (ADR 0023) and the merge option in the divergence follow-up above; they are not yet implemented.
+
+- **Pull integrates by fast forward only.** When Pull finds the branch diverged, the follow-up offers rebase onto the upstream or leaving the branch as it is; Pull never leads to a merge commit. The separate Merge action for other branches is unchanged.
+- **Soft reset from a commit's context menu** is the user's manual squashing workflow (already built, ADR 0021): right-click a commit → Soft reset the current branch to it, keeping index and working tree.
+- **Interactive rebase, two ways.** The user can edit the rebase plan manually or hand it to an agent. Manual scope: parity with mainstream Git clients, with Sublime Merge as the named reference (reorder, reword, edit/amend, squash, fixup, drop and the commit-menu shortcuts such clients offer); the exact list is to be confirmed against Sublime Merge's documentation before implementation. Agent mode: an agent job reads the commits and the user's instruction and proposes a plan (and reworded messages); the user reviews and may edit it in the same editor, and only then does the server run it. Conflicts use the existing manual or agent resolution, which stops for review before Continue.
+- **Fetch and Fetch & prune** are two actions that fetch all remotes; Fetch & prune reports which remote-tracking refs it removed afterwards, without a confirmation (it deletes only remote-tracking refs).
 
 Missing upstream, authentication failure, transport failure, cancellation, and divergence need distinct states. Additional network features, background fetching, ordinary Push, and force-push behavior remain to be scoped. These product features do not authorize contributor remote operations in this repository.
 
 ## Rebase and manual conflicts
 
-Show the operation type, source and target, current replayed commit when applicable, affected files, and progress. Keep Continue, Skip, and Abort distinct. Continue requires resolving and staging the appropriate conflicts; Skip omits a patch and must communicate that consequence. Do not imply that absence of conflict markers proves correctness.
+Rebase is interactive with a manual or agent-proposed plan (user decision 2026-09-26, under Pull and integration). Show the operation type, source and target, current replayed commit when applicable, affected files, and progress. Keep Continue, Skip, and Abort distinct. Continue requires resolving and staging the appropriate conflicts; Skip omits a patch and must communicate that consequence. Do not imply that absence of conflict markers proves correctness.
 
 The manual resolver needs base/side/result inspection, editable output, saving, and explicit resolution state. Label sides by their real branch/commit roles: during rebase, “ours” and “theirs” do not mean what users may expect from an ordinary merge. Layout details remain open, including which views remain visible at narrow widths.
 

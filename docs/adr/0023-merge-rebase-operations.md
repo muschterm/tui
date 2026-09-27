@@ -1,6 +1,13 @@
 ---
-status: accepted (user decisions 2026-09-25)
+status: accepted (user decisions 2026-09-25); partly superseded 2026-09-26
 ---
+
+> **2026-09-26:** the user replaced "non-interactive rebase only" with
+> interactive rebase (manual plan or agent-proposed plan) and removed the
+> merge option from the diverged-Pull follow-up. See
+> [git-client.md, Pull and integration](../design/git-client.md#pull-and-integration)
+> and the [2026-09-26 handoff](../implementation/handoff-2026-09-26.md).
+> A new ADR records the implementation; everything else here stands.
 
 # Merge and rebase operations
 
